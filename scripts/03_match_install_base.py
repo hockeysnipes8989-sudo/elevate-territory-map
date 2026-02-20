@@ -46,6 +46,14 @@ FUZZY_REJECT_PAIRS = {
         "detroit veterans affairs medical center",
     ),
     ("heartland community college", "martin community college"),
+    ("boston medical center", "tucson medical center"),
+    ("kellogg community college", "pueblo community college"),
+    ("cleveland community college", "craven community college"),
+    ("xavier university", "viterbo university"),
+    ("manatee technical college", "tooele technical college"),
+    ("castle medical center", "wesley medical center"),
+    ("wayne state university", "weber state university"),
+    ("muskegon community college", "sampson community college"),
 }
 
 
