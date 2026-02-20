@@ -322,7 +322,7 @@ def add_technician_markers(m, techs, layer_name):
 
 def add_airport_layer(m):
     """Add major airport hub markers as a toggleable layer."""
-    fg = folium.FeatureGroup(name="Major Airport Hubs (65)", show=False)
+    fg = folium.FeatureGroup(name="Major Airport Hubs (65)", show=True)
 
     for airport in config.MAJOR_AIRPORTS:
         popup_html = (
@@ -343,7 +343,7 @@ def add_airport_layer(m):
 
 def add_hub_radius_circles(m):
     """Add 150-mile (~2hr drive) radius circles around key dispatch hubs."""
-    RADIUS_METERS = 241_000  # 150 miles
+    RADIUS_METERS = 483_000  # ~300 miles / 5-hour drive threshold
 
     KEY_HUBS = [
         "ATL", "ORD", "DFW", "DEN", "LAX", "JFK", "SFO", "SEA",
@@ -352,7 +352,7 @@ def add_hub_radius_circles(m):
 
     hub_airports = [a for a in config.MAJOR_AIRPORTS if a["code"] in KEY_HUBS]
 
-    fg = folium.FeatureGroup(name="Hub Dispatch Radius (~150mi)", show=False)
+    fg = folium.FeatureGroup(name="Hub Dispatch Radius (~300mi / 5hr drive)", show=False)
 
     for airport in hub_airports:
         folium.Circle(
@@ -363,7 +363,7 @@ def add_hub_radius_circles(m):
             fill=True,
             fill_color="#1a6faf",
             fill_opacity=0.04,
-            tooltip=f"{airport['code']}: ~150mi dispatch radius",
+            tooltip=f"{airport['code']}: ~300mi / 5hr drive radius",
         ).add_to(fg)
 
     fg.add_to(m)
@@ -497,7 +497,7 @@ def main():
     add_airport_layer(m)
 
     # Layer 7: Hub Dispatch Radius Circles
-    print("Adding hub dispatch radius circles...")
+    print("Adding hub dispatch radius circles (300mi / 5hr drive)...")
     add_hub_radius_circles(m)
 
     # Legends
