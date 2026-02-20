@@ -4,7 +4,6 @@ import os
 import sys
 import pandas as pd
 import folium
-from folium.plugins import MarkerCluster
 
 sys.path.insert(0, os.path.dirname(__file__))
 import config
@@ -187,9 +186,8 @@ def add_matched_install_markers(m, install_matched, fg=None, layer_name="Active 
 
 
 def add_service_appointments(m, appts, layer_name):
-    """Add clustered service appointment markers."""
+    """Add service appointment markers (no clustering)."""
     fg = folium.FeatureGroup(name=layer_name, show=True)
-    cluster = MarkerCluster(name="Service Appointments Cluster").add_to(fg)
 
     appts_with_coords = appts.dropna(subset=["lat", "lon"])
 
@@ -217,15 +215,15 @@ def add_service_appointments(m, appts, layer_name):
 
         folium.CircleMarker(
             location=[row["lat"], row["lon"]],
-            radius=5,
+            radius=3,
             color=color,
             fill=True,
             fill_color=color,
             fill_opacity=0.7,
-            weight=1,
+            weight=0.5,
             popup=folium.Popup(popup_html, max_width=300),
             tooltip=f"{stype}: {row.get('Account: Account Name', '')}",
-        ).add_to(cluster)
+        ).add_to(fg)
 
     print(f"Service appointment markers added: {len(appts_with_coords)}")
 
