@@ -1,20 +1,20 @@
 Territory,total_assets,matched_assets,unique_accounts,unmatched_assets
-Canada,170,55,59,115
-Carolinas/Virginias,357,289,101,68
-Great Lakes,320,221,109,99
-Gulf Coast,155,138,41,17
-Illinois,159,112,56,47
-Mid Atlantic,91,78,21,13
+Canada,170,53,59,117
+Carolinas/Virginias,357,261,101,96
+Great Lakes,320,211,109,109
+Gulf Coast,155,118,41,37
+Illinois,159,110,56,49
+Mid Atlantic,91,77,21,14
 NY/NJ,59,47,23,12
-New England,89,62,38,27
-North Florida,380,158,89,222
+New England,89,59,38,30
+North Florida,380,115,89,265
 North Texas,182,172,34,10
-Northern California,59,29,22,30
-Northern Plains,184,160,60,24
-Pacific Northwest,39,34,10,5
-South Florida,159,51,36,108
+Northern California,59,20,22,39
+Northern Plains,184,159,60,25
+Pacific Northwest,39,33,10,6
+South Florida,159,47,36,112
 South Texas,151,126,30,25
 Southern California,111,73,32,38
-Southwest,173,146,42,27
+Southwest,173,130,42,43
 Upstate NY/Western PA,55,36,20,19
-West Plains,194,163,65,31
+West Plains,194,153,65,41

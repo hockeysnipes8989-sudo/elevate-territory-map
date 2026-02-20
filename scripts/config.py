@@ -141,7 +141,7 @@ GEOCODE_OVERRIDES = {
     "London, Ontario, Canada": {"lat": 42.9836747, "lon": -81.2496068},
     "Ontario, CA, USA": {"lat": 34.0658460, "lon": -117.6484300},
     "Kingshill, US Virgin Islands, USA": {"lat": 17.7225219, "lon": -64.7826756},
-    "Alberta, Canada": {"lat": 55.0012510, "lon": -115.0021360},
+    "Alberta, Canada": {"lat": 54.0000000, "lon": -114.0000000},
     "Abottsford, Canada": {"lat": 49.0521162, "lon": -122.3294790},
     "Brooklin, NY, USA": {"lat": 40.6526006, "lon": -73.9497211},
     "Jaskcon, MS, USA": {"lat": 32.2998686, "lon": -90.1830408},

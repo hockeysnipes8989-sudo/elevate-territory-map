@@ -59,6 +59,9 @@ def load_appointments():
     )
     print(f"  Raw rows: {len(df)}")
 
+    # Clean city values for output + geocoding consistency
+    df["City"] = df["City"].apply(clean_city)
+
     # Normalize technician names
     df["Service Resource: Name"] = df["Service Resource: Name"].apply(normalize_tech_name)
 

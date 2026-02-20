@@ -93,16 +93,26 @@ def manual_match(unmatched_accounts, appt_account_coords):
     return matched
 
 
-def fuzzy_match(unmatched_accounts, appt_accounts_list, threshold=85):
-    """Fuzzy match remaining accounts against appointment account names."""
+def fuzzy_match(
+    unmatched_accounts,
+    appt_accounts_by_territory,
+    install_account_territory,
+    threshold=92,
+):
+    """Fuzzy match within the same territory using a high-confidence threshold."""
     matched = {}
     kept_rows = []
     rejected_rows = []
 
     for acct in unmatched_accounts:
         acct_norm = norm_account(acct)
+        territory = install_account_territory.get(acct)
+        territory_candidates = sorted(appt_accounts_by_territory.get(territory, set()))
+        if not territory_candidates:
+            continue
+
         scored = []
-        for appt_norm in appt_accounts_list:
+        for appt_norm in territory_candidates:
             score = fuzz.ratio(acct_norm, appt_norm)
             scored.append((score, appt_norm))
 
@@ -118,6 +128,7 @@ def fuzzy_match(unmatched_accounts, appt_accounts_list, threshold=85):
                         "install_account": acct,
                         "appt_account_norm": appt_norm,
                         "score": score,
+                        "territory": territory,
                     }
                 )
                 continue
@@ -136,6 +147,7 @@ def fuzzy_match(unmatched_accounts, appt_accounts_list, threshold=85):
                     "install_account": acct,
                     "appt_account_norm": appt_norm,
                     "score": score,
+                    "territory": territory,
                 }
             )
 
@@ -158,6 +170,7 @@ def main():
 
     appt_account_coords = {}
     appt_account_display = {}
+    appt_accounts_by_territory = {}
     for acct_norm, group in appts_with_coords.groupby("acct_norm"):
         appt_account_coords[acct_norm] = {
             "lat": group["lat"].mean(),
@@ -167,13 +180,20 @@ def main():
         }
         appt_account_display[acct_norm] = group["Account: Account Name"].iloc[0]
 
-    appt_accounts_list = list(appt_account_coords.keys())
+    for territory, group in appts_with_coords.groupby("Territory"):
+        appt_accounts_by_territory[territory] = set(group["acct_norm"])
+
+    install_account_territory = (
+        active.groupby("Account Name")["Territory"]
+        .agg(lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0])
+        .to_dict()
+    )
 
     # Unique install base accounts with active contracts
     install_accounts = active["Account Name"].dropna().unique().tolist()
     print(
         f"\nMatching {len(install_accounts)} install base accounts "
-        f"to {len(appt_accounts_list)} appointment accounts..."
+        f"to {len(appt_account_coords)} appointment accounts..."
     )
 
     # Step 1: Exact
@@ -187,8 +207,13 @@ def main():
 
     # Step 3: Fuzzy with explicit false-positive rejects
     unmatched = [a for a in install_accounts if a not in exact and a not in manual]
-    fuzzy, fuzzy_kept, fuzzy_rejected = fuzzy_match(unmatched, appt_accounts_list, threshold=85)
-    print(f"  Fuzzy matches (>=85): {len(fuzzy)}")
+    fuzzy, fuzzy_kept, fuzzy_rejected = fuzzy_match(
+        unmatched,
+        appt_accounts_by_territory=appt_accounts_by_territory,
+        install_account_territory=install_account_territory,
+        threshold=92,
+    )
+    print(f"  Fuzzy matches (same territory, >=92): {len(fuzzy)}")
     print(f"  Fuzzy rejects (known bad pairs): {len(fuzzy_rejected)}")
 
     # Combine matches

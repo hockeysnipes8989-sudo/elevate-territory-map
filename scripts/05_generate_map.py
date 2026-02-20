@@ -35,12 +35,12 @@ def get_choropleth_color(value, min_val, max_val, colors):
     return colors[idx]
 
 
-def add_territory_boundaries(m, geojson_path):
+def add_territory_boundaries(m, geojson_path, layer_name):
     """Add territory boundary polygons as a toggleable layer."""
     with open(geojson_path, "r") as f:
         geojson = json.load(f)
 
-    fg = folium.FeatureGroup(name="Territory Boundaries", show=True)
+    fg = folium.FeatureGroup(name=layer_name, show=True)
 
     for feature in geojson["features"]:
         name = feature["properties"]["name"]
@@ -60,7 +60,7 @@ def add_territory_boundaries(m, geojson_path):
                 "fillColor": c,
                 "color": c,
                 "weight": 3,
-                "fillOpacity": 0.15,
+                "fillOpacity": 0.10,
             },
             tooltip=name,
             popup=folium.Popup(popup_html, max_width=250),
@@ -88,12 +88,12 @@ def add_territory_boundaries(m, geojson_path):
     return fg
 
 
-def add_active_contracts_choropleth(m, geojson_path, territory_summary):
+def add_active_contracts_choropleth(m, geojson_path, territory_summary, layer_name):
     """Add territory-level choropleth colored by active contract count."""
     with open(geojson_path, "r") as f:
         geojson = json.load(f)
 
-    fg = folium.FeatureGroup(name="Active Contract Simulators", show=True)
+    fg = folium.FeatureGroup(name=layer_name, show=True)
 
     asset_counts = dict(zip(territory_summary["Territory"], territory_summary["total_assets"]))
     account_counts = dict(zip(territory_summary["Territory"], territory_summary["unique_accounts"]))
@@ -119,7 +119,7 @@ def add_active_contracts_choropleth(m, geojson_path, territory_summary):
                 "fillColor": fc,
                 "color": "#333",
                 "weight": 1,
-                "fillOpacity": 0.55,
+                "fillOpacity": 0.35,
             },
             tooltip=f"{name}: {assets} active assets",
             popup=folium.Popup(popup_html, max_width=250),
@@ -142,7 +142,7 @@ def add_active_contracts_choropleth(m, geojson_path, territory_summary):
     return fg
 
 
-def add_matched_install_markers(m, install_matched, fg=None):
+def add_matched_install_markers(m, install_matched, fg=None, layer_name="Active Contract Simulators"):
     """Add point markers for install base accounts that matched to coordinates."""
     matched = install_matched[install_matched["matched"] & install_matched["lat"].notna()].copy()
     if matched.empty:
@@ -151,7 +151,7 @@ def add_matched_install_markers(m, install_matched, fg=None):
     # Aggregate by account for cleaner display
     created_layer = False
     if fg is None:
-        fg = folium.FeatureGroup(name="Active Contract Simulators", show=True)
+        fg = folium.FeatureGroup(name=layer_name, show=True)
         created_layer = True
 
     acct_agg = matched.groupby("Account Name").agg(
@@ -186,9 +186,9 @@ def add_matched_install_markers(m, install_matched, fg=None):
     return fg
 
 
-def add_service_appointments(m, appts):
+def add_service_appointments(m, appts, layer_name):
     """Add clustered service appointment markers."""
-    fg = folium.FeatureGroup(name="Service Appointments", show=False)
+    fg = folium.FeatureGroup(name=layer_name, show=True)
     cluster = MarkerCluster(name="Service Appointments Cluster").add_to(fg)
 
     appts_with_coords = appts.dropna(subset=["lat", "lon"])
@@ -227,13 +227,15 @@ def add_service_appointments(m, appts):
             tooltip=f"{stype}: {row.get('Account: Account Name', '')}",
         ).add_to(cluster)
 
+    print(f"Service appointment markers added: {len(appts_with_coords)}")
+
     fg.add_to(m)
     return fg
 
 
-def add_technician_markers(m, techs):
+def add_technician_markers(m, techs, layer_name):
     """Add technician home base markers."""
-    fg = folium.FeatureGroup(name="Technician Home Bases", show=True)
+    fg = folium.FeatureGroup(name=layer_name, show=True)
 
     techs_with_coords = techs.dropna(subset=["lat", "lon"])
 
@@ -268,7 +270,7 @@ def add_technician_markers(m, techs):
     return fg
 
 
-def add_service_type_legend(m):
+def add_service_type_legend(m, service_type_counts):
     """Add a legend for service appointment colors."""
     legend_html = """
     <div style="position: fixed; bottom: 30px; right: 30px; z-index: 1000;
@@ -276,8 +278,13 @@ def add_service_type_legend(m):
          box-shadow: 0 2px 6px rgba(0,0,0,0.3); font-size: 12px; line-height: 1.6;">
         <b>Service Types</b><br>
     """
-    for stype, color in config.SERVICE_TYPE_COLORS.items():
-        legend_html += f'<span style="background:{color};width:12px;height:12px;display:inline-block;margin-right:4px;border-radius:50%;border:1px solid #999;"></span>{stype}<br>'
+    for stype in ["PM", "Repair", "Install", "Other"]:
+        color = config.SERVICE_TYPE_COLORS.get(stype, "purple")
+        count = int(service_type_counts.get(stype, 0))
+        legend_html += (
+            f'<span style="background:{color};width:12px;height:12px;display:inline-block;'
+            f'margin-right:4px;border-radius:50%;border:1px solid #999;"></span>{stype} ({count})<br>'
+        )
 
     legend_html += """<br><b>Technicians</b><br>"""
     for status, color in config.TECH_COLORS.items():
@@ -300,6 +307,16 @@ def main():
     print(f"  Install base (active): {len(install_matched)} ({install_matched['matched'].sum()} matched)")
     print(f"  Territories: {len(territory_summary)}")
 
+    active_assets_count = int(len(install_matched))
+    appointments_count = int(len(appts))
+    technicians_count = int(len(techs))
+    territories_count = int(len(territory_summary))
+    layer_active_name = f"Active Contract Simulators ({active_assets_count:,} assets)"
+    layer_appt_name = f"Service Appointments ({appointments_count:,})"
+    layer_tech_name = f"Technician Home Bases ({technicians_count:,})"
+    layer_territory_name = f"Territory Boundaries ({territories_count:,})"
+    service_type_counts = appts["Service Type"].apply(classify_service_type).value_counts()
+
     # Create base map
     m = folium.Map(
         location=config.MAP_CENTER,
@@ -320,26 +337,36 @@ def main():
 
     # Layer 1: Active Contract Simulators (choropleth)
     print("Adding active contract choropleth...")
-    active_layer = add_active_contracts_choropleth(m, config.TERRITORIES_GEOJSON, territory_summary)
+    active_layer = add_active_contracts_choropleth(
+        m,
+        config.TERRITORIES_GEOJSON,
+        territory_summary,
+        layer_name=layer_active_name,
+    )
 
     # Add matched install base point markers to the choropleth layer
     print("Adding matched install base markers...")
-    add_matched_install_markers(m, install_matched, fg=active_layer)
+    add_matched_install_markers(
+        m,
+        install_matched,
+        fg=active_layer,
+        layer_name=layer_active_name,
+    )
 
     # Layer 2: Service Appointments (clustered)
     print("Adding service appointments...")
-    add_service_appointments(m, appts)
+    add_service_appointments(m, appts, layer_name=layer_appt_name)
 
     # Layer 3: Technician Home Bases
     print("Adding technician markers...")
-    add_technician_markers(m, techs)
+    add_technician_markers(m, techs, layer_name=layer_tech_name)
 
     # Layer 4: Territory Boundaries
     print("Adding territory boundaries...")
-    add_territory_boundaries(m, config.TERRITORIES_GEOJSON)
+    add_territory_boundaries(m, config.TERRITORIES_GEOJSON, layer_name=layer_territory_name)
 
     # Legends
-    add_service_type_legend(m)
+    add_service_type_legend(m, service_type_counts=service_type_counts)
 
     # Layer control
     folium.LayerControl(collapsed=False).add_to(m)

@@ -68,6 +68,7 @@ US_ABBR_TO_NAME = {
     "WA": "Washington",
     "WI": "Wisconsin",
     "WV": "West Virginia",
+    "WY": "Wyoming",
 }
 
 
@@ -85,7 +86,7 @@ TERRITORY_TO_US_STATES = {
     "Gulf Coast": ["AL", "LA", "MS"],
     "North Texas": ["AR", "OK", "TX"],
     "South Texas": ["TX"],
-    "West Plains": ["CO", "KS", "MO", "MT", "NE"],
+    "West Plains": ["CO", "KS", "MO", "MT", "NE", "WY"],
     "Southwest": ["AZ", "NM", "UT", "NV"],
     "Northern California": ["CA", "NV"],
     "Southern California": ["CA"],
@@ -107,6 +108,15 @@ OUTLIER_STATE_NAMES = {
     "Guam",
     "American Samoa",
     "Northern Mariana Islands",
+}
+
+
+CANADA_PROVINCES_WITH_DATA = {
+    "Alberta",
+    "British Columbia",
+    "Ontario",
+    "Quebec",
+    "Saskatchewan",
 }
 
 
@@ -151,6 +161,13 @@ def make_outlier_markers(appts):
             "lat": 64.2008,
             "lon": -149.4937,
             "label": "Alaska (Pacific Northwest reference)",
+        }
+    )
+    markers["Pacific Northwest"].append(
+        {
+            "lat": 20.80,
+            "lon": -156.33,
+            "label": "Hawaii (Pacific Northwest reference)",
         }
     )
 
@@ -212,13 +229,15 @@ def main():
         if territory == "Canada":
             for feature in canada_features:
                 name = feature.get("properties", {}).get("name")
+                if name not in CANADA_PROVINCES_WITH_DATA:
+                    continue
                 sources.append(name)
                 polygons.extend(geometry_to_multipolygon_coords(feature["geometry"]))
         else:
             state_abbrs = TERRITORY_TO_US_STATES.get(territory, [])
             for abbr in state_abbrs:
-                # Keep AK as marker only to avoid map distortion
-                if territory == "Pacific Northwest" and abbr == "AK":
+                # Keep AK/HI as markers only to avoid map distortion
+                if territory == "Pacific Northwest" and abbr in {"AK", "HI"}:
                     continue
                 state_name = US_ABBR_TO_NAME.get(abbr)
                 if not state_name or state_name not in us_by_name:
