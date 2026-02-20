@@ -1,0 +1,8 @@
+data/raw/*.xlsx
+__pycache__/
+*.pyc
+.DS_Store
+*.egg-info/
+dist/
+build/
+.env
