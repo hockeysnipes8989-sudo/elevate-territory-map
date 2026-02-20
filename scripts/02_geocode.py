@@ -25,6 +25,16 @@ def save_cache(cache):
         json.dump(cache, f, indent=2, sort_keys=True)
 
 
+def apply_overrides(cache):
+    """Apply deterministic geocode overrides from config."""
+    applied = 0
+    for key, coords in config.GEOCODE_OVERRIDES.items():
+        if cache.get(key) != coords:
+            cache[key] = coords
+            applied += 1
+    return applied
+
+
 def geocode_key(key, geolocator, cache):
     """Geocode a single key, using cache if available."""
     if key in cache:
@@ -48,6 +58,9 @@ def geocode_key(key, geolocator, cache):
 def main():
     geolocator = Nominatim(user_agent=config.GEOCODE_USER_AGENT)
     cache = load_cache()
+    overrides_applied = apply_overrides(cache)
+    if overrides_applied:
+        print(f"Applied geocode overrides: {overrides_applied}")
 
     # Load cleaned data
     appts = pd.read_csv(config.CLEAN_APPTS_CSV)

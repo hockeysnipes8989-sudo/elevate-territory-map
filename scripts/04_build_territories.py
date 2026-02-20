@@ -1,108 +1,254 @@
-"""Step 4: Build territory boundary polygons via convex hull from appointment coordinates."""
+"""Step 4: Build territory boundary polygons from US states and Canadian provinces."""
 import json
 import os
 import sys
-import numpy as np
+import urllib.request
 import pandas as pd
-from scipy.spatial import ConvexHull
 
 sys.path.insert(0, os.path.dirname(__file__))
 import config
 
 
-def buffer_hull(points, buffer_deg=0.3):
-    """Expand convex hull points outward by buffer_deg from centroid."""
-    centroid = np.mean(points, axis=0)
-    buffered = []
-    for pt in points:
-        direction = pt - centroid
-        dist = np.linalg.norm(direction)
-        if dist > 0:
-            unit = direction / dist
-            buffered.append(pt + unit * buffer_deg)
-        else:
-            buffered.append(pt + buffer_deg)
-    return np.array(buffered)
+US_STATES_URL = "https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json"
+CANADA_PROVINCES_URL = (
+    "https://raw.githubusercontent.com/codeforamerica/click_that_hood/master/public/data/canada.geojson"
+)
+
+US_STATES_CACHE_PATH = os.path.join(config.PROCESSED_DIR, "us-states.json")
+CANADA_PROVINCES_CACHE_PATH = os.path.join(config.PROCESSED_DIR, "canada.geojson")
 
 
-def build_polygon(coords, buffer_deg):
-    """Build a GeoJSON polygon from a set of lat/lon coordinates."""
-    if len(coords) < 3:
-        # Not enough points for a hull — create a small box
-        center = np.mean(coords, axis=0)
-        half = buffer_deg
-        return [
-            [center[1] - half, center[0] - half],
-            [center[1] + half, center[0] - half],
-            [center[1] + half, center[0] + half],
-            [center[1] - half, center[0] + half],
-            [center[1] - half, center[0] - half],
-        ]
+US_ABBR_TO_NAME = {
+    "AL": "Alabama",
+    "AK": "Alaska",
+    "AZ": "Arizona",
+    "AR": "Arkansas",
+    "CA": "California",
+    "CO": "Colorado",
+    "CT": "Connecticut",
+    "DC": "District of Columbia",
+    "DE": "Delaware",
+    "FL": "Florida",
+    "GA": "Georgia",
+    "IA": "Iowa",
+    "ID": "Idaho",
+    "IL": "Illinois",
+    "IN": "Indiana",
+    "KS": "Kansas",
+    "KY": "Kentucky",
+    "LA": "Louisiana",
+    "MA": "Massachusetts",
+    "MD": "Maryland",
+    "ME": "Maine",
+    "MI": "Michigan",
+    "MN": "Minnesota",
+    "MO": "Missouri",
+    "MS": "Mississippi",
+    "MT": "Montana",
+    "NC": "North Carolina",
+    "ND": "North Dakota",
+    "NE": "Nebraska",
+    "NH": "New Hampshire",
+    "NJ": "New Jersey",
+    "NM": "New Mexico",
+    "NV": "Nevada",
+    "NY": "New York",
+    "OH": "Ohio",
+    "OK": "Oklahoma",
+    "OR": "Oregon",
+    "PA": "Pennsylvania",
+    "RI": "Rhode Island",
+    "SC": "South Carolina",
+    "SD": "South Dakota",
+    "TN": "Tennessee",
+    "TX": "Texas",
+    "UT": "Utah",
+    "VA": "Virginia",
+    "VT": "Vermont",
+    "WA": "Washington",
+    "WI": "Wisconsin",
+    "WV": "West Virginia",
+}
 
-    points = np.array(coords)
+
+TERRITORY_TO_US_STATES = {
+    "New England": ["CT", "MA", "ME", "NH", "RI", "VT"],
+    "NY/NJ": ["NY", "NJ"],
+    "Upstate NY/Western PA": ["NY", "PA"],
+    "Mid Atlantic": ["DE", "MD", "PA", "NJ"],
+    "Carolinas/Virginias": ["DC", "NC", "SC", "VA", "WV"],
+    "Great Lakes": ["KY", "MI", "OH", "TN"],
+    "Illinois": ["IL", "IN"],
+    "Northern Plains": ["IA", "MN", "ND", "SD", "WI"],
+    "North Florida": ["FL", "GA"],
+    "South Florida": ["FL"],
+    "Gulf Coast": ["AL", "LA", "MS"],
+    "North Texas": ["AR", "OK", "TX"],
+    "South Texas": ["TX"],
+    "West Plains": ["CO", "KS", "MO", "MT", "NE"],
+    "Southwest": ["AZ", "NM", "UT", "NV"],
+    "Northern California": ["CA", "NV"],
+    "Southern California": ["CA"],
+    "Pacific Northwest": ["AK", "ID", "OR", "WA"],
+    "Canada": [],
+}
+
+
+OUTLIER_STATE_NAMES = {
+    "AK",
+    "Alaska",
+    "HI",
+    "Hawaii",
+    "US Virgin Islands",
+    "Virgin Islands",
+    "VI",
+    "Puerto Rico",
+    "PR",
+    "Guam",
+    "American Samoa",
+    "Northern Mariana Islands",
+}
+
+
+def load_geojson_with_cache(url, cache_path):
+    """Fetch GeoJSON from URL with on-disk cache fallback."""
+    if os.path.exists(cache_path):
+        with open(cache_path, "r") as f:
+            return json.load(f)
 
     try:
-        hull = ConvexHull(points)
-        hull_points = points[hull.vertices]
+        with urllib.request.urlopen(url, timeout=30) as response:
+            payload = response.read().decode("utf-8")
+        data = json.loads(payload)
+        with open(cache_path, "w") as f:
+            f.write(payload)
+        return data
     except Exception:
-        # Degenerate case — all points collinear
-        hull_points = points
+        if os.path.exists(cache_path):
+            with open(cache_path, "r") as f:
+                return json.load(f)
+        raise
 
-    buffered = buffer_hull(hull_points, buffer_deg)
 
-    # Re-compute hull on buffered points
-    try:
-        hull2 = ConvexHull(buffered)
-        final_points = buffered[hull2.vertices]
-    except Exception:
-        final_points = buffered
+def geometry_to_multipolygon_coords(geometry):
+    """Return a geometry as a list of Polygon coordinate arrays."""
+    gtype = geometry.get("type")
+    coords = geometry.get("coordinates", [])
+    if gtype == "Polygon":
+        return [coords]
+    if gtype == "MultiPolygon":
+        return coords
+    return []
 
-    # Convert to GeoJSON [lon, lat] and close the ring
-    ring = [[float(p[1]), float(p[0])] for p in final_points]
-    ring.append(ring[0])
-    return ring
+
+def make_outlier_markers(appts):
+    """Build per-territory outlier point markers (outside contiguous US)."""
+    markers = {territory: [] for territory in config.TERRITORY_COLORS}
+
+    # Static Alaska marker to avoid a giant polygon distorting the map
+    markers["Pacific Northwest"].append(
+        {
+            "lat": 64.2008,
+            "lon": -149.4937,
+            "label": "Alaska (Pacific Northwest reference)",
+        }
+    )
+
+    appts = appts.dropna(subset=["lat", "lon", "Territory"]).copy()
+    outlier_mask = (
+        appts["State/Province"].astype(str).isin(OUTLIER_STATE_NAMES)
+        | (appts["lat"] < 24)
+        | (appts["lon"] < -130)
+        | (appts["lon"] > -66)
+    )
+    outliers = appts[outlier_mask].copy()
+    if outliers.empty:
+        return markers
+
+    # One marker per unique location/territory
+    for _, row in (
+        outliers[["Territory", "City", "State/Province", "lat", "lon"]]
+        .drop_duplicates()
+        .iterrows()
+    ):
+        territory = row["Territory"]
+        label = f"{row['City']}, {row['State/Province']}"
+        markers.setdefault(territory, []).append(
+            {
+                "lat": float(row["lat"]),
+                "lon": float(row["lon"]),
+                "label": label,
+            }
+        )
+
+    return markers
 
 
 def main():
+    os.makedirs(config.PROCESSED_DIR, exist_ok=True)
+
     appts = pd.read_csv(config.GEOCODED_APPTS_CSV)
-    appts = appts.dropna(subset=["lat", "lon", "Territory"])
-
-    print(f"Appointments with coordinates: {len(appts)}")
-    print(f"Territories: {appts['Territory'].nunique()}")
-
-    # Load territory summary for asset counts
     territory_summary = pd.read_csv(config.TERRITORY_SUMMARY_CSV)
+    appt_counts = appts["Territory"].value_counts().to_dict()
     asset_counts = dict(zip(territory_summary["Territory"], territory_summary["total_assets"]))
+    outlier_markers = make_outlier_markers(appts)
+
+    us_geojson = load_geojson_with_cache(US_STATES_URL, US_STATES_CACHE_PATH)
+    canada_geojson = load_geojson_with_cache(CANADA_PROVINCES_URL, CANADA_PROVINCES_CACHE_PATH)
+
+    us_by_name = {}
+    for feature in us_geojson["features"]:
+        state_name = feature.get("properties", {}).get("name")
+        if state_name:
+            us_by_name[state_name] = feature
+
+    canada_features = canada_geojson["features"]
 
     features = []
-    for territory, group in appts.groupby("Territory"):
-        coords = list(zip(group["lat"], group["lon"]))
-        ring = build_polygon(coords, config.TERRITORY_BUFFER_DEG)
+    for territory in config.TERRITORY_COLORS:
+        polygons = []
+        sources = []
 
-        color = config.TERRITORY_COLORS.get(territory, "#999999")
-        assets = asset_counts.get(territory, 0)
+        if territory == "Canada":
+            for feature in canada_features:
+                name = feature.get("properties", {}).get("name")
+                sources.append(name)
+                polygons.extend(geometry_to_multipolygon_coords(feature["geometry"]))
+        else:
+            state_abbrs = TERRITORY_TO_US_STATES.get(territory, [])
+            for abbr in state_abbrs:
+                # Keep AK as marker only to avoid map distortion
+                if territory == "Pacific Northwest" and abbr == "AK":
+                    continue
+                state_name = US_ABBR_TO_NAME.get(abbr)
+                if not state_name or state_name not in us_by_name:
+                    continue
+                sources.append(state_name)
+                polygons.extend(geometry_to_multipolygon_coords(us_by_name[state_name]["geometry"]))
 
         feature = {
             "type": "Feature",
             "properties": {
                 "name": territory,
-                "color": color,
-                "appointments": len(group),
-                "active_assets": assets,
+                "color": config.TERRITORY_COLORS.get(territory, "#999999"),
+                "appointments": int(appt_counts.get(territory, 0)),
+                "active_assets": int(asset_counts.get(territory, 0)),
+                "source_regions": sources,
+                "outlier_markers": outlier_markers.get(territory, []),
             },
             "geometry": {
-                "type": "Polygon",
-                "coordinates": [ring],
+                "type": "MultiPolygon",
+                "coordinates": polygons,
             },
         }
         features.append(feature)
-        print(f"  {territory}: {len(coords)} points → {len(ring)-1} hull vertices, {assets} active assets")
+        print(
+            f"{territory}: regions={len(sources)} polygons={len(polygons)} "
+            f"appointments={appt_counts.get(territory, 0)} "
+            f"active_assets={asset_counts.get(territory, 0)}"
+        )
 
-    geojson = {
-        "type": "FeatureCollection",
-        "features": features,
-    }
-
+    geojson = {"type": "FeatureCollection", "features": features}
     with open(config.TERRITORIES_GEOJSON, "w") as f:
         json.dump(geojson, f, indent=2)
 

@@ -66,6 +66,24 @@ def add_territory_boundaries(m, geojson_path):
             popup=folium.Popup(popup_html, max_width=250),
         ).add_to(fg)
 
+        # Outlier locations (Alaska, USVI, etc.) are rendered as points, not polygon vertices.
+        for marker in feature["properties"].get("outlier_markers", []):
+            lat = marker.get("lat")
+            lon = marker.get("lon")
+            label = marker.get("label", f"{name} outlier")
+            if lat is None or lon is None:
+                continue
+            folium.CircleMarker(
+                location=[lat, lon],
+                radius=4,
+                color=color,
+                fill=True,
+                fill_color=color,
+                fill_opacity=0.9,
+                weight=1,
+                tooltip=f"{name}: {label}",
+            ).add_to(fg)
+
     fg.add_to(m)
     return fg
 
@@ -124,14 +142,17 @@ def add_active_contracts_choropleth(m, geojson_path, territory_summary):
     return fg
 
 
-def add_matched_install_markers(m, install_matched):
+def add_matched_install_markers(m, install_matched, fg=None):
     """Add point markers for install base accounts that matched to coordinates."""
     matched = install_matched[install_matched["matched"] & install_matched["lat"].notna()].copy()
     if matched.empty:
-        return
+        return fg
 
     # Aggregate by account for cleaner display
-    fg = folium.FeatureGroup(name="Active Contract Simulators", show=True)
+    created_layer = False
+    if fg is None:
+        fg = folium.FeatureGroup(name="Active Contract Simulators", show=True)
+        created_layer = True
 
     acct_agg = matched.groupby("Account Name").agg(
         lat=("lat", "first"),
@@ -160,7 +181,9 @@ def add_matched_install_markers(m, install_matched):
             tooltip=f"{row['Account Name']}: {row['asset_count']} assets",
         ).add_to(fg)
 
-    fg.add_to(m)
+    if created_layer:
+        fg.add_to(m)
+    return fg
 
 
 def add_service_appointments(m, appts):
@@ -297,11 +320,11 @@ def main():
 
     # Layer 1: Active Contract Simulators (choropleth)
     print("Adding active contract choropleth...")
-    add_active_contracts_choropleth(m, config.TERRITORIES_GEOJSON, territory_summary)
+    active_layer = add_active_contracts_choropleth(m, config.TERRITORIES_GEOJSON, territory_summary)
 
     # Add matched install base point markers to the choropleth layer
     print("Adding matched install base markers...")
-    add_matched_install_markers(m, install_matched)
+    add_matched_install_markers(m, install_matched, fg=active_layer)
 
     # Layer 2: Service Appointments (clustered)
     print("Adding service appointments...")

@@ -128,3 +128,27 @@ MAP_TILES = "CartoDB positron"
 GEOCODE_USER_AGENT = "elevate_healthcare_uiuc"
 GEOCODE_DELAY = 1.1  # seconds between Nominatim requests
 TERRITORY_BUFFER_DEG = 0.3  # buffer around convex hull in degrees
+
+# Known typo/mis-geocode overrides (applied every run)
+GEOCODE_OVERRIDES = {
+    "Pheonix, AZ, USA": {"lat": 33.4484367, "lon": -112.0741410},
+    "Ashville, NC, USA": {"lat": 35.5953630, "lon": -82.5508407},
+    "Belleville, TX, USA": {"lat": 29.9502253, "lon": -96.2571858},
+    "Clarksville, GA, USA": {"lat": 34.6125971, "lon": -83.5248933},
+    "Gainsville, GA, USA": {"lat": 34.2978794, "lon": -83.8240663},
+    "Bismark, ND, USA": {"lat": 46.8083270, "lon": -100.7837390},
+    # Explicitly pin these to avoid future ambiguity
+    "London, Ontario, Canada": {"lat": 42.9836747, "lon": -81.2496068},
+    "Ontario, CA, USA": {"lat": 34.0658460, "lon": -117.6484300},
+    "Kingshill, US Virgin Islands, USA": {"lat": 17.7225219, "lon": -64.7826756},
+    "Alberta, Canada": {"lat": 55.0012510, "lon": -115.0021360},
+    "Abottsford, Canada": {"lat": 49.0521162, "lon": -122.3294790},
+    "Brooklin, NY, USA": {"lat": 40.6526006, "lon": -73.9497211},
+    "Jaskcon, MS, USA": {"lat": 32.2998686, "lon": -90.1830408},
+    "Pikesville, KY, USA": {"lat": 37.4793000, "lon": -82.5188000},
+    "Vallhalla, NY, USA": {"lat": 41.0752130, "lon": -73.7750061},
+    "Winnimucca, NV, USA": {"lat": 40.9724295, "lon": -117.7348020},
+    "Clarkesville, GA, USA": {"lat": 34.6125971, "lon": -83.5248933},
+    "Gainesville, GA, USA": {"lat": 34.2978794, "lon": -83.8240663},
+    "Bismarck, ND, USA": {"lat": 46.8083270, "lon": -100.7837390},
+}

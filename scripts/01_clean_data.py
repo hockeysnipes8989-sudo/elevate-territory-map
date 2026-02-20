@@ -13,8 +13,8 @@ def clean_city(city):
     return str(city).lstrip(". ").strip()
 
 
-def normalize_state(state):
-    """Normalize state/province values."""
+def normalize_state_for_geocode(state):
+    """Normalize state/province values for geocoding only."""
     if pd.isna(state):
         return state
     s = str(state).strip()
@@ -59,16 +59,16 @@ def load_appointments():
     )
     print(f"  Raw rows: {len(df)}")
 
-    # Clean city and state
-    df["City"] = df["City"].apply(clean_city)
-    df["State/Province"] = df["State/Province"].apply(normalize_state)
-
     # Normalize technician names
     df["Service Resource: Name"] = df["Service Resource: Name"].apply(normalize_tech_name)
 
-    # Build geocode key
+    # Build geocode key from cleaned city + normalized state, while preserving raw values
     df["geocode_key"] = df.apply(
-        lambda r: build_geocode_key(r["City"], r["State/Province"]), axis=1
+        lambda r: build_geocode_key(
+            clean_city(r["City"]),
+            normalize_state_for_geocode(r["State/Province"]),
+        ),
+        axis=1,
     )
 
     print(f"  Clean rows: {len(df)}")
