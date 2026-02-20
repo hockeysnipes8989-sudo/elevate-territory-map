@@ -154,17 +154,92 @@ def fuzzy_match(
     return matched, pd.DataFrame(kept_rows), pd.DataFrame(rejected_rows)
 
 
+def build_matches(install_df, appt_account_coords, appt_accounts_by_territory):
+    """Build account-level match dictionary for a given install dataframe."""
+    install_accounts = install_df["Account Name"].dropna().unique().tolist()
+    install_account_territory = (
+        install_df.groupby("Account Name")["Territory"]
+        .agg(lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0])
+        .to_dict()
+    )
+
+    exact = exact_match(install_accounts, appt_account_coords)
+    unmatched = [a for a in install_accounts if a not in exact]
+    manual = manual_match(unmatched, appt_account_coords)
+    unmatched = [a for a in install_accounts if a not in exact and a not in manual]
+    fuzzy, fuzzy_kept, fuzzy_rejected = fuzzy_match(
+        unmatched,
+        appt_accounts_by_territory=appt_accounts_by_territory,
+        install_account_territory=install_account_territory,
+        threshold=92,
+    )
+
+    all_matches = {}
+    all_matches.update(exact)
+    all_matches.update(manual)
+    all_matches.update(fuzzy)
+
+    return all_matches, exact, manual, fuzzy, fuzzy_kept, fuzzy_rejected
+
+
+def apply_matches(install_df, all_matches, appt_account_coords, appt_account_display):
+    """Apply account-level matching metadata to install rows."""
+
+    def matched_meta(account_name, key):
+        match = all_matches.get(account_name)
+        if not match:
+            return None
+        appt_norm = match["appt_account_norm"]
+        if key == "lat":
+            return appt_account_coords.get(appt_norm, {}).get("lat")
+        if key == "lon":
+            return appt_account_coords.get(appt_norm, {}).get("lon")
+        if key == "appt_account":
+            return appt_account_display.get(appt_norm)
+        if key == "method":
+            return match["match_method"]
+        if key == "score":
+            return match["score"]
+        return None
+
+    out = install_df.copy()
+    out["lat"] = out["Account Name"].map(lambda a: matched_meta(a, "lat"))
+    out["lon"] = out["Account Name"].map(lambda a: matched_meta(a, "lon"))
+    out["matched_appointment_account"] = out["Account Name"].map(
+        lambda a: matched_meta(a, "appt_account")
+    )
+    out["match_method"] = out["Account Name"].map(lambda a: matched_meta(a, "method"))
+    out["match_score"] = out["Account Name"].map(lambda a: matched_meta(a, "score"))
+    out["matched"] = out["Account Name"].isin(all_matches)
+    return out
+
+
+def print_unmatched_top20(df, title):
+    """Print top-20 unmatched accounts by asset count for a subset dataframe."""
+    unmatched_top20 = (
+        df[~df["matched"]]
+        .groupby(["Account Name", "Territory"])
+        .size()
+        .reset_index(name="asset_count")
+        .sort_values("asset_count", ascending=False)
+        .head(20)
+    )
+    print(f"\nTop 20 unmatched accounts ({title}):")
+    if unmatched_top20.empty:
+        print("  None")
+    else:
+        print(unmatched_top20.to_string(index=False))
+
+
 def main():
     # Load data
     install = pd.read_csv(config.CLEAN_INSTALL_CSV)
     appts = pd.read_csv(config.GEOCODED_APPTS_CSV)
 
-    # Only keep active-contract assets for the map
-    active = install[install["has_active_contract"]].copy()
-    print(f"Active contract assets: {len(active)}")
-    print(f"Unique active accounts: {active['Account Name'].nunique()}")
+    print(f"Install assets (all): {len(install)}")
+    print(f"Install unique accounts (all): {install['Account Name'].nunique()}")
 
-    # Build account -> averaged coordinates from appointments with coordinates
+    # Build appointment account lookup
     appts_with_coords = appts.dropna(subset=["lat", "lon"]).copy()
     appts_with_coords["acct_norm"] = appts_with_coords["Account: Account Name"].apply(norm_account)
 
@@ -183,63 +258,38 @@ def main():
     for territory, group in appts_with_coords.groupby("Territory"):
         appt_accounts_by_territory[territory] = set(group["acct_norm"])
 
-    install_account_territory = (
-        active.groupby("Account Name")["Territory"]
-        .agg(lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0])
-        .to_dict()
-    )
-
-    # Unique install base accounts with active contracts
-    install_accounts = active["Account Name"].dropna().unique().tolist()
-    print(
-        f"\nMatching {len(install_accounts)} install base accounts "
-        f"to {len(appt_account_coords)} appointment accounts..."
-    )
-
-    # Step 1: Exact
-    exact = exact_match(install_accounts, appt_account_coords)
-    print(f"  Exact matches: {len(exact)}")
-
-    # Step 2: Manual aliases
-    unmatched = [a for a in install_accounts if a not in exact]
-    manual = manual_match(unmatched, appt_account_coords)
-    print(f"  Manual matches: {len(manual)}")
-
-    # Step 3: Fuzzy with explicit false-positive rejects
-    unmatched = [a for a in install_accounts if a not in exact and a not in manual]
-    fuzzy, fuzzy_kept, fuzzy_rejected = fuzzy_match(
-        unmatched,
+    # Match all install accounts (active + non-active)
+    all_matches, exact, manual, fuzzy, fuzzy_kept, fuzzy_rejected = build_matches(
+        install,
+        appt_account_coords=appt_account_coords,
         appt_accounts_by_territory=appt_accounts_by_territory,
-        install_account_territory=install_account_territory,
-        threshold=92,
     )
+
+    install_all_matched = apply_matches(
+        install,
+        all_matches=all_matches,
+        appt_account_coords=appt_account_coords,
+        appt_account_display=appt_account_display,
+    )
+
+    print(
+        f"\nMatching all install accounts to {len(appt_account_coords)} appointment accounts..."
+    )
+    print(f"  Exact matches: {len(exact)}")
+    print(f"  Manual matches: {len(manual)}")
     print(f"  Fuzzy matches (same territory, >=92): {len(fuzzy)}")
     print(f"  Fuzzy rejects (known bad pairs): {len(fuzzy_rejected)}")
-
-    # Combine matches
-    all_matches = {}
-    all_matches.update(exact)
-    all_matches.update(manual)
-    all_matches.update(fuzzy)
-
-    still_unmatched = [a for a in install_accounts if a not in all_matches]
-    print(f"  Unmatched accounts: {len(still_unmatched)}")
-
-    # Top unmatched accounts (for audit reporting)
-    unmatched_top20 = (
-        active[active["Account Name"].isin(still_unmatched)]
-        .groupby(["Account Name", "Territory"])
-        .size()
-        .reset_index(name="active_assets")
-        .sort_values("active_assets", ascending=False)
-        .head(20)
+    print(
+        f"  Matched assets (all): {int(install_all_matched['matched'].sum())}/{len(install_all_matched)} "
+        f"({install_all_matched['matched'].mean()*100:.1f}%)"
     )
-    print("\nTop 20 unmatched accounts (active assets):")
-    if unmatched_top20.empty:
-        print("  None")
-    else:
-        print(unmatched_top20.to_string(index=False))
+    print(
+        f"  Matched accounts (all): "
+        f"{install_all_matched[install_all_matched['matched']]['Account Name'].nunique()}/"
+        f"{install_all_matched['Account Name'].nunique()}"
+    )
 
+    # Print lowest-scoring fuzzy matches kept
     print("\n10 lowest-scoring fuzzy matches kept:")
     if fuzzy_kept.empty:
         print("  None")
@@ -248,53 +298,34 @@ def main():
         low["appt_account"] = low["appt_account_norm"].map(appt_account_display).fillna(
             low["appt_account_norm"]
         )
-        print(low[["install_account", "appt_account", "score"]].to_string(index=False))
+        print(low[["install_account", "appt_account", "territory", "score"]].to_string(index=False))
 
-    if not fuzzy_rejected.empty:
-        print("\nRejected fuzzy pairs:")
-        rej = fuzzy_rejected.copy()
-        rej["appt_account"] = rej["appt_account_norm"].map(appt_account_display).fillna(
-            rej["appt_account_norm"]
-        )
-        print(rej[["install_account", "appt_account", "score"]].to_string(index=False))
+    # Save all-assets matched output
+    install_all_matched.to_csv(config.INSTALL_ALL_MATCHED_CSV, index=False)
+    print(f"\nSaved: {config.INSTALL_ALL_MATCHED_CSV}")
 
-    # Apply coordinates/match metadata to install base assets
-    def matched_meta(account_name, key):
-        match = all_matches.get(account_name)
-        if not match:
-            return None
-        appt_norm = match["appt_account_norm"]
-        if key == "lat":
-            return appt_account_coords.get(appt_norm, {}).get("lat")
-        if key == "lon":
-            return appt_account_coords.get(appt_norm, {}).get("lon")
-        if key == "appt_account":
-            return appt_account_display.get(appt_norm)
-        if key == "method":
-            return match["match_method"]
-        if key == "score":
-            return match["score"]
-        return None
-
-    active["lat"] = active["Account Name"].map(lambda a: matched_meta(a, "lat"))
-    active["lon"] = active["Account Name"].map(lambda a: matched_meta(a, "lon"))
-    active["matched_appointment_account"] = active["Account Name"].map(
-        lambda a: matched_meta(a, "appt_account")
-    )
-    active["match_method"] = active["Account Name"].map(lambda a: matched_meta(a, "method"))
-    active["match_score"] = active["Account Name"].map(lambda a: matched_meta(a, "score"))
-    active["matched"] = active["Account Name"].isin(all_matches)
-
-    matched_assets = int(active["matched"].sum())
-    print(
-        f"\nAssets with coordinates: {matched_assets}/{len(active)} "
-        f"({matched_assets/len(active)*100:.1f}%)"
-    )
+    # Split active vs non-active for downstream map layers
+    active = install_all_matched[install_all_matched["has_active_contract"]].copy()
+    non_active = install_all_matched[~install_all_matched["has_active_contract"]].copy()
 
     active.to_csv(config.INSTALL_MATCHED_CSV, index=False)
+    non_active.to_csv(config.INSTALL_NONACTIVE_MATCHED_CSV, index=False)
     print(f"Saved: {config.INSTALL_MATCHED_CSV}")
+    print(f"Saved: {config.INSTALL_NONACTIVE_MATCHED_CSV}")
 
-    # Build territory summary for choropleth
+    print(
+        f"\nActive assets with coordinates: {int(active['matched'].sum())}/{len(active)} "
+        f"({active['matched'].mean()*100:.1f}%)"
+    )
+    print(
+        f"Non-active assets with coordinates: {int(non_active['matched'].sum())}/{len(non_active)} "
+        f"({non_active['matched'].mean()*100:.1f}%)"
+    )
+
+    print_unmatched_top20(active, title="active-contract assets")
+    print_unmatched_top20(non_active, title="non-active assets")
+
+    # Build active-contract territory summary for existing choropleth
     territory_summary = (
         active.groupby("Territory")
         .agg(
@@ -308,7 +339,7 @@ def main():
         territory_summary["total_assets"] - territory_summary["matched_assets"]
     )
 
-    print("\nTerritory summary:")
+    print("\nTerritory summary (active contracts):")
     print(territory_summary.to_string(index=False))
 
     territory_summary.to_csv(config.TERRITORY_SUMMARY_CSV, index=False)

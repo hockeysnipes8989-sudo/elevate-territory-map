@@ -185,6 +185,58 @@ def add_matched_install_markers(m, install_matched, fg=None, layer_name="Active 
     return fg
 
 
+def add_nonactive_install_markers(m, install_all, layer_name):
+    """Add point markers for non-active-contract assets with matched coordinates."""
+    non_active = install_all[
+        (~install_all["has_active_contract"]) & install_all["matched"] & install_all["lat"].notna()
+    ].copy()
+    fg = folium.FeatureGroup(name=layer_name, show=True)
+    if non_active.empty:
+        fg.add_to(m)
+        return fg
+
+    acct_agg = (
+        non_active.groupby("Account Name")
+        .agg(
+            lat=("lat", "first"),
+            lon=("lon", "first"),
+            asset_count=("Asset Name", "count"),
+            territory=("Territory", "first"),
+            statuses=(
+                "Contract_Status_Clean",
+                lambda x: "; ".join(
+                    [f"{k}: {v}" for k, v in x.fillna("Unknown").value_counts().to_dict().items()]
+                ),
+            ),
+            products=("Product Family Short Name", lambda x: ", ".join(sorted(x.dropna().unique()))),
+        )
+        .reset_index()
+    )
+
+    for _, row in acct_agg.iterrows():
+        popup_html = (
+            f"<b>{row['Account Name']}</b><br>"
+            f"Territory: {row['territory']}<br>"
+            f"Non-active assets: <b>{row['asset_count']}</b><br>"
+            f"Contract status mix: {row['statuses']}<br>"
+            f"Products: {row['products']}"
+        )
+        folium.CircleMarker(
+            location=[row["lat"], row["lon"]],
+            radius=max(3, min(row["asset_count"] * 1.2, 12)),
+            color="#5f6368",
+            fill=True,
+            fill_color="#9aa0a6",
+            fill_opacity=0.65,
+            weight=1,
+            popup=folium.Popup(popup_html, max_width=330),
+            tooltip=f"{row['Account Name']}: {row['asset_count']} non-active assets",
+        ).add_to(fg)
+
+    fg.add_to(m)
+    return fg
+
+
 def add_service_appointments(m, appts, layer_name):
     """Add service appointment markers (no clustering)."""
     fg = folium.FeatureGroup(name=layer_name, show=True)
@@ -298,11 +350,29 @@ def main():
     appts = pd.read_csv(config.GEOCODED_APPTS_CSV)
     techs = pd.read_csv(config.GEOCODED_TECHS_CSV)
     install_matched = pd.read_csv(config.INSTALL_MATCHED_CSV)
+    if os.path.exists(config.INSTALL_ALL_MATCHED_CSV):
+        install_all_matched = pd.read_csv(config.INSTALL_ALL_MATCHED_CSV)
+    else:
+        install_all_matched = install_matched.copy()
+        install_all_matched["has_active_contract"] = True
     territory_summary = pd.read_csv(config.TERRITORY_SUMMARY_CSV)
+
+    if install_all_matched["has_active_contract"].dtype != bool:
+        install_all_matched["has_active_contract"] = (
+            install_all_matched["has_active_contract"]
+            .astype(str)
+            .str.lower()
+            .isin({"true", "1", "yes"})
+        )
+    non_active_assets_count = int((~install_all_matched["has_active_contract"]).sum())
 
     print(f"  Appointments: {len(appts)} ({appts['lat'].notna().sum()} geocoded)")
     print(f"  Technicians: {len(techs)} ({techs['lat'].notna().sum()} geocoded)")
     print(f"  Install base (active): {len(install_matched)} ({install_matched['matched'].sum()} matched)")
+    print(
+        f"  Install base (non-active): {non_active_assets_count} "
+        f"({int((~install_all_matched['has_active_contract'] & install_all_matched['matched']).sum())} matched)"
+    )
     print(f"  Territories: {len(territory_summary)}")
 
     active_assets_count = int(len(install_matched))
@@ -313,6 +383,7 @@ def main():
     layer_appt_name = f"Service Appointments ({appointments_count:,})"
     layer_tech_name = f"Technician Home Bases ({technicians_count:,})"
     layer_territory_name = f"Territory Boundaries ({territories_count:,})"
+    layer_nonactive_name = f"Non-Active/No Contract Assets ({non_active_assets_count:,} assets)"
     service_type_counts = appts["Service Type"].apply(classify_service_type).value_counts()
 
     # Create base map
@@ -351,15 +422,23 @@ def main():
         layer_name=layer_active_name,
     )
 
-    # Layer 2: Service Appointments (clustered)
+    # Layer 2: Non-active install base assets (matched to coordinates)
+    print("Adding non-active install markers...")
+    add_nonactive_install_markers(
+        m,
+        install_all=install_all_matched,
+        layer_name=layer_nonactive_name,
+    )
+
+    # Layer 3: Service Appointments
     print("Adding service appointments...")
     add_service_appointments(m, appts, layer_name=layer_appt_name)
 
-    # Layer 3: Technician Home Bases
+    # Layer 4: Technician Home Bases
     print("Adding technician markers...")
     add_technician_markers(m, techs, layer_name=layer_tech_name)
 
-    # Layer 4: Territory Boundaries
+    # Layer 5: Territory Boundaries
     print("Adding territory boundaries...")
     add_territory_boundaries(m, config.TERRITORIES_GEOJSON, layer_name=layer_territory_name)
 
