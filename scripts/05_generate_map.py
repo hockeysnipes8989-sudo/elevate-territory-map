@@ -320,6 +320,56 @@ def add_technician_markers(m, techs, layer_name):
     return fg
 
 
+def add_airport_layer(m):
+    """Add major airport hub markers as a toggleable layer."""
+    fg = folium.FeatureGroup(name="Major Airport Hubs (65)", show=False)
+
+    for airport in config.MAJOR_AIRPORTS:
+        popup_html = (
+            f"<b>{airport['code']} — {airport['name']}</b><br>"
+            f"{airport['city']}<br>"
+            f"<span style='color:#666;font-size:11px;'>Major service hub</span>"
+        )
+        folium.Marker(
+            location=[airport["lat"], airport["lon"]],
+            popup=folium.Popup(popup_html, max_width=220),
+            tooltip=f"{airport['code']}: {airport['name']}",
+            icon=folium.Icon(color="darkblue", icon="plane", prefix="fa"),
+        ).add_to(fg)
+
+    fg.add_to(m)
+    return fg
+
+
+def add_hub_radius_circles(m):
+    """Add 150-mile (~2hr drive) radius circles around key dispatch hubs."""
+    RADIUS_METERS = 241_000  # 150 miles
+
+    KEY_HUBS = [
+        "ATL", "ORD", "DFW", "DEN", "LAX", "JFK", "SFO", "SEA",
+        "MIA", "BOS", "PHX", "IAH", "MSP", "CLT", "SLC",
+    ]
+
+    hub_airports = [a for a in config.MAJOR_AIRPORTS if a["code"] in KEY_HUBS]
+
+    fg = folium.FeatureGroup(name="Hub Dispatch Radius (~150mi)", show=False)
+
+    for airport in hub_airports:
+        folium.Circle(
+            location=[airport["lat"], airport["lon"]],
+            radius=RADIUS_METERS,
+            color="#1a6faf",
+            weight=1.5,
+            fill=True,
+            fill_color="#1a6faf",
+            fill_opacity=0.04,
+            tooltip=f"{airport['code']}: ~150mi dispatch radius",
+        ).add_to(fg)
+
+    fg.add_to(m)
+    return fg
+
+
 def add_service_type_legend(m, service_type_counts):
     """Add a legend for service appointment colors."""
     legend_html = """
@@ -441,6 +491,14 @@ def main():
     # Layer 5: Territory Boundaries
     print("Adding territory boundaries...")
     add_territory_boundaries(m, config.TERRITORIES_GEOJSON, layer_name=layer_territory_name)
+
+    # Layer 6: Airport Hubs
+    print("Adding airport hubs...")
+    add_airport_layer(m)
+
+    # Layer 7: Hub Dispatch Radius Circles
+    print("Adding hub dispatch radius circles...")
+    add_hub_radius_circles(m)
 
     # Legends
     add_service_type_legend(m, service_type_counts=service_type_counts)
