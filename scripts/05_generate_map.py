@@ -30,6 +30,21 @@ def classify_service_type(service_type):
         return "Other"
 
 
+def exclude_inactive_technicians(techs):
+    """Remove inactive/former technicians from display/output layers."""
+    filtered = techs.copy()
+    if "status" in filtered.columns:
+        filtered = filtered[filtered["status"].astype(str).str.lower() != "former"]
+    inactive_names = set(getattr(config, "INACTIVE_TECH_NAMES", set()))
+    if inactive_names and "name" in filtered.columns:
+        filtered = filtered[~filtered["name"].isin(inactive_names)]
+    if "comment" in filtered.columns:
+        filtered = filtered[
+            ~filtered["comment"].astype(str).str.contains("no longer with elevate", case=False, na=False)
+        ]
+    return filtered.copy()
+
+
 def get_choropleth_color(value, min_val, max_val, colors):
     """Map a value to a color in the gradient."""
     if max_val == min_val:
@@ -293,7 +308,7 @@ def add_technician_markers(m, techs, layer_name):
     """Add technician home base markers."""
     fg = folium.FeatureGroup(name=layer_name, show=True)
 
-    techs_with_coords = techs.dropna(subset=["lat", "lon"])
+    techs_with_coords = exclude_inactive_technicians(techs).dropna(subset=["lat", "lon"])
 
     for _, row in techs_with_coords.iterrows():
         status = row.get("status", "active")
@@ -301,7 +316,6 @@ def add_technician_markers(m, techs, layer_name):
 
         icon_map = {
             "active": "user",
-            "former": "user-times",
             "special": "star",
         }
         icon_name = icon_map.get(status, "user")
@@ -397,6 +411,8 @@ def add_service_type_legend(m, service_type_counts):
 
     legend_html += """<br><b>Technicians</b><br>"""
     for status, color in config.TECH_COLORS.items():
+        if status == "former":
+            continue
         legend_html += f'<span style="background:{color};width:12px;height:12px;display:inline-block;margin-right:4px;border-radius:50%;border:1px solid #999;"></span>{status.title()}<br>'
     legend_html += "</div>"
     m.get_root().html.add_child(folium.Element(legend_html))
@@ -918,6 +934,11 @@ def main():
     print("Loading processed data...")
     appts = pd.read_csv(config.GEOCODED_APPTS_CSV)
     techs = pd.read_csv(config.GEOCODED_TECHS_CSV)
+    raw_tech_count = len(techs)
+    techs = exclude_inactive_technicians(techs)
+    filtered_out = raw_tech_count - len(techs)
+    if filtered_out:
+        print(f"  Filtered inactive technicians from map layer: {filtered_out}")
     install_matched = pd.read_csv(config.INSTALL_MATCHED_CSV)
     if os.path.exists(config.INSTALL_ALL_MATCHED_CSV):
         install_all_matched = pd.read_csv(config.INSTALL_ALL_MATCHED_CSV)

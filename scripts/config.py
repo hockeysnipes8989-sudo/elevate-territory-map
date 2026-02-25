@@ -71,17 +71,21 @@ TECH_STATUS = {
     "Bladimir Torres": "active",
     "Clarence Bonner": "active",
     "Damion Lyn": "special",
-    "David Bazany": "former",
     "Elier Martin": "special",
     "Eric Olinger": "active",
     "Hector Arias": "active",
     "James Sanchez": "active",
-    "John Aleksa": "former",
     "Josh Brown": "active",
     "Robert Cohen": "active",
     "Scott Fogo": "active",
     "Tameka Gongs": "active",
-    "Trent Osborne": "former",
+}
+
+# Former technicians to exclude from current-state maps/outputs
+INACTIVE_TECH_NAMES = {
+    "David Bazany",
+    "John Aleksa",
+    "Trent Osborne",
 }
 
 # ---------------------------------------------------------------------------
@@ -91,7 +95,6 @@ TECH_STATUS = {
 # Technician marker colors
 TECH_COLORS = {
     "active": "green",
-    "former": "gray",
     "special": "orange",
 }
 

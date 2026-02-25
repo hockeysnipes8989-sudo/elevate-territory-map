@@ -103,6 +103,18 @@ def load_technicians():
     df = df[["Service Resource Name", "Location", "Comment"]].copy()
     df.columns = ["name", "location", "comment"]
     df["name"] = df["name"].str.strip()
+    df["comment"] = df["comment"].fillna("").astype(str).str.strip()
+
+    # Exclude former/inactive technicians from current-state outputs.
+    inactive_name_mask = df["name"].isin(getattr(config, "INACTIVE_TECH_NAMES", set()))
+    inactive_comment_mask = df["comment"].str.contains(
+        "no longer with elevate", case=False, na=False
+    )
+    inactive_mask = inactive_name_mask | inactive_comment_mask
+    inactive_count = int(inactive_mask.sum())
+    if inactive_count:
+        df = df[~inactive_mask].copy()
+        print(f"  Excluded inactive technicians: {inactive_count}")
 
     # Add status
     df["status"] = df["name"].map(config.TECH_STATUS).fillna("active")

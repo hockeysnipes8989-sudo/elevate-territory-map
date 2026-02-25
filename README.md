@@ -8,7 +8,7 @@ Interactive map showing service territories, active contract simulators, service
 
 1. **Active Contract Simulators** — Territory-level choropleth colored by number of active assets (3,087 assets across 19 territories), with point-level markers for matched accounts
 2. **Service Appointments** — 1,480 clustered markers color-coded by service type (PM/Repair/Install)
-3. **Technician Home Bases** — 16 markers (green=active, gray=former, orange=special)
+3. **Technician Home Bases** — 13 markers (green=active, orange=special)
 4. **Territory Boundaries** — 19 semi-transparent polygons computed via convex hull
 5. **Simulation Panel (N=0..4)** — scenario buttons, KPI cards, and star-marked recommended hire locations (requires optimization outputs)
 
@@ -62,4 +62,4 @@ Key optimization outputs:
 
 - Service Appointments (1,480 records with city/state)
 - Install Base (8,528 assets, 3,087 with active contracts)
-- Technician Resources (16 technicians with home bases)
+- Technician Resources (13 active/special technicians with home bases)
