@@ -29,6 +29,33 @@ python scripts/05_generate_map.py        # Generate docs/index.html
 
 Place source Excel files in `data/raw/` before running. Geocode results are cached in `data/geocode_cache.json`.
 
+## Optimization Pipeline (MILP)
+
+Optimization runs from external source-of-truth files and writes outputs to
+`data/processed/optimization/`.
+
+```bash
+python scripts/06_build_optimization_inputs.py
+python scripts/07_build_travel_cost_model.py
+python scripts/08_optimize_locations.py --min-new-hires 0 --max-new-hires 4
+python scripts/09_analyze_scenarios.py
+```
+
+Default external workbook paths are configured in `scripts/config.py`:
+
+- `EXTERNAL_APPOINTMENTS_XLSX` (service appointments with Description field)
+- `EXTERNAL_TECH_ROSTER_XLSX` (technician source-of-truth skills and locations)
+- `EXTERNAL_NAVAN_XLSX` (Navan travel data)
+
+Key optimization outputs:
+
+- `data/processed/optimization/tech_master.csv`
+- `data/processed/optimization/demand_appointments.csv`
+- `data/processed/optimization/candidate_bases.csv`
+- `data/processed/optimization/travel_cost_matrix.csv`
+- `data/processed/optimization/scenario_summary.csv`
+- `data/processed/optimization/recommended_hire_locations.csv`
+
 ## Data Sources
 
 - Service Appointments (1,480 records with city/state)

@@ -8,6 +8,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RAW_DIR = os.path.join(PROJECT_ROOT, "data", "raw")
 PROCESSED_DIR = os.path.join(PROJECT_ROOT, "data", "processed")
 DOCS_DIR = os.path.join(PROJECT_ROOT, "docs")
+OPTIMIZATION_DIR = os.path.join(PROCESSED_DIR, "optimization")
 
 # Source Excel files
 SERVICE_APPTS_DISPATCH = os.path.join(
@@ -18,6 +19,19 @@ SERVICE_APPTS_REPORT = os.path.join(
 )
 INSTALL_BASE = os.path.join(
     RAW_DIR, "Install Base (all patient sim assets) - final.xlsx"
+)
+
+# External source-of-truth workbooks used by optimization scripts
+EXTERNAL_APPOINTMENTS_XLSX = (
+    "/Users/patricklipinski/Desktop/opus 4.6 final excel sheets/"
+    "UIUC service appointments with dipsatch date - final.xlsx"
+)
+EXTERNAL_TECH_ROSTER_XLSX = (
+    "/Users/patricklipinski/Downloads/Tech location and product experience (1).xlsx"
+)
+EXTERNAL_NAVAN_XLSX = (
+    "/Users/patricklipinski/Downloads/"
+    "REPORT_2026_02_25__13_27_12_948ET-CONTAINS-SENSITIVE-DATA-REMOVE-AFTER-USE.xlsx"
 )
 
 # Processed outputs
