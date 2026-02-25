@@ -2,6 +2,7 @@
 import pandas as pd
 import os
 import sys
+import re
 sys.path.insert(0, os.path.dirname(__file__))
 import config
 
@@ -94,16 +95,35 @@ def build_geocode_key(city, state):
 
 
 def load_technicians():
-    """Load technician home bases from Resources sheet."""
+    """Load technician home bases from source-of-truth roster workbook."""
     print("Loading technicians...")
-    df = pd.read_excel(
-        config.SERVICE_APPTS_REPORT,
-        sheet_name=config.APPTS_REPORT_RESOURCES_SHEET,
-    )
-    df = df[["Service Resource Name", "Location", "Comment"]].copy()
-    df.columns = ["name", "location", "comment"]
-    df["name"] = df["name"].str.strip()
+
+    source_path = getattr(config, "EXTERNAL_TECH_ROSTER_XLSX", None)
+    use_source_truth = bool(source_path and os.path.exists(source_path))
+
+    if use_source_truth:
+        raw = pd.read_excel(source_path, sheet_name=0, header=None)
+        headers = raw.iloc[1].tolist()
+        df = raw.iloc[2:].copy()
+        df.columns = headers
+        df = df.dropna(how="all")
+        df = df[["Tech", "Location", "Comments"]].copy()
+        df.columns = ["name", "location", "comment"]
+        print(f"  Source: {source_path}")
+    else:
+        # Backward-compatible fallback to legacy Resources sheet.
+        df = pd.read_excel(
+            config.SERVICE_APPTS_REPORT,
+            sheet_name=config.APPTS_REPORT_RESOURCES_SHEET,
+        )
+        df = df[["Service Resource Name", "Location", "Comment"]].copy()
+        df.columns = ["name", "location", "comment"]
+        print(f"  Source fallback: {config.SERVICE_APPTS_REPORT}::{config.APPTS_REPORT_RESOURCES_SHEET}")
+
+    df["name"] = df["name"].fillna("").astype(str).str.strip()
+    df["location"] = df["location"].fillna("").astype(str).str.strip()
     df["comment"] = df["comment"].fillna("").astype(str).str.strip()
+    df = df[df["name"] != ""].copy()
 
     # Exclude former/inactive technicians from current-state outputs.
     inactive_name_mask = df["name"].isin(getattr(config, "INACTIVE_TECH_NAMES", set()))
@@ -116,21 +136,39 @@ def load_technicians():
         df = df[~inactive_mask].copy()
         print(f"  Excluded inactive technicians: {inactive_count}")
 
-    # Add status
-    df["status"] = df["name"].map(config.TECH_STATUS).fillna("active")
+    # Status for map styling.
+    contractor_mask = df["name"].str.contains("contractor", case=False, na=False)
+    on_demand_mask = df["comment"].str.contains("use him when required", case=False, na=False)
+    df["status"] = "active"
+    df.loc[contractor_mask | on_demand_mask, "status"] = "special"
 
-    # Build geocode key from location
+    # Build geocode key from location with US/Canada detection.
+    canada_abbr = {"AB", "BC", "MB", "NB", "NL", "NS", "NT", "NU", "ON", "PE", "QC", "SK", "YT"}
+    usa_abbr = {
+        "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DC", "DE", "FL", "GA", "HI", "IA", "ID", "IL",
+        "IN", "KS", "KY", "LA", "MA", "MD", "ME", "MI", "MN", "MO", "MS", "MT", "NC", "ND", "NE",
+        "NH", "NJ", "NM", "NV", "NY", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT",
+        "VA", "VT", "WA", "WI", "WV", "WY",
+    }
+
     def tech_geocode_key(loc):
         if pd.isna(loc):
             return None
         loc = str(loc).strip()
-        if "Canada" in loc:
-            return f"{loc}"
+        if not loc:
+            return None
+        if re.search(r"\bCanada\b", loc, flags=re.IGNORECASE):
+            return loc
+        tail = re.split(r"[,\s]+", loc.strip())[-1].upper()
+        if tail in canada_abbr:
+            return f"{loc}, Canada"
+        if tail in usa_abbr:
+            return f"{loc}, USA"
         return f"{loc}, USA"
 
     df["geocode_key"] = df["location"].apply(tech_geocode_key)
     print(f"  Technicians: {len(df)}")
-    return df
+    return df.reset_index(drop=True)
 
 
 def load_install_base():

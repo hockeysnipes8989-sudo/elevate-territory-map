@@ -1,14 +1,17 @@
 name,location,comment,status,geocode_key,lat,lon
-Alex Rondero,"Sarasota, FL",special resource,special,"Sarasota, FL, USA",27.3365805,-82.5308545
-Ben Walker,"Tampa, FL","LearningSpace Installation, Patient Simulator Support",active,"Tampa, FL, USA",27.9449854,-82.4583107
-Bladimir Torres,"Philadelphia, PA",Patient Simulator Support,active,"Philadelphia, PA, USA",39.9527237,-75.1635262
-Clarence Bonner,"Chicago, IL","LearningSpace Installation, Patient Simulator Support",active,"Chicago, IL, USA",41.8755616,-87.6244212
-Damion Lyn,"Sarasota, FL",special resource,special,"Sarasota, FL, USA",27.3365805,-82.5308545
-Elier Martin,"Tampa, FL",special resource,special,"Tampa, FL, USA",27.9449854,-82.4583107
-Eric Olinger,"Phoenix, AZ","LearningSpace Installation, Patient Simulator Support",active,"Phoenix, AZ, USA",33.4484367,-112.074141
-Hector Arias,"Charlotte, NC",Patient Simulator Support,active,"Charlotte, NC, USA",35.2272086,-80.8430827
-James Sanchez,"Tampa, FL",Patient Simulator Support (currently on restricted duty),active,"Tampa, FL, USA",27.9449854,-82.4583107
-Josh Brown,"Ontario, CA",Patient Simulator Support,active,"Ontario, CA, USA",34.065846,-117.64843
-Robert Cohen,"St. Louis, MO",Patient Simulator Support,active,"St. Louis, MO, USA",38.6254063,-90.190009
-Scott Fogo,"Sarasota, FL","LearningSpace Installation, Patient Simulator Support",active,"Sarasota, FL, USA",27.3365805,-82.5308545
-Tameka Gongs,"Baltimore, MD","LearningSpace Installation, Patient Simulator Support",active,"Baltimore, MD, USA",39.2908816,-76.610759
+Hector Arias,Charlotte NC,,active,"Charlotte NC, USA",35.1361263,-80.9680106
+Clarence Bonner,St-Louis MO,,active,"St-Louis MO, USA",38.7013851,-90.446164
+Josh Brown,Ontario CA,,active,"Ontario CA, USA",34.0713207,-117.5929395
+Rob Cohen,St-Louis MO,,active,"St-Louis MO, USA",38.7013851,-90.446164
+Curt Corder,Tampa FL,Only covers Florida,active,"Tampa FL, USA",27.9529744,-82.4508736
+Scott Fogo,Tampa FL,,active,"Tampa FL, USA",27.9529744,-82.4508736
+Hakim Mouazer,Montreal QC,Covers all of Canada,active,"Montreal QC, Canada",45.5112983,-73.5657786
+Eric Olinger,Phoenix AZ,,active,"Phoenix AZ, USA",33.6660986,-111.9738117
+Blad Torres,Philadelphia PA,,active,"Philadelphia PA, USA",39.9116437,-75.235325
+Ben Walker,Tampa FL,,active,"Tampa FL, USA",27.9529744,-82.4508736
+Tameka Gongs,Baltimore MD,"25% travel, rest at customer site",active,"Baltimore MD, USA",39.2755265,-76.589977
+James Sanchez,Tampa FL,On phones temporarely,active,"Tampa FL, USA",27.9529744,-82.4508736
+HTX Contractor Robert,Houston TX,50% contractor travel,special,"Houston TX, USA",29.7813369,-95.5422331
+HTX Contractor Alex,Houston TX,50% contractor travel,special,"Houston TX, USA",29.7813369,-95.5422331
+Damion,Tampa FL,"Clay's team, use him when required",special,"Tampa FL, USA",27.9529744,-82.4508736
+Elier,Tampa FL,"Clay's team, use him when required",special,"Tampa FL, USA",27.9529744,-82.4508736
