@@ -10,6 +10,7 @@ Interactive map showing service territories, active contract simulators, service
 2. **Service Appointments** — 1,480 clustered markers color-coded by service type (PM/Repair/Install)
 3. **Technician Home Bases** — 16 markers (green=active, gray=former, orange=special)
 4. **Territory Boundaries** — 19 semi-transparent polygons computed via convex hull
+5. **Simulation Panel (N=0..4)** — scenario buttons, KPI cards, and star-marked recommended hire locations (requires optimization outputs)
 
 ## Setup
 
@@ -39,6 +40,7 @@ python scripts/06_build_optimization_inputs.py
 python scripts/07_build_travel_cost_model.py
 python scripts/08_optimize_locations.py --min-new-hires 0 --max-new-hires 4
 python scripts/09_analyze_scenarios.py
+python scripts/05_generate_map.py          # Rebuild docs/index.html with simulation panel
 ```
 
 Default external workbook paths are configured in `scripts/config.py`:

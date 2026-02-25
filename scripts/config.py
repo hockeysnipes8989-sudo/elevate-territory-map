@@ -144,6 +144,9 @@ MAP_TILES = "CartoDB positron"
 GEOCODE_USER_AGENT = "elevate_healthcare_uiuc"
 GEOCODE_DELAY = 1.1  # seconds between Nominatim requests
 TERRITORY_BUFFER_DEG = 0.3  # buffer around convex hull in degrees
+ENABLE_SIMULATION_UI = True
+SIM_SCENARIO_MIN = 0
+SIM_SCENARIO_MAX = 4
 
 # Known typo/mis-geocode overrides (applied every run)
 GEOCODE_OVERRIDES = {

@@ -1,4 +1,4 @@
-"""Step 5: Generate the interactive Folium map with 4 toggleable layers."""
+"""Step 5: Generate the interactive Folium map and simulation UI."""
 import json
 import os
 import sys
@@ -7,6 +7,12 @@ import folium
 
 sys.path.insert(0, os.path.dirname(__file__))
 import config
+
+
+SIM_SUMMARY_ENHANCED = "scenario_summary_enhanced.csv"
+SIM_SUMMARY = "scenario_summary.csv"
+SIM_PLACEMENTS = "scenario_placements.csv"
+SIM_CANDIDATES = "candidate_bases.csv"
 
 
 def classify_service_type(service_type):
@@ -396,6 +402,516 @@ def add_service_type_legend(m, service_type_counts):
     m.get_root().html.add_child(folium.Element(legend_html))
 
 
+def load_simulation_data():
+    """Load scenario summary + placements for map simulation controls."""
+    sim_dir = config.OPTIMIZATION_DIR
+    summary_enhanced_path = os.path.join(sim_dir, SIM_SUMMARY_ENHANCED)
+    summary_path = os.path.join(sim_dir, SIM_SUMMARY)
+    placements_path = os.path.join(sim_dir, SIM_PLACEMENTS)
+    candidates_path = os.path.join(sim_dir, SIM_CANDIDATES)
+
+    if not os.path.exists(placements_path):
+        return None
+    if os.path.exists(summary_enhanced_path):
+        summary_df = pd.read_csv(summary_enhanced_path)
+    elif os.path.exists(summary_path):
+        summary_df = pd.read_csv(summary_path)
+    else:
+        return None
+    if not os.path.exists(candidates_path):
+        return None
+
+    placements_df = pd.read_csv(placements_path)
+    candidates_df = pd.read_csv(candidates_path)
+
+    if summary_df.empty or "scenario_hires" not in summary_df.columns:
+        return None
+    if placements_df.empty:
+        placements_df = pd.DataFrame(
+            columns=[
+                "scenario_hires",
+                "candidate_id",
+                "city",
+                "state",
+                "airport_iata",
+                "hires_allocated",
+                "assigned_appointments",
+                "assigned_hours",
+            ]
+        )
+    if "candidate_id" not in candidates_df.columns:
+        return None
+
+    summary_df["scenario_hires"] = pd.to_numeric(summary_df["scenario_hires"], errors="coerce")
+    summary_df = summary_df.dropna(subset=["scenario_hires"]).copy()
+    summary_df["scenario_hires"] = summary_df["scenario_hires"].astype(int)
+
+    # Build baseline deltas if enhanced columns are missing.
+    if "economic_total_with_overhead_usd" not in summary_df.columns:
+        if "modeled_total_cost_usd" in summary_df.columns:
+            summary_df["economic_total_with_overhead_usd"] = pd.to_numeric(
+                summary_df["modeled_total_cost_usd"], errors="coerce"
+            ).fillna(0.0)
+        else:
+            summary_df["economic_total_with_overhead_usd"] = 0.0
+    if "savings_vs_n0_usd" not in summary_df.columns:
+        base = float(
+            summary_df.loc[summary_df["scenario_hires"] == 0, "economic_total_with_overhead_usd"]
+            .head(1)
+            .squeeze()
+        ) if (summary_df["scenario_hires"] == 0).any() else float(
+            summary_df["economic_total_with_overhead_usd"].max()
+        )
+        summary_df["savings_vs_n0_usd"] = base - summary_df["economic_total_with_overhead_usd"]
+    if "savings_vs_n0_pct" not in summary_df.columns:
+        base = float(
+            summary_df.loc[summary_df["scenario_hires"] == 0, "economic_total_with_overhead_usd"]
+            .head(1)
+            .squeeze()
+        ) if (summary_df["scenario_hires"] == 0).any() else float(
+            summary_df["economic_total_with_overhead_usd"].max()
+        )
+        summary_df["savings_vs_n0_pct"] = (
+            (summary_df["savings_vs_n0_usd"] / base) * 100.0 if base > 0 else 0.0
+        )
+    if "marginal_savings_from_prev_usd" not in summary_df.columns:
+        summary_df = summary_df.sort_values("scenario_hires")
+        summary_df["marginal_savings_from_prev_usd"] = (
+            summary_df["economic_total_with_overhead_usd"].shift(1)
+            - summary_df["economic_total_with_overhead_usd"]
+        ).fillna(0.0)
+
+    if "unmet_appointments" not in summary_df.columns:
+        summary_df["unmet_appointments"] = 0.0
+    if "mean_existing_utilization" not in summary_df.columns:
+        summary_df["mean_existing_utilization"] = 0.0
+    if "max_existing_utilization" not in summary_df.columns:
+        summary_df["max_existing_utilization"] = 0.0
+
+    placements_df["scenario_hires"] = pd.to_numeric(
+        placements_df.get("scenario_hires"), errors="coerce"
+    )
+    placements_df = placements_df.dropna(subset=["scenario_hires"]).copy()
+    placements_df["scenario_hires"] = placements_df["scenario_hires"].astype(int)
+
+    # Attach coordinates from candidate pool.
+    placements_df = placements_df.merge(
+        candidates_df[["candidate_id", "lat", "lon"]],
+        on="candidate_id",
+        how="left",
+    )
+    placements_df = placements_df.dropna(subset=["lat", "lon"]).copy()
+
+    # Keep only configured scenario range.
+    min_s = getattr(config, "SIM_SCENARIO_MIN", 0)
+    max_s = getattr(config, "SIM_SCENARIO_MAX", 4)
+    summary_df = summary_df[
+        (summary_df["scenario_hires"] >= min_s) & (summary_df["scenario_hires"] <= max_s)
+    ].copy()
+    placements_df = placements_df[
+        (placements_df["scenario_hires"] >= min_s) & (placements_df["scenario_hires"] <= max_s)
+    ].copy()
+    if summary_df.empty:
+        return None
+
+    payload = {}
+    for _, row in summary_df.sort_values("scenario_hires").iterrows():
+        scenario = int(row["scenario_hires"])
+        subset = (
+            placements_df[placements_df["scenario_hires"] == scenario]
+            .copy()
+            .sort_values(["hires_allocated", "assigned_hours"], ascending=[False, False])
+        )
+        placement_records = []
+        for _, p in subset.iterrows():
+            placement_records.append(
+                {
+                    "candidate_id": p.get("candidate_id"),
+                    "city": p.get("city"),
+                    "state": p.get("state"),
+                    "airport_iata": p.get("airport_iata"),
+                    "hires_allocated": float(p.get("hires_allocated", 0)),
+                    "assigned_appointments": float(p.get("assigned_appointments", 0)),
+                    "assigned_hours": float(p.get("assigned_hours", 0)),
+                    "lat": float(p.get("lat")),
+                    "lon": float(p.get("lon")),
+                }
+            )
+        payload[str(scenario)] = {
+            "scenario_hires": scenario,
+            "kpis": {
+                "economic_total_with_overhead_usd": float(
+                    row.get("economic_total_with_overhead_usd", 0)
+                ),
+                "savings_vs_n0_usd": float(row.get("savings_vs_n0_usd", 0)),
+                "savings_vs_n0_pct": float(row.get("savings_vs_n0_pct", 0)),
+                "marginal_savings_from_prev_usd": float(
+                    row.get("marginal_savings_from_prev_usd", 0)
+                ),
+                "unmet_appointments": float(row.get("unmet_appointments", 0)),
+                "mean_existing_utilization": float(row.get("mean_existing_utilization", 0)),
+                "max_existing_utilization": float(row.get("max_existing_utilization", 0)),
+            },
+            "placements": placement_records,
+        }
+    return payload
+
+
+def add_simulation_layers(m, simulation_payload):
+    """Add one marker layer per simulation scenario and return layer JS names."""
+    if not simulation_payload:
+        return {}
+
+    scenario_layers = {}
+    scenario_colors = ["#4a4e69", "#2a9d8f", "#f4a261", "#e76f51", "#c1121f"]
+    ordered_keys = sorted(simulation_payload.keys(), key=lambda x: int(x))
+    default_key = "0" if "0" in simulation_payload else ordered_keys[0]
+
+    for key in ordered_keys:
+        scenario = int(key)
+        color = scenario_colors[min(scenario, len(scenario_colors) - 1)]
+        fg = folium.FeatureGroup(
+            name=f"Simulation Scenario N={scenario}",
+            show=(key == default_key),
+            control=False,
+        )
+
+        placements = simulation_payload[key]["placements"]
+        for p in placements:
+            hires = max(float(p["hires_allocated"]), 1.0)
+            diameter = int(max(24, min(44, 20 + 6 * hires)))
+            font_size = int(max(13, min(24, 11 + 3 * hires)))
+            marker_html = (
+                "<div style=\""
+                f"width:{diameter}px;height:{diameter}px;border-radius:50%;"
+                f"background:{color};border:2px solid #fff;color:#fff;"
+                f"display:flex;align-items:center;justify-content:center;"
+                f"font-size:{font_size}px;font-weight:700;"
+                "box-shadow:0 3px 10px rgba(0,0,0,0.35);"
+                "\">&#9733;</div>"
+            )
+            popup_html = (
+                f"<b>Scenario N={scenario}</b><br>"
+                f"<b>{p['city']}, {p['state']}</b> ({p['airport_iata']})<br>"
+                f"Hires allocated: <b>{int(round(p['hires_allocated']))}</b><br>"
+                f"Assigned appointments: {p['assigned_appointments']:.1f}<br>"
+                f"Assigned hours: {p['assigned_hours']:.1f}"
+            )
+            folium.Marker(
+                location=[p["lat"], p["lon"]],
+                icon=folium.DivIcon(html=marker_html),
+                tooltip=f"Scenario N={scenario}: {p['city']}, {p['state']}",
+                popup=folium.Popup(popup_html, max_width=280),
+            ).add_to(fg)
+
+        fg.add_to(m)
+        scenario_layers[key] = fg.get_name()
+    return scenario_layers
+
+
+def add_simulation_panel(m, simulation_payload, scenario_layer_names):
+    """Inject scenario controls and KPI cards into the map page."""
+    if not simulation_payload or not scenario_layer_names:
+        return
+
+    map_var = m.get_name()
+    ordered_keys = sorted(simulation_payload.keys(), key=lambda x: int(x))
+    default_key = "0" if "0" in simulation_payload else ordered_keys[0]
+
+    # Build JS object with layer variable names and resolve them at runtime.
+    layer_entries = []
+    for key in ordered_keys:
+        layer_entries.append(f'"{key}": "{scenario_layer_names[key]}"')
+    layer_js = "{\n" + ",\n".join(layer_entries) + "\n}"
+    payload_js = json.dumps(simulation_payload)
+
+    panel_html = """
+    <style>
+      #sim-panel {
+        position: fixed;
+        top: 72px;
+        left: 12px;
+        z-index: 1200;
+        width: 320px;
+        max-height: calc(100vh - 110px);
+        overflow-y: auto;
+        background: rgba(255, 255, 255, 0.96);
+        border: 1px solid #cfcfcf;
+        border-radius: 10px;
+        box-shadow: 0 3px 12px rgba(0,0,0,0.22);
+        padding: 12px;
+        font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+      }
+      #sim-panel h3 {
+        margin: 0 0 8px 0;
+        font-size: 14px;
+      }
+      #sim-subtitle {
+        margin: 0 0 10px 0;
+        color: #4d4d4d;
+        font-size: 11px;
+      }
+      #sim-buttons {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        margin-bottom: 10px;
+      }
+      .sim-btn {
+        border: 1px solid #9aa0a6;
+        background: #fff;
+        color: #222;
+        padding: 4px 8px;
+        border-radius: 14px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .sim-btn.active {
+        background: #163b59;
+        border-color: #163b59;
+        color: #fff;
+      }
+      #sim-kpis {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 6px;
+        margin-bottom: 10px;
+      }
+      .sim-kpi {
+        background: #f7f8fa;
+        border: 1px solid #e2e5e9;
+        border-radius: 8px;
+        padding: 6px 8px;
+      }
+      .sim-kpi .label {
+        font-size: 10px;
+        color: #5f6368;
+      }
+      .sim-kpi .value {
+        margin-top: 3px;
+        font-weight: 700;
+        font-size: 12px;
+      }
+      #sim-recs-title {
+        margin: 0 0 6px 0;
+        font-size: 12px;
+        font-weight: 700;
+      }
+      #sim-recs {
+        border: 1px solid #e2e5e9;
+        border-radius: 8px;
+        background: #fbfbfc;
+        padding: 6px 8px;
+        font-size: 11px;
+      }
+      .sim-rec-row {
+        margin: 0 0 5px 0;
+        padding-bottom: 5px;
+        border-bottom: 1px dashed #e1e4e8;
+      }
+      .sim-rec-row:last-child {
+        margin-bottom: 0;
+        padding-bottom: 0;
+        border-bottom: none;
+      }
+      #sim-footnote {
+        margin-top: 8px;
+        font-size: 10px;
+        color: #666;
+      }
+      #sim-panel-toggle {
+        display: none;
+        position: fixed;
+        top: 72px;
+        left: 12px;
+        z-index: 1250;
+        border: 1px solid #9aa0a6;
+        border-radius: 14px;
+        background: #fff;
+        padding: 4px 10px;
+        font-size: 12px;
+      }
+      @media (max-width: 900px) {
+        #sim-panel { display: none; width: 280px; }
+        #sim-panel.mobile-open { display: block; }
+        #sim-panel-toggle { display: block; }
+      }
+    </style>
+    <button id="sim-panel-toggle" title="Show/hide simulation panel">Simulation</button>
+    <div id="sim-panel">
+      <h3>Simulation Scenarios</h3>
+      <p id="sim-subtitle">Cost-first optimization with fixed current tech bases.</p>
+      <div id="sim-buttons"></div>
+      <div id="sim-kpis">
+        <div class="sim-kpi"><div class="label">Total Cost</div><div class="value" id="kpi-total">-</div></div>
+        <div class="sim-kpi"><div class="label">Savings vs N=0</div><div class="value" id="kpi-savings">-</div></div>
+        <div class="sim-kpi"><div class="label">Marginal Savings</div><div class="value" id="kpi-marginal">-</div></div>
+        <div class="sim-kpi"><div class="label">Unmet Appointments</div><div class="value" id="kpi-unmet">-</div></div>
+        <div class="sim-kpi"><div class="label">Mean Utilization</div><div class="value" id="kpi-mean-util">-</div></div>
+        <div class="sim-kpi"><div class="label">Max Utilization</div><div class="value" id="kpi-max-util">-</div></div>
+      </div>
+      <div id="sim-recs-title">Recommended Bases</div>
+      <div id="sim-recs">No recommendations.</div>
+      <div id="sim-footnote">Shows N=0..4 scenario outputs from optimization pipeline.</div>
+    </div>
+    """
+
+    script_js = f"""
+    (function() {{
+      const mapVarName = "{map_var}";
+      const scenarioData = {payload_js};
+      const scenarioLayerNames = {layer_js};
+      const orderedScenarios = {json.dumps(ordered_keys)};
+      const defaultScenario = "{default_key}";
+      let mapRef = null;
+      let scenarioLayers = {{}};
+
+      function money(v) {{
+        const n = Number(v || 0);
+        return "$" + n.toLocaleString(undefined, {{maximumFractionDigits: 0}});
+      }}
+      function pct(v) {{
+        const n = Number(v || 0);
+        return n.toFixed(2) + "%";
+      }}
+
+      function renderButtons() {{
+        const container = document.getElementById("sim-buttons");
+        container.innerHTML = "";
+        orderedScenarios.forEach((s) => {{
+          const b = document.createElement("button");
+          b.className = "sim-btn";
+          b.textContent = "N=" + s;
+          b.setAttribute("data-scenario", s);
+          b.onclick = () => showScenario(s);
+          container.appendChild(b);
+        }});
+      }}
+
+      function setActiveButton(scenario) {{
+        document.querySelectorAll(".sim-btn").forEach((b) => {{
+          b.classList.toggle("active", b.getAttribute("data-scenario") === scenario);
+        }});
+      }}
+
+      function renderKpis(scenario) {{
+        const item = scenarioData[scenario];
+        if (!item) return;
+        const k = item.kpis || {{}};
+        document.getElementById("kpi-total").textContent = money(k.economic_total_with_overhead_usd);
+        document.getElementById("kpi-savings").textContent = money(k.savings_vs_n0_usd) + " (" + pct(k.savings_vs_n0_pct) + ")";
+        document.getElementById("kpi-marginal").textContent = money(k.marginal_savings_from_prev_usd);
+        document.getElementById("kpi-unmet").textContent = Number(k.unmet_appointments || 0).toFixed(1);
+        document.getElementById("kpi-mean-util").textContent = Number(k.mean_existing_utilization || 0).toFixed(3);
+        document.getElementById("kpi-max-util").textContent = Number(k.max_existing_utilization || 0).toFixed(3);
+      }}
+
+      function renderRecommendations(scenario) {{
+        const recWrap = document.getElementById("sim-recs");
+        const item = scenarioData[scenario];
+        const recs = item ? (item.placements || []) : [];
+        if (!recs.length) {{
+          recWrap.innerHTML = "No new-hire placements in this scenario.";
+          return;
+        }}
+        recWrap.innerHTML = recs.map((r) => {{
+          return `
+            <div class="sim-rec-row">
+              <div><b>${{r.city}}, ${{r.state}}</b> (${{r.airport_iata}})</div>
+              <div>Hires: <b>${{Math.round(r.hires_allocated || 0)}}</b></div>
+              <div>Hours: ${{Number(r.assigned_hours || 0).toFixed(1)}}</div>
+              <div>Appointments: ${{Number(r.assigned_appointments || 0).toFixed(1)}}</div>
+            </div>`;
+        }}).join("");
+      }}
+
+      function showScenario(scenario) {{
+        if (!mapRef) return;
+        orderedScenarios.forEach((s) => {{
+          const layer = scenarioLayers[s];
+          if (!layer) return;
+          if (mapRef.hasLayer(layer)) {{
+            mapRef.removeLayer(layer);
+          }}
+        }});
+        const target = scenarioLayers[scenario];
+        if (target && !mapRef.hasLayer(target)) {{
+          mapRef.addLayer(target);
+        }}
+        setActiveButton(scenario);
+        renderKpis(scenario);
+        renderRecommendations(scenario);
+      }}
+
+      function resolveLayers() {{
+        mapRef = window[mapVarName] || null;
+        if (!mapRef) {{
+          return orderedScenarios.length + 1;
+        }}
+        const resolved = {{}};
+        let missing = 0;
+        orderedScenarios.forEach((s) => {{
+          const layerVar = scenarioLayerNames[s];
+          const layerObj = layerVar ? window[layerVar] : null;
+          if (layerObj) {{
+            resolved[s] = layerObj;
+          }} else {{
+            missing += 1;
+          }}
+        }});
+        scenarioLayers = resolved;
+        return missing;
+      }}
+
+      function wireMobileToggle() {{
+        const btn = document.getElementById("sim-panel-toggle");
+        const panel = document.getElementById("sim-panel");
+        if (!btn || !panel) return;
+        btn.addEventListener("click", () => {{
+          panel.classList.toggle("mobile-open");
+        }});
+      }}
+
+      function initWhenReady(remainingAttempts) {{
+        const missing = resolveLayers();
+        if (missing > 0 && remainingAttempts > 0) {{
+          window.setTimeout(() => initWhenReady(remainingAttempts - 1), 50);
+          return;
+        }}
+        if (missing > 0) {{
+          const recWrap = document.getElementById("sim-recs");
+          if (recWrap) {{
+            recWrap.innerHTML = "Simulation layers unavailable in this map build.";
+          }}
+          return;
+        }}
+        renderButtons();
+        wireMobileToggle();
+        showScenario(defaultScenario);
+      }}
+
+      initWhenReady(80);
+    }})();
+    """
+
+    m.get_root().html.add_child(folium.Element(panel_html))
+    m.get_root().script.add_child(folium.Element(script_js))
+
+
+def add_simulation_unavailable_notice(m):
+    """Show small notice when simulation outputs are unavailable."""
+    notice_html = """
+    <div style="position: fixed; top: 72px; left: 12px; z-index: 1200;
+         background: rgba(255,255,255,0.95); border: 1px solid #d0d0d0;
+         border-radius: 8px; padding: 8px 10px; font-size: 11px; color: #444;
+         box-shadow: 0 2px 8px rgba(0,0,0,0.2);">
+      Simulation panel unavailable.<br>
+      Run scripts 06-09 to generate optimization outputs.
+    </div>
+    """
+    m.get_root().html.add_child(folium.Element(notice_html))
+
+
 def main():
     os.makedirs(config.DOCS_DIR, exist_ok=True)
 
@@ -505,6 +1021,18 @@ def main():
 
     # Legends
     add_service_type_legend(m, service_type_counts=service_type_counts)
+
+    # Simulation scenario UI/layers
+    if getattr(config, "ENABLE_SIMULATION_UI", False):
+        print("Adding simulation scenario panel...")
+        simulation_payload = load_simulation_data()
+        if simulation_payload:
+            scenario_layer_names = add_simulation_layers(m, simulation_payload)
+            add_simulation_panel(m, simulation_payload, scenario_layer_names)
+            print(f"  Loaded scenarios: {', '.join(sorted(simulation_payload.keys(), key=int))}")
+        else:
+            add_simulation_unavailable_notice(m)
+            print("  Simulation outputs not found; panel disabled.")
 
     # Layer control
     folium.LayerControl(collapsed=False).add_to(m)

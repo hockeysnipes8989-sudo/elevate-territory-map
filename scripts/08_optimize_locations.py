@@ -166,6 +166,7 @@ def solve_scenario(
     z_idx: dict[tuple[int, int], int] = {}
     y_idx: dict[int, int] = {}
     u_idx: dict[int, int] = {}
+    candidate_indices = list(candidates.index) if hire_count > 0 else []
 
     # Existing tech assignment vars: appointments assigned to node.
     for ti, trow in tech.iterrows():
@@ -177,7 +178,7 @@ def solve_scenario(
             var_names.append(f"x__{trow['tech_id']}__{nrow['node_id']}")
             lb.append(0.0)
             ub.append(float(nrow["appointment_count"]))
-            integrality.append(0)
+            integrality.append(1)
 
             base_cost = get_cost(
                 str(trow["base_airport_iata"]),
@@ -200,14 +201,15 @@ def solve_scenario(
             )
 
     # New-hire assignment vars.
-    for ci, crow in candidates.iterrows():
+    for ci in candidate_indices:
+        crow = candidates.loc[ci]
         for ni, nrow in nodes.iterrows():
             idx = len(var_names)
             z_idx[(ci, ni)] = idx
             var_names.append(f"z__{crow['candidate_id']}__{nrow['node_id']}")
             lb.append(0.0)
             ub.append(float(nrow["appointment_count"]))
-            integrality.append(0)
+            integrality.append(1)
 
             base_cost = get_cost(
                 str(crow["airport_iata"]),
@@ -230,7 +232,8 @@ def solve_scenario(
             )
 
     # Candidate hire-count integer vars.
-    for ci, crow in candidates.iterrows():
+    for ci in candidate_indices:
+        crow = candidates.loc[ci]
         idx = len(var_names)
         y_idx[ci] = idx
         var_names.append(f"y__{crow['candidate_id']}")
@@ -247,7 +250,7 @@ def solve_scenario(
         var_names.append(f"u__{nrow['node_id']}")
         lb.append(0.0)
         ub.append(float(nrow["appointment_count"]))
-        integrality.append(0)
+        integrality.append(1)
         obj.append(float(unmet_penalty))
         meta.append({"var_type": "u", "node_idx": ni})
 
@@ -268,7 +271,7 @@ def solve_scenario(
                 rows.append(r)
                 cols.append(idx)
                 data.append(1.0)
-        for ci in candidates.index:
+        for ci in candidate_indices:
             idx = z_idx[(ci, ni)]
             rows.append(r)
             cols.append(idx)
@@ -296,7 +299,7 @@ def solve_scenario(
         r += 1
 
     # Candidate hire capacity constraints.
-    for ci, _ in candidates.iterrows():
+    for ci in candidate_indices:
         for ni, nrow in nodes.iterrows():
             idx = z_idx[(ci, ni)]
             rows.append(r)
@@ -310,13 +313,14 @@ def solve_scenario(
         r += 1
 
     # Sum of hires equals scenario count.
-    for ci, _ in candidates.iterrows():
-        rows.append(r)
-        cols.append(y_idx[ci])
-        data.append(1.0)
-    lower.append(float(hire_count))
-    upper.append(float(hire_count))
-    r += 1
+    if candidate_indices:
+        for ci in candidate_indices:
+            rows.append(r)
+            cols.append(y_idx[ci])
+            data.append(1.0)
+        lower.append(float(hire_count))
+        upper.append(float(hire_count))
+        r += 1
 
     A = sp.coo_matrix((data, (rows, cols)), shape=(r, n_vars))
     constraints = LinearConstraint(A, np.array(lower), np.array(upper))
@@ -327,11 +331,16 @@ def solve_scenario(
         constraints=constraints,
         integrality=np.array(integrality, dtype=int),
         bounds=bounds,
-        options={"time_limit": time_limit_sec},
+        options={"time_limit": time_limit_sec, "mip_rel_gap": 0.0},
     )
     if result.x is None:
         raise RuntimeError(
             f"MILP failed for N={hire_count}. status={result.status} message={result.message}"
+        )
+    if int(result.status) not in (0, 1):
+        raise RuntimeError(
+            f"MILP did not return a usable solution for N={hire_count}. "
+            f"status={result.status} message={result.message}"
         )
 
     solution = np.array(result.x)
@@ -477,7 +486,10 @@ def solve_scenario(
     summary = {
         "scenario_hires": int(hire_count),
         "solver_status": int(result.status),
+        "solver_proven_optimal": int(result.status) == 0,
         "solver_message": str(result.message),
+        "solver_mip_gap": float(getattr(result, "mip_gap", np.nan)),
+        "solver_mip_node_count": int(getattr(result, "mip_node_count", 0) or 0),
         "objective_value": float(result.fun),
         "total_appointments": float(nodes["appointment_count"].sum()),
         "served_appointments": float(nodes["appointment_count"].sum() - unmet_appointments),
@@ -574,6 +586,11 @@ def main() -> None:
             time_limit_sec=args.time_limit_sec,
         )
         summary = result["summary"]
+        if not summary["solver_proven_optimal"]:
+            print(
+                f"  Warning: N={hire_count} ended without proven optimality "
+                f"(status={summary['solver_status']}, mip_gap={summary['solver_mip_gap']})."
+            )
         summary["baseline_canceled_voided_usd"] = float(
             baseline.get("canceled_voided_spend_usd_report", 0.0)
         )

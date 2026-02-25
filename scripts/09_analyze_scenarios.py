@@ -63,8 +63,19 @@ def main() -> None:
     ) - summary["economic_total_with_overhead_usd"]
     summary["marginal_savings_from_prev_usd"] = summary["marginal_savings_from_prev_usd"].fillna(0.0)
 
-    best_idx = summary["economic_total_with_overhead_usd"].idxmin()
-    best_row = summary.loc[best_idx]
+    if "solver_proven_optimal" in summary.columns:
+        proven = summary[summary["solver_proven_optimal"].astype(bool)].copy()
+    else:
+        proven = pd.DataFrame()
+
+    if not proven.empty:
+        selection_mode = "proven_optimal_only"
+        best_idx = proven["economic_total_with_overhead_usd"].idxmin()
+        best_row = proven.loc[best_idx]
+    else:
+        selection_mode = "all_scenarios_no_proven_optimal"
+        best_idx = summary["economic_total_with_overhead_usd"].idxmin()
+        best_row = summary.loc[best_idx]
     best_hires = int(best_row["scenario_hires"])
 
     best_placements = placements[placements["scenario_hires"] == best_hires].copy()
@@ -102,6 +113,7 @@ def main() -> None:
 
     report = {
         "best_scenario_hires": best_hires,
+        "selection_mode": selection_mode,
         "best_total_cost_with_overhead_usd": float(best_row["economic_total_with_overhead_usd"]),
         "baseline_n0_cost_with_overhead_usd": base_cost,
         "best_savings_vs_n0_usd": float(base_cost - best_row["economic_total_with_overhead_usd"]),
@@ -127,6 +139,7 @@ def main() -> None:
     lines = [
         "# Optimization Scenario Analysis",
         "",
+        f"- Selection mode: **{selection_mode}**",
         f"- Best scenario: **{best_hires}** new hires",
         f"- Baseline (N=0) cost with overhead: **${base_cost:,.2f}**",
         f"- Best scenario cost with overhead: **${best_row['economic_total_with_overhead_usd']:,.2f}**",
