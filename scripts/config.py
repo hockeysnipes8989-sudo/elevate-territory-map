@@ -156,6 +156,40 @@ MAP_TILES = "CartoDB positron"
 GEOCODE_USER_AGENT = "elevate_healthcare_uiuc"
 GEOCODE_DELAY = 1.1  # seconds between Nominatim requests
 TERRITORY_BUFFER_DEG = 0.3  # buffer around convex hull in degrees
+
+# ---------------------------------------------------------------------------
+# Per-tech territory visualization (scenario-based assignment coloring)
+# ---------------------------------------------------------------------------
+# 20 distinct hex colors for per-tech territory coloring on CartoDB positron.
+TECH_TERRITORY_PALETTE = [
+    "#e6194b",  # red
+    "#3cb44b",  # green
+    "#4363d8",  # blue
+    "#f58231",  # orange
+    "#911eb4",  # purple
+    "#42d4f4",  # cyan
+    "#f032e6",  # magenta
+    "#bfef45",  # lime
+    "#fabed4",  # pink
+    "#469990",  # teal
+    "#dcbeff",  # lavender
+    "#9A6324",  # brown
+    "#ffe119",  # yellow
+    "#000075",  # navy
+    "#aaffc3",  # mint
+    "#808000",  # olive
+    "#ffd8b1",  # apricot
+    "#e6beff",  # lt purple
+    "#aa6e28",  # dk gold
+    "#800000",  # maroon
+]
+TERRITORY_HULL_MIN_POINTS = 3       # min points to attempt hull
+TERRITORY_DBSCAN_EPS_DEG = 8.0      # DBSCAN epsilon in degrees (~550 mi)
+TERRITORY_DBSCAN_MIN_SAMPLES = 2    # DBSCAN min cluster size
+TERRITORY_HULL_FILL_OPACITY = 0.08  # fill opacity for hull polygons
+TERRITORY_HULL_WEIGHT = 2           # border line weight for hulls
+TERRITORY_DOT_RADIUS = 4            # CircleMarker radius for assignment dots
+TERRITORY_DOT_OPACITY = 0.85        # CircleMarker fill opacity
 ENABLE_SIMULATION_UI = True
 SIM_SCENARIO_MIN = 0
 SIM_SCENARIO_MAX = 4

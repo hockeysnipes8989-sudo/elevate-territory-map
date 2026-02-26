@@ -2,8 +2,10 @@
 import json
 import os
 import sys
+import numpy as np
 import pandas as pd
 import folium
+from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(__file__))
 import config
@@ -276,9 +278,9 @@ def add_nonactive_install_markers(m, install_all, layer_name):
     return fg
 
 
-def add_service_appointments(m, appts, layer_name):
+def add_service_appointments(m, appts, layer_name, show=True):
     """Add service appointment markers (no clustering)."""
-    fg = folium.FeatureGroup(name=layer_name, show=True)
+    fg = folium.FeatureGroup(name=layer_name, show=show)
 
     appts_with_coords = appts.dropna(subset=["lat", "lon"])
 
@@ -648,6 +650,554 @@ def load_simulation_data():
     return payload
 
 
+# ---------------------------------------------------------------------------
+# Territory visualization: per-tech assignment dots + concave hulls
+# ---------------------------------------------------------------------------
+
+
+def load_territory_assignment_data():
+    """Load assignment CSVs and demand appointments for territory visualization."""
+    sim_dir = config.OPTIMIZATION_DIR
+    files = {
+        "existing": os.path.join(sim_dir, "scenario_assignments_existing.csv"),
+        "newhires": os.path.join(sim_dir, "scenario_assignments_newhires.csv"),
+        "demand_appts": os.path.join(sim_dir, "demand_appointments.csv"),
+        "tech_master": os.path.join(sim_dir, "tech_master.csv"),
+        "candidates": os.path.join(sim_dir, "candidate_bases.csv"),
+        "utilization": os.path.join(sim_dir, "scenario_tech_utilization.csv"),
+    }
+
+    # Critical files: existing assignments + demand appointments + tech master
+    for key in ("existing", "demand_appts", "tech_master"):
+        if not os.path.exists(files[key]):
+            print(f"  Territory viz: missing {os.path.basename(files[key])}, skipping.")
+            return None
+
+    data = {}
+    data["existing"] = pd.read_csv(files["existing"])
+    data["newhires"] = (
+        pd.read_csv(files["newhires"]) if os.path.exists(files["newhires"]) else pd.DataFrame()
+    )
+    data["demand_appts"] = pd.read_csv(files["demand_appts"])
+    data["tech_master"] = pd.read_csv(files["tech_master"])
+    data["candidates"] = (
+        pd.read_csv(files["candidates"]) if os.path.exists(files["candidates"]) else pd.DataFrame()
+    )
+    data["utilization"] = (
+        pd.read_csv(files["utilization"]) if os.path.exists(files["utilization"]) else pd.DataFrame()
+    )
+
+    # Determine available scenarios (intersection of assignment data with configured range)
+    min_s = getattr(config, "SIM_SCENARIO_MIN", 0)
+    max_s = getattr(config, "SIM_SCENARIO_MAX", 4)
+    existing_scenarios = set(
+        pd.to_numeric(data["existing"]["scenario_hires"], errors="coerce").dropna().astype(int)
+    )
+    if not data["newhires"].empty and "scenario_hires" in data["newhires"].columns:
+        newhire_scenarios = set(
+            pd.to_numeric(data["newhires"]["scenario_hires"], errors="coerce").dropna().astype(int)
+        )
+        existing_scenarios = existing_scenarios | newhire_scenarios
+    data["available_scenarios"] = sorted(
+        s for s in existing_scenarios if min_s <= s <= max_s
+    )
+
+    if not data["available_scenarios"]:
+        print("  Territory viz: no scenarios in configured range, skipping.")
+        return None
+
+    print(f"  Territory viz: loaded assignment data for scenarios {data['available_scenarios']}")
+    return data
+
+
+def resolve_appointment_assignments(territory_data):
+    """Resolve node-level assignments down to individual appointments.
+
+    Returns {scenario_int: {appointment_id_str: assignee_id_str}}.
+    """
+    existing_df = territory_data["existing"]
+    newhires_df = territory_data["newhires"]
+    demand_appts = territory_data["demand_appts"]
+    tech_master = territory_data["tech_master"]
+    candidates = territory_data["candidates"]
+    scenarios = territory_data["available_scenarios"]
+
+    # Build assignee base coordinate lookup
+    base_coords = {}
+    for _, t in tech_master.iterrows():
+        tid = str(t["tech_id"])
+        lat = t.get("base_lat")
+        lon = t.get("base_lon")
+        if pd.notna(lat) and pd.notna(lon):
+            base_coords[tid] = (float(lat), float(lon))
+    if not candidates.empty:
+        for _, c in candidates.iterrows():
+            cid = str(c["candidate_id"])
+            lat = c.get("lat")
+            lon = c.get("lon")
+            if pd.notna(lat) and pd.notna(lon):
+                base_coords[cid] = (float(lat), float(lon))
+
+    # Build demand node key for each individual appointment
+    demand_appts = demand_appts.copy()
+    demand_appts["node_key"] = (
+        demand_appts["state_norm"].astype(str) + "__" + demand_appts["skill_class"].astype(str)
+    )
+
+    # Group appointments by node key
+    node_appointments = defaultdict(list)
+    for _, row in demand_appts.iterrows():
+        appt_id = str(row.get("appointment_id", row.get("Appointment Number", "")))
+        lat = row.get("lat")
+        lon = row.get("lon")
+        if pd.isna(lat) or pd.isna(lon):
+            continue
+        node_appointments[row["node_key"]].append({
+            "id": appt_id,
+            "lat": float(lat),
+            "lon": float(lon),
+        })
+
+    result = {}
+    for scenario in scenarios:
+        assignment_map = {}
+
+        # Gather all assignee quotas per node for this scenario
+        node_assignees = defaultdict(list)  # node_key -> [(assignee_id, quota)]
+
+        # Existing tech assignments
+        sc_existing = existing_df[
+            pd.to_numeric(existing_df["scenario_hires"], errors="coerce") == scenario
+        ]
+        for _, row in sc_existing.iterrows():
+            node_key = str(row["node_id"])
+            assignee_id = str(row["tech_id"])
+            quota = float(row.get("assigned_appointments", 0))
+            if quota > 0:
+                node_assignees[node_key].append((assignee_id, quota))
+
+        # New hire assignments
+        if not newhires_df.empty and "scenario_hires" in newhires_df.columns:
+            sc_newhires = newhires_df[
+                pd.to_numeric(newhires_df["scenario_hires"], errors="coerce") == scenario
+            ]
+            for _, row in sc_newhires.iterrows():
+                node_key = str(row["node_id"])
+                assignee_id = str(row["candidate_id"])
+                quota = float(row.get("assigned_appointments", 0))
+                if quota > 0:
+                    node_assignees[node_key].append((assignee_id, quota))
+
+        # For each node, assign individual appointments to assignees via nearest-neighbor
+        for node_key, assignees in node_assignees.items():
+            appts_list = node_appointments.get(node_key, [])
+            if not appts_list:
+                continue
+
+            # Round fractional quotas to integers
+            raw_quotas = [(aid, q) for aid, q in assignees]
+            rounded = [(aid, int(round(q))) for aid, q in raw_quotas]
+
+            # Adjust if rounding mismatch
+            total_rounded = sum(q for _, q in rounded)
+            total_appts = len(appts_list)
+            if total_rounded != total_appts and rounded:
+                # Adjust the largest quota
+                diff = total_appts - total_rounded
+                idx_max = max(range(len(rounded)), key=lambda i: rounded[i][1])
+                aid, q = rounded[idx_max]
+                rounded[idx_max] = (aid, max(0, q + diff))
+
+            # Build remaining quota dict
+            remaining = {}
+            for aid, q in rounded:
+                remaining[aid] = remaining.get(aid, 0) + q
+
+            # Nearest-neighbor greedy assignment
+            # Compute distances from each appointment to each assignee base
+            assignee_ids = [aid for aid in remaining if remaining[aid] > 0 and aid in base_coords]
+            if not assignee_ids:
+                continue
+
+            for appt in sorted(appts_list, key=lambda a: a["id"]):
+                if not assignee_ids:
+                    break
+                best_aid = None
+                best_dist = float("inf")
+                for aid in assignee_ids:
+                    if remaining.get(aid, 0) <= 0:
+                        continue
+                    bcoord = base_coords[aid]
+                    dist = (appt["lat"] - bcoord[0]) ** 2 + (appt["lon"] - bcoord[1]) ** 2
+                    if dist < best_dist or (dist == best_dist and (best_aid is None or aid < best_aid)):
+                        best_dist = dist
+                        best_aid = aid
+                if best_aid is not None:
+                    assignment_map[appt["id"]] = best_aid
+                    remaining[best_aid] -= 1
+                    if remaining[best_aid] <= 0:
+                        assignee_ids = [a for a in assignee_ids if remaining.get(a, 0) > 0]
+
+        result[scenario] = assignment_map
+
+    return result
+
+
+def build_tech_color_map(territory_data):
+    """Assign a unique color from TECH_TERRITORY_PALETTE to each assignee."""
+    tech_master = territory_data["tech_master"]
+    newhires_df = territory_data["newhires"]
+    palette = config.TECH_TERRITORY_PALETTE
+
+    # Existing techs with availability > 0, sorted alphabetically
+    active_techs = tech_master[
+        pd.to_numeric(tech_master["availability_fte"], errors="coerce").fillna(0) > 0
+    ].copy()
+    sorted_tech_ids = sorted(active_techs["tech_id"].astype(str).tolist())
+
+    # New hire candidate IDs from assignments
+    candidate_ids = set()
+    if not newhires_df.empty and "candidate_id" in newhires_df.columns:
+        candidate_ids = set(newhires_df["candidate_id"].astype(str).unique())
+    sorted_candidate_ids = sorted(candidate_ids)
+
+    color_map = {}
+    idx = 0
+    for tid in sorted_tech_ids:
+        color_map[tid] = palette[idx % len(palette)]
+        idx += 1
+    for cid in sorted_candidate_ids:
+        if cid not in color_map:
+            color_map[cid] = palette[idx % len(palette)]
+            idx += 1
+
+    return color_map
+
+
+def compute_alpha_shape(points, alpha):
+    """Compute the alpha shape (concave hull) of a set of 2D points.
+
+    Returns list of [lat, lon] forming the boundary polygon, or None.
+    """
+    from scipy.spatial import Delaunay, ConvexHull
+
+    points = np.array(points)
+    if len(points) < 3:
+        return None
+
+    # Check for degenerate geometry (collinear points)
+    centered = points - points.mean(axis=0)
+    if np.linalg.matrix_rank(centered, tol=1e-10) < 2:
+        return None
+
+    try:
+        tri = Delaunay(points)
+    except Exception:
+        return None
+
+    # For each triangle, compute circumradius and filter
+    edges = set()
+    for simplex in tri.simplices:
+        pa, pb, pc = points[simplex]
+        a = np.linalg.norm(pa - pb)
+        b = np.linalg.norm(pb - pc)
+        c = np.linalg.norm(pc - pa)
+        s = (a + b + c) / 2.0
+        area = max(s * (s - a) * (s - b) * (s - c), 0)
+        area = np.sqrt(area)
+        if area == 0:
+            continue
+        circumradius = (a * b * c) / (4.0 * area)
+        if circumradius < 1.0 / alpha:
+            for i, j in [(0, 1), (1, 2), (2, 0)]:
+                edge = tuple(sorted([simplex[i], simplex[j]]))
+                if edge in edges:
+                    edges.remove(edge)
+                else:
+                    edges.add(edge)
+
+    if not edges:
+        # Fallback to convex hull
+        try:
+            hull = ConvexHull(points)
+            return [[float(points[v][0]), float(points[v][1])] for v in hull.vertices]
+        except Exception:
+            return None
+
+    # Walk boundary edges to produce ordered polygon
+    adjacency = defaultdict(set)
+    for i, j in edges:
+        adjacency[i].add(j)
+        adjacency[j].add(i)
+
+    # Start from first edge
+    start = next(iter(edges))[0]
+    polygon = [start]
+    visited = {start}
+    current = start
+    while True:
+        neighbors = adjacency[current] - visited
+        if not neighbors:
+            break
+        nxt = min(neighbors)
+        polygon.append(nxt)
+        visited.add(nxt)
+        current = nxt
+
+    if len(polygon) < 3:
+        try:
+            hull = ConvexHull(points)
+            return [[float(points[v][0]), float(points[v][1])] for v in hull.vertices]
+        except Exception:
+            return None
+
+    return [[float(points[v][0]), float(points[v][1])] for v in polygon]
+
+
+def compute_tech_hulls(tech_points):
+    """Compute concave hull(s) for a tech's appointment locations.
+
+    Returns list of hull polygons (each a list of [lat, lon] pairs).
+    """
+    from sklearn.cluster import DBSCAN
+
+    if len(tech_points) < config.TERRITORY_HULL_MIN_POINTS:
+        return []
+
+    points_array = np.array(tech_points)
+
+    # Cluster with DBSCAN to handle scattered assignments
+    clustering = DBSCAN(
+        eps=config.TERRITORY_DBSCAN_EPS_DEG,
+        min_samples=config.TERRITORY_DBSCAN_MIN_SAMPLES,
+    ).fit(points_array)
+
+    labels = clustering.labels_
+    unique_labels = set(labels)
+    unique_labels.discard(-1)
+
+    if not unique_labels:
+        return []
+
+    # Take the largest cluster
+    largest_label = max(unique_labels, key=lambda l: (labels == l).sum())
+    cluster_points = points_array[labels == largest_label]
+
+    if len(cluster_points) < 3:
+        return []
+
+    # Compute adaptive alpha based on point density
+    from scipy.spatial import distance
+
+    if len(cluster_points) >= 2:
+        dists = distance.cdist(cluster_points, cluster_points)
+        np.fill_diagonal(dists, np.inf)
+        nearest_dists = dists.min(axis=1)
+        median_nn = float(np.median(nearest_dists))
+        if median_nn > 0:
+            alpha = 2.0 / median_nn
+        else:
+            alpha = 1.0
+    else:
+        alpha = 1.0
+
+    hull = compute_alpha_shape(cluster_points, alpha)
+    if hull:
+        return [hull]
+    return []
+
+
+def add_territory_assignment_layers(m, assignment_map, territory_data, tech_color_map):
+    """Add per-scenario territory dots and hull layers to the map.
+
+    Returns {scenario_str: {"dots_layer": js_name, "hulls_layer": js_name, "tech_stats": {...}}}.
+    """
+    demand_appts = territory_data["demand_appts"]
+    tech_master = territory_data["tech_master"]
+    candidates = territory_data["candidates"]
+    utilization_df = territory_data["utilization"]
+    existing_df = territory_data["existing"]
+    newhires_df = territory_data["newhires"]
+    scenarios = territory_data["available_scenarios"]
+
+    # Build name lookup
+    name_lookup = {}
+    for _, t in tech_master.iterrows():
+        name_lookup[str(t["tech_id"])] = str(t["tech_name"])
+    if not candidates.empty:
+        for _, c in candidates.iterrows():
+            cid = str(c["candidate_id"])
+            city = c.get("city", "")
+            state = c.get("state", "")
+            name_lookup[cid] = f"New Hire ({city}, {state})"
+
+    # Build appointment detail lookup
+    appt_details = {}
+    for _, row in demand_appts.iterrows():
+        appt_id = str(row.get("appointment_id", row.get("Appointment Number", "")))
+        appt_details[appt_id] = {
+            "lat": float(row["lat"]) if pd.notna(row.get("lat")) else None,
+            "lon": float(row["lon"]) if pd.notna(row.get("lon")) else None,
+            "account": str(row.get("Account: Account Name", "N/A")),
+            "service_type": str(row.get("Service Type", "")),
+            "state": str(row.get("state_norm", "")),
+            "city": str(row.get("city", "")),
+            "skill_class": str(row.get("skill_class", "")),
+        }
+
+    # Build base location lookup for popups
+    base_location = {}
+    for _, t in tech_master.iterrows():
+        tid = str(t["tech_id"])
+        city = t.get("base_city", "")
+        state = t.get("base_state", "")
+        base_location[tid] = f"{city}, {state}" if pd.notna(city) else str(state)
+    if not candidates.empty:
+        for _, c in candidates.iterrows():
+            cid = str(c["candidate_id"])
+            city = c.get("city", "")
+            state = c.get("state", "")
+            base_location[cid] = f"{city}, {state}" if pd.notna(city) else str(state)
+
+    result = {}
+
+    for scenario in scenarios:
+        scenario_str = str(scenario)
+        appt_assignments = assignment_map.get(scenario, {})
+        is_default = scenario == scenarios[0]
+
+        # Gather per-tech appointment locations and details
+        tech_appts = defaultdict(list)  # assignee_id -> [(lat, lon, appt_id)]
+        for appt_id, assignee_id in appt_assignments.items():
+            detail = appt_details.get(appt_id)
+            if detail and detail["lat"] is not None:
+                tech_appts[assignee_id].append((detail["lat"], detail["lon"], appt_id))
+
+        # --- Dots layer ---
+        dots_fg = folium.FeatureGroup(
+            name=f"Territory Dots N={scenario}",
+            show=is_default,
+            control=False,
+        )
+        for assignee_id, appts_list in tech_appts.items():
+            color = tech_color_map.get(assignee_id, "#888888")
+            tech_name = name_lookup.get(assignee_id, assignee_id)
+            for lat, lon, appt_id in appts_list:
+                detail = appt_details.get(appt_id, {})
+                popup_html = (
+                    f"<b>{detail.get('account', 'N/A')}</b><br>"
+                    f"Appt: {appt_id}<br>"
+                    f"Type: {detail.get('service_type', '')}<br>"
+                    f"Location: {detail.get('city', '')}, {detail.get('state', '')}<br>"
+                    f"Skill: {detail.get('skill_class', '')}<br>"
+                    f"Assigned to: <b>{tech_name}</b>"
+                )
+                folium.CircleMarker(
+                    location=[lat, lon],
+                    radius=config.TERRITORY_DOT_RADIUS,
+                    color=color,
+                    fill=True,
+                    fill_color=color,
+                    fill_opacity=config.TERRITORY_DOT_OPACITY,
+                    weight=1,
+                    popup=folium.Popup(popup_html, max_width=300),
+                    tooltip=f"{tech_name}: {detail.get('account', '')}",
+                ).add_to(dots_fg)
+        dots_fg.add_to(m)
+
+        # --- Hulls layer ---
+        hulls_fg = folium.FeatureGroup(
+            name=f"Territory Hulls N={scenario}",
+            show=is_default,
+            control=False,
+        )
+
+        # Build per-tech stats
+        tech_stats = {}
+        for assignee_id, appts_list in tech_appts.items():
+            tech_name = name_lookup.get(assignee_id, assignee_id)
+            base_loc = base_location.get(assignee_id, "Unknown")
+            states_served = sorted(set(
+                appt_details.get(a_id, {}).get("state", "")
+                for _, _, a_id in appts_list if appt_details.get(a_id, {}).get("state", "")
+            ))
+
+            # Travel cost: sum from assignment CSVs
+            travel_cost = 0.0
+            sc_existing = existing_df[
+                (pd.to_numeric(existing_df["scenario_hires"], errors="coerce") == scenario)
+                & (existing_df["tech_id"].astype(str) == assignee_id)
+            ]
+            if not sc_existing.empty:
+                travel_cost += pd.to_numeric(
+                    sc_existing["total_travel_cost_usd"], errors="coerce"
+                ).fillna(0).sum()
+            if not newhires_df.empty and "candidate_id" in newhires_df.columns:
+                sc_newhire = newhires_df[
+                    (pd.to_numeric(newhires_df["scenario_hires"], errors="coerce") == scenario)
+                    & (newhires_df["candidate_id"].astype(str) == assignee_id)
+                ]
+                if not sc_newhire.empty:
+                    travel_cost += pd.to_numeric(
+                        sc_newhire["total_travel_cost_usd"], errors="coerce"
+                    ).fillna(0).sum()
+
+            # Utilization from utilization CSV
+            utilization = 0.0
+            if not utilization_df.empty and "tech_id" in utilization_df.columns:
+                util_row = utilization_df[
+                    (pd.to_numeric(utilization_df["scenario_hires"], errors="coerce") == scenario)
+                    & (utilization_df["tech_id"].astype(str) == assignee_id)
+                ]
+                if not util_row.empty:
+                    utilization = float(
+                        pd.to_numeric(util_row["utilization"].iloc[0], errors="coerce") or 0
+                    )
+
+            tech_stats[assignee_id] = {
+                "name": tech_name,
+                "base": base_loc,
+                "appointments": len(appts_list),
+                "travel_cost_usd": round(travel_cost, 2),
+                "utilization": round(utilization, 4),
+                "states": states_served,
+            }
+
+            # Compute hull for this tech
+            points = [(lat, lon) for lat, lon, _ in appts_list]
+            hulls = compute_tech_hulls(points)
+            color = tech_color_map.get(assignee_id, "#888888")
+            for hull in hulls:
+                popup_html = (
+                    f"<b>{tech_name}</b><br>"
+                    f"Base: {base_loc}<br>"
+                    f"Appointments: <b>{len(appts_list)}</b><br>"
+                    f"Travel cost: ${travel_cost:,.0f}<br>"
+                    f"Utilization: {utilization:.1%}<br>"
+                    f"States: {', '.join(states_served)}"
+                )
+                folium.Polygon(
+                    locations=hull,
+                    color=color,
+                    fill=True,
+                    fill_color=color,
+                    fill_opacity=config.TERRITORY_HULL_FILL_OPACITY,
+                    weight=config.TERRITORY_HULL_WEIGHT,
+                    popup=folium.Popup(popup_html, max_width=300),
+                    tooltip=f"{tech_name} territory",
+                ).add_to(hulls_fg)
+
+        hulls_fg.add_to(m)
+
+        result[scenario_str] = {
+            "dots_layer": dots_fg.get_name(),
+            "hulls_layer": hulls_fg.get_name(),
+            "tech_stats": tech_stats,
+        }
+
+    return result
+
+
 def add_simulation_layers(m, simulation_payload):
     """Add one marker layer per simulation scenario and return layer JS names."""
     if not simulation_payload:
@@ -700,7 +1250,8 @@ def add_simulation_layers(m, simulation_payload):
     return scenario_layers
 
 
-def add_simulation_panel(m, simulation_payload, scenario_layer_names):
+def add_simulation_panel(m, simulation_payload, scenario_layer_names,
+                         territory_layer_names=None, tech_color_map=None):
     """Inject scenario controls and KPI cards into the map page."""
     if not simulation_payload or not scenario_layer_names:
         return
@@ -715,6 +1266,19 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names):
         layer_entries.append(f'"{key}": "{scenario_layer_names[key]}"')
     layer_js = "{\n" + ",\n".join(layer_entries) + "\n}"
     payload_js = json.dumps(simulation_payload)
+
+    # Territory layer JS maps
+    territory_dots_entries = []
+    territory_hulls_entries = []
+    tech_colors_js = json.dumps(tech_color_map) if tech_color_map else "{}"
+    if territory_layer_names:
+        for key in ordered_keys:
+            info = territory_layer_names.get(key)
+            if info:
+                territory_dots_entries.append(f'"{key}": "{info["dots_layer"]}"')
+                territory_hulls_entries.append(f'"{key}": "{info["hulls_layer"]}"')
+    territory_dots_js = "{\n" + ",\n".join(territory_dots_entries) + "\n}" if territory_dots_entries else "{}"
+    territory_hulls_js = "{\n" + ",\n".join(territory_hulls_entries) + "\n}" if territory_hulls_entries else "{}"
 
     panel_html = """
     <style>
@@ -810,6 +1374,33 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names):
         font-size: 10px;
         color: #666;
       }
+      #sim-tech-legend {
+        max-height: 180px;
+        overflow-y: auto;
+        font-size: 10px;
+        margin-top: 8px;
+        border: 1px solid #e2e5e9;
+        border-radius: 8px;
+        background: #fbfbfc;
+        padding: 6px 8px;
+      }
+      #sim-tech-legend-title {
+        margin: 8px 0 0 0;
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .tech-legend-row {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        padding: 2px 0;
+      }
+      .tech-legend-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
       #sim-panel-toggle {
         display: none;
         position: fixed;
@@ -844,6 +1435,8 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names):
       </div>
       <div id="sim-recs-title">Recommended Bases</div>
       <div id="sim-recs">No recommendations.</div>
+      <div id="sim-tech-legend-title" style="display:none;">Territory Assignments</div>
+      <div id="sim-tech-legend" style="display:none;"></div>
       <div id="sim-footnote">Shows N=0..4 scenario outputs from optimization pipeline.</div>
     </div>
     """
@@ -853,13 +1446,19 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names):
       const mapVarName = "{map_var}";
       const scenarioData = {payload_js};
       const scenarioLayerNames = {layer_js};
+      const territoryDotLayerNames = {territory_dots_js};
+      const territoryHullLayerNames = {territory_hulls_js};
+      const techColors = {tech_colors_js};
       const orderedScenarios = {json.dumps(ordered_keys)};
       const defaultScenario = "{default_key}";
       const showUnmetKpi = orderedScenarios.some((s) =>
         Number(((scenarioData[s] || {{}}).kpis || {{}}).unmet_appointments || 0) > 0
       );
+      const hasTerritory = Object.keys(territoryDotLayerNames).length > 0;
       let mapRef = null;
       let scenarioLayers = {{}};
+      let territoryDotLayers = {{}};
+      let territoryHullLayers = {{}};
 
       function money(v) {{
         const n = Number(v || 0);
@@ -923,22 +1522,62 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names):
         }}).join("");
       }}
 
+      function renderTechLegend(scenario) {{
+        const titleEl = document.getElementById("sim-tech-legend-title");
+        const legendEl = document.getElementById("sim-tech-legend");
+        if (!titleEl || !legendEl || !hasTerritory) return;
+        const item = scenarioData[scenario];
+        const stats = item ? (item.tech_stats || {{}}) : {{}};
+        const entries = Object.entries(stats);
+        if (!entries.length) {{
+          titleEl.style.display = "none";
+          legendEl.style.display = "none";
+          return;
+        }}
+        titleEl.style.display = "block";
+        legendEl.style.display = "block";
+        entries.sort((a, b) => (b[1].appointments || 0) - (a[1].appointments || 0));
+        legendEl.innerHTML = entries.map(([tid, s]) => {{
+          const color = techColors[tid] || "#888";
+          return `<div class="tech-legend-row">` +
+            `<span class="tech-legend-dot" style="background:${{color}};"></span>` +
+            `<span>${{s.name}} (${{s.appointments}})</span>` +
+            `</div>`;
+        }}).join("");
+      }}
+
       function showScenario(scenario) {{
         if (!mapRef) return;
         orderedScenarios.forEach((s) => {{
           const layer = scenarioLayers[s];
-          if (!layer) return;
-          if (mapRef.hasLayer(layer)) {{
+          if (layer && mapRef.hasLayer(layer)) {{
             mapRef.removeLayer(layer);
+          }}
+          const dotLayer = territoryDotLayers[s];
+          if (dotLayer && mapRef.hasLayer(dotLayer)) {{
+            mapRef.removeLayer(dotLayer);
+          }}
+          const hullLayer = territoryHullLayers[s];
+          if (hullLayer && mapRef.hasLayer(hullLayer)) {{
+            mapRef.removeLayer(hullLayer);
           }}
         }});
         const target = scenarioLayers[scenario];
         if (target && !mapRef.hasLayer(target)) {{
           mapRef.addLayer(target);
         }}
+        const dotTarget = territoryDotLayers[scenario];
+        if (dotTarget && !mapRef.hasLayer(dotTarget)) {{
+          mapRef.addLayer(dotTarget);
+        }}
+        const hullTarget = territoryHullLayers[scenario];
+        if (hullTarget && !mapRef.hasLayer(hullTarget)) {{
+          mapRef.addLayer(hullTarget);
+        }}
         setActiveButton(scenario);
         renderKpis(scenario);
         renderRecommendations(scenario);
+        renderTechLegend(scenario);
       }}
 
       function resolveLayers() {{
@@ -958,6 +1597,13 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names):
           }}
         }});
         scenarioLayers = resolved;
+        // Resolve territory layers (no-op if empty)
+        orderedScenarios.forEach((s) => {{
+          const dotVar = territoryDotLayerNames[s];
+          if (dotVar && window[dotVar]) territoryDotLayers[s] = window[dotVar];
+          const hullVar = territoryHullLayerNames[s];
+          if (hullVar && window[hullVar]) territoryHullLayers[s] = window[hullVar];
+        }});
         return missing;
       }}
 
@@ -1107,9 +1753,18 @@ def main():
         layer_name=layer_nonactive_name,
     )
 
+    # Pre-check: load territory assignment data (needed to decide show param for Layer 3)
+    territory_data = None
+    territory_layer_info = None
+    if getattr(config, "ENABLE_SIMULATION_UI", False):
+        print("  Pre-loading territory assignment data...")
+        territory_data = load_territory_assignment_data()
+
     # Layer 3: Service Appointments
+    # Hidden by default when territory viz is active (user can toggle on via LayerControl)
+    show_static_appts = territory_data is None
     print("Adding service appointments...")
-    add_service_appointments(m, appts, layer_name=layer_appt_name)
+    add_service_appointments(m, appts, layer_name=layer_appt_name, show=show_static_appts)
 
     # Layer 4: Technician Home Bases
     print("Adding technician markers...")
@@ -1135,9 +1790,32 @@ def main():
         print("Adding simulation scenario panel...")
         simulation_payload = load_simulation_data()
         if simulation_payload:
+            # Territory visualization
+            if territory_data:
+                print("  Resolving appointment-to-tech assignments...")
+                assignment_map = resolve_appointment_assignments(territory_data)
+                tech_color_map = build_tech_color_map(territory_data)
+                total_assigned = sum(len(v) for v in assignment_map.values())
+                print(f"  Resolved {total_assigned} total appointment assignments across {len(assignment_map)} scenarios")
+                print("  Generating territory layers (dots + hulls)...")
+                territory_layer_info = add_territory_assignment_layers(
+                    m, assignment_map, territory_data, tech_color_map
+                )
+                # Inject tech_stats into per-scenario payload entries for JS
+                for key, info in territory_layer_info.items():
+                    if key in simulation_payload:
+                        simulation_payload[key]["tech_stats"] = info["tech_stats"]
+                print(f"  Territory layers added for scenarios: {list(territory_layer_info.keys())}")
+            else:
+                print("  Territory assignment data not available; territory layers skipped.")
+
             scenario_layer_names = add_simulation_layers(m, simulation_payload)
-            add_simulation_panel(m, simulation_payload, scenario_layer_names)
-            print(f"  Loaded scenarios: {', '.join(sorted(simulation_payload.keys(), key=int))}")
+            add_simulation_panel(
+                m, simulation_payload, scenario_layer_names,
+                territory_layer_names=territory_layer_info,
+                tech_color_map=tech_color_map if territory_data else None,
+            )
+            print(f"  Loaded scenarios: {', '.join(sorted(simulation_payload.keys(), key=lambda x: int(x) if x.isdigit() else 999))}")
         else:
             add_simulation_unavailable_notice(m)
             print("  Simulation outputs not found; panel disabled.")
