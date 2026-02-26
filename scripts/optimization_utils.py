@@ -210,7 +210,9 @@ def coerce_excel_datetime(series: pd.Series) -> pd.Series:
     """Parse datetime from mixed string / Excel serial representation."""
     parsed = pd.to_datetime(series, errors="coerce")
     numeric = pd.to_numeric(series, errors="coerce")
-    excel_mask = parsed.isna() & numeric.notna() & (numeric > 20000) & (numeric < 70000)
+    # Excel serial dates often parse as 1970 microseconds via pd.to_datetime;
+    # override numeric values in plausible Excel date range unconditionally.
+    excel_mask = numeric.notna() & (numeric > 20000) & (numeric < 70000)
     if excel_mask.any():
         parsed.loc[excel_mask] = pd.to_datetime("1899-12-30") + pd.to_timedelta(
             numeric.loc[excel_mask], unit="D"

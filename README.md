@@ -37,7 +37,7 @@ Optimization runs from external source-of-truth files and writes outputs to
 
 ```bash
 python scripts/06_build_optimization_inputs.py
-python scripts/07_build_travel_cost_model.py
+python scripts/07_build_travel_cost_model.py --engine hybrid
 python scripts/08_optimize_locations.py --min-new-hires 0 --max-new-hires 4
 python scripts/09_analyze_scenarios.py
 python scripts/05_generate_map.py          # Rebuild docs/index.html with simulation panel
@@ -65,6 +65,27 @@ python scripts/08_optimize_locations.py --min-new-hires 0 --max-new-hires 4 --an
 ```
 
 - This is a company planning burden input, not technician take-home pay.
+
+### Hybrid Travel-Cost Engine (Step 7)
+
+- Default Step 7 mode is `--engine hybrid`:
+  - Uses Navan empirical route means when direct sample size is strong
+  - Uses a trained flight-level model for sparse routes
+  - Optionally applies a US BTS state-pair fare prior for low-confidence US gaps
+- Legacy mode is still available for comparison: `--engine heuristic`
+- Recommended run:
+
+```bash
+python scripts/07_build_travel_cost_model.py --engine hybrid --min-direct-route-n 5 --shrinkage-k 10
+```
+
+- Optional BTS prior path:
+  `--bts-prior-csv data/external/bts/state_pair_fares.csv`
+- Key diagnostics written by Step 7:
+  - `data/processed/optimization/travel_model_metrics.json`
+  - `data/processed/optimization/travel_model_feature_importance.csv`
+  - `data/processed/optimization/travel_matrix_coverage_report.json`
+  - `data/processed/optimization/bts_prior_coverage_report.json`
 
 Key optimization outputs:
 

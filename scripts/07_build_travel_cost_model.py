@@ -1,12 +1,16 @@
-"""Step 7: Build travel cost model from Navan data (independent input)."""
+"""Step 7: Build travel cost model from Navan data (hybrid or heuristic engine)."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import re
 import sys
+from collections import defaultdict
+from datetime import date
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -14,13 +18,26 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(__file__))
 import config
 from optimization_utils import (
+    US_ABBR,
+    build_airports_df,
     coerce_excel_datetime,
     normalize_name,
     normalize_state,
 )
 
+try:
+    from travel_cost_modeling import predict_route_cost, prepare_training_frame, train_travel_model
+except ImportError:
+    # Heuristic engine can still run without sklearn; hybrid path validates these.
+    predict_route_cost = None
+    prepare_training_frame = None
+    train_travel_model = None
+
 
 DEFAULT_NAVAN_XLSX = config.EXTERNAL_NAVAN_XLSX
+DEFAULT_BTS_PRIOR_CSV = os.path.join(
+    config.PROJECT_ROOT, "data", "external", "bts", "state_pair_fares.csv"
+)
 
 
 def resolve_path(candidates: list[str], label: str) -> str:
@@ -57,7 +74,7 @@ def parse_management_users(navan_path: str) -> set[str]:
 
 
 def build_state_airport_weights(demand: pd.DataFrame) -> dict[str, pd.Series]:
-    """Build per-state destination airport demand weights."""
+    """Build per-state destination-airport demand weights."""
     grouped = (
         demand.dropna(subset=["state_norm", "nearest_hub_airport", "duration_hours"])
         .groupby(["state_norm", "nearest_hub_airport"])["duration_hours"]
@@ -127,20 +144,379 @@ def estimate_route_cost(
     return float(global_cost), float(global_legs), 0, "global_fallback"
 
 
-def mode_confidence(tiers: list[str]) -> str:
-    """Pick best available confidence tier from tier list."""
-    order = [
-        "direct_route",
-        "reverse_route",
-        "origin_dest_blend",
-        "origin_only",
-        "destination_only",
-        "global_fallback",
-    ]
-    for tier in order:
-        if tier in tiers:
-            return tier
-    return "global_fallback"
+def tier_from_score(score: float) -> str:
+    """Map confidence score to tier for matrix consumers."""
+    if score >= 0.7:
+        return "high"
+    if score >= 0.4:
+        return "medium"
+    return "low"
+
+
+def _wmape(actual: np.ndarray, pred: np.ndarray) -> float:
+    denom = np.sum(np.abs(actual))
+    if denom <= 0:
+        return 0.0
+    return float(np.sum(np.abs(actual - pred)) / denom)
+
+
+def regression_metrics(actual: np.ndarray, pred: np.ndarray, prefix: str) -> dict:
+    """Build standard error metrics dictionary."""
+    return {
+        f"{prefix}_mae_usd": float(np.mean(np.abs(actual - pred))),
+        f"{prefix}_rmse_usd": float(np.sqrt(np.mean((actual - pred) ** 2))),
+        f"{prefix}_wmape": _wmape(actual, pred),
+    }
+
+
+def build_origin_state_lookup(candidates: pd.DataFrame, tech: pd.DataFrame) -> dict[str, str]:
+    """Infer origin airport -> state mapping from candidate/tech tables and airport config."""
+    lookup: dict[str, str] = {}
+
+    if not candidates.empty:
+        for _, row in candidates.iterrows():
+            ap = str(row.get("airport_iata", "")).strip()
+            st = normalize_state(row.get("state"))
+            if ap and st and ap not in lookup:
+                lookup[ap] = st
+
+    if not tech.empty:
+        for _, row in tech.iterrows():
+            ap = str(row.get("base_airport_iata", "")).strip()
+            st = normalize_state(row.get("base_state"))
+            if ap and st and ap not in lookup:
+                lookup[ap] = st
+
+    airports = build_airports_df(config.MAJOR_AIRPORTS)
+    for _, row in airports.iterrows():
+        ap = str(row.get("airport_code", "")).strip()
+        st = normalize_state(row.get("state_abbr"))
+        if ap and st and ap not in lookup:
+            lookup[ap] = st
+    return lookup
+
+
+def normalize_colname(value: str) -> str:
+    """Normalize a free-form column name to snake_case."""
+    text = str(value).strip().lower()
+    text = re.sub(r"[^a-z0-9]+", "_", text)
+    return text.strip("_")
+
+
+def first_present(cols: list[str], candidates: list[str]) -> Optional[str]:
+    """Return first present candidate column name."""
+    for c in candidates:
+        if c in cols:
+            return c
+    return None
+
+
+def load_bts_prior(path: str) -> tuple[dict[tuple[str, str], float], dict]:
+    """Load optional BTS state-pair fare prior and return mapping + metadata."""
+    if not path or not os.path.exists(path):
+        return {}, {
+            "bts_prior_enabled": False,
+            "bts_prior_path": path,
+            "reason": "missing_file",
+            "state_pairs_loaded": 0,
+        }
+
+    raw = pd.read_csv(path)
+    cols = [normalize_colname(c) for c in raw.columns]
+    rename = {old: new for old, new in zip(raw.columns, cols)}
+    df = raw.rename(columns=rename).copy()
+    all_cols = list(df.columns)
+
+    origin_col = first_present(
+        all_cols,
+        ["origin_state", "origin", "from_state", "orig_state", "state_from"],
+    )
+    dest_col = first_present(
+        all_cols,
+        ["destination_state", "dest_state", "destination", "to_state", "state_to"],
+    )
+    fare_col = first_present(
+        all_cols,
+        [
+            "avg_fare_usd",
+            "average_fare_usd",
+            "fare_usd",
+            "avg_fare",
+            "mean_fare_usd",
+            "itinerary_fare",
+        ],
+    )
+    weight_col = first_present(all_cols, ["passengers", "passenger_count", "trips", "weight"])
+
+    if not origin_col or not dest_col or not fare_col:
+        return {}, {
+            "bts_prior_enabled": False,
+            "bts_prior_path": path,
+            "reason": "missing_required_columns",
+            "columns_found": all_cols,
+            "state_pairs_loaded": 0,
+        }
+
+    df["origin_state_norm"] = df[origin_col].map(normalize_state)
+    df["destination_state_norm"] = df[dest_col].map(normalize_state)
+    df["fare_usd_norm"] = pd.to_numeric(df[fare_col], errors="coerce")
+    df = df.dropna(subset=["origin_state_norm", "destination_state_norm", "fare_usd_norm"]).copy()
+    df = df[
+        df["origin_state_norm"].isin(US_ABBR) & df["destination_state_norm"].isin(US_ABBR)
+    ].copy()
+    if df.empty:
+        return {}, {
+            "bts_prior_enabled": False,
+            "bts_prior_path": path,
+            "reason": "no_usable_rows",
+            "state_pairs_loaded": 0,
+        }
+
+    if weight_col:
+        df["weight"] = pd.to_numeric(df[weight_col], errors="coerce").fillna(0.0).clip(lower=0.0)
+    else:
+        df["weight"] = 1.0
+
+    grouped = (
+        df.groupby(["origin_state_norm", "destination_state_norm"], as_index=False)
+        .apply(
+            lambda g: pd.Series(
+                {
+                    "avg_fare_usd": float(np.average(g["fare_usd_norm"], weights=g["weight"]))
+                    if g["weight"].sum() > 0
+                    else float(g["fare_usd_norm"].mean()),
+                    "rows": int(len(g)),
+                    "weight_total": float(g["weight"].sum()),
+                }
+            ),
+            include_groups=False,
+        )
+        .reset_index(drop=True)
+    )
+
+    mapping = {
+        (str(r["origin_state_norm"]), str(r["destination_state_norm"])): float(r["avg_fare_usd"])
+        for _, r in grouped.iterrows()
+    }
+    meta = {
+        "bts_prior_enabled": True,
+        "bts_prior_path": path,
+        "state_pairs_loaded": int(len(mapping)),
+        "rows_loaded": int(len(df)),
+    }
+    return mapping, meta
+
+
+def build_matrix_heuristic(
+    origins: list[str],
+    states: list[str],
+    state_weights: dict[str, pd.Series],
+    default_weights: pd.Series,
+    route_stats: pd.DataFrame,
+    origin_stats: pd.DataFrame,
+    dest_stats: pd.DataFrame,
+    global_cost: float,
+    global_legs: float,
+) -> pd.DataFrame:
+    """Build matrix using legacy heuristic fallback logic only."""
+    rows = []
+    for origin in origins:
+        for state in states:
+            weights = state_weights.get(state, default_weights)
+            weighted_cost = 0.0
+            weighted_legs = 0.0
+            sample_size = 0
+            tier_weights: dict[str, float] = defaultdict(float)
+            for dest, wt in weights.items():
+                cost, legs, n, tier = estimate_route_cost(
+                    origin=origin,
+                    destination=str(dest),
+                    route_stats=route_stats,
+                    origin_stats=origin_stats,
+                    dest_stats=dest_stats,
+                    global_cost=global_cost,
+                    global_legs=global_legs,
+                )
+                weighted_cost += wt * cost
+                weighted_legs += wt * legs
+                sample_size += n
+                tier_weights[tier] += float(wt)
+            dominant_tier = max(tier_weights.items(), key=lambda x: x[1])[0] if tier_weights else "global_fallback"
+            rows.append(
+                {
+                    "origin_airport": origin,
+                    "state_norm": state,
+                    "expected_cost_usd": float(weighted_cost),
+                    "expected_legs": float(weighted_legs),
+                    "sample_size": int(sample_size),
+                    "confidence_tier": dominant_tier,
+                    "confidence_score": 0.4 if dominant_tier in {"direct_route", "reverse_route"} else 0.25,
+                    "model_cost_usd": np.nan,
+                    "empirical_route_cost_usd": np.nan,
+                    "blended_route_cost_usd": float(weighted_cost),
+                    "support_trip_count": int(sample_size),
+                    "blend_weight_empirical": 0.0,
+                    "prior_source": "heuristic",
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def build_hybrid_matrix(
+    origins: list[str],
+    states: list[str],
+    state_weights: dict[str, pd.Series],
+    default_weights: pd.Series,
+    route_stats: pd.DataFrame,
+    origin_stats: pd.DataFrame,
+    dest_stats: pd.DataFrame,
+    global_cost: float,
+    global_legs: float,
+    min_direct_route_n: int,
+    shrinkage_k: float,
+    bundle,
+    bts_prior: dict[tuple[str, str], float],
+    origin_state_lookup: dict[str, str],
+) -> pd.DataFrame:
+    """Build hybrid matrix: empirical-route + model + optional BTS prior."""
+    direct_map: dict[tuple[str, str], tuple[float, int]] = {}
+    for _, r in route_stats.iterrows():
+        direct_map[(str(r["origin"]), str(r["dest"]))] = (
+            float(r["mean_cost"]),
+            int(r["trip_count"]),
+        )
+
+    rows = []
+    for origin in origins:
+        for state in states:
+            weights = state_weights.get(state, default_weights)
+            weighted_cost = 0.0
+            weighted_legs = 0.0
+            weighted_model_cost = 0.0
+            weighted_emp_cost = 0.0
+            weighted_blend_emp = 0.0
+            weighted_conf = 0.0
+            model_weight = 0.0
+            emp_weight = 0.0
+            sample_size = 0
+            support_trip_count = 0
+            source_weight: dict[str, float] = defaultdict(float)
+
+            for dest, wt in weights.items():
+                wt = float(wt)
+                heur_cost, heur_legs, n, _ = estimate_route_cost(
+                    origin=origin,
+                    destination=str(dest),
+                    route_stats=route_stats,
+                    origin_stats=origin_stats,
+                    dest_stats=dest_stats,
+                    global_cost=global_cost,
+                    global_legs=global_legs,
+                )
+                sample_size += int(n)
+
+                empirical = direct_map.get((origin, str(dest)))
+                if empirical:
+                    empirical_cost, direct_n = empirical
+                else:
+                    empirical_cost, direct_n = np.nan, 0
+                support_trip_count += int(direct_n)
+
+                model_cost = predict_route_cost(
+                    bundle=bundle,
+                    origin=origin,
+                    destination=str(dest),
+                    destination_state_norm=state,
+                )
+
+                blend_w_emp = 0.0
+                source = "model"
+                conf = 0.3
+                route_cost = float(model_cost)
+
+                if direct_n >= min_direct_route_n and np.isfinite(empirical_cost):
+                    blend_w_emp = float(direct_n) / float(direct_n + shrinkage_k)
+                    route_cost = blend_w_emp * float(empirical_cost) + (1.0 - blend_w_emp) * float(model_cost)
+                    source = "navan_empirical_blend"
+                    conf = min(0.98, 0.55 + 0.04 * min(direct_n, 10))
+                else:
+                    in_training_space = origin in bundle.seen_origins and str(dest) in bundle.seen_dests
+                    conf = 0.55 if in_training_space else 0.3
+
+                if state in US_ABBR and conf < 0.35 and bts_prior:
+                    origin_state = origin_state_lookup.get(origin)
+                    prior_cost = bts_prior.get((origin_state, state)) if origin_state else None
+                    if prior_cost is not None and np.isfinite(prior_cost):
+                        route_cost = float(prior_cost)
+                        source = "bts_prior"
+                        conf = 0.4
+                        blend_w_emp = 0.0
+
+                if not np.isfinite(route_cost):
+                    route_cost = float(heur_cost)
+                    source = "heuristic_fallback"
+                    conf = 0.2
+                    blend_w_emp = 0.0
+
+                weighted_cost += wt * route_cost
+                weighted_legs += wt * float(heur_legs)
+                weighted_conf += wt * conf
+                weighted_blend_emp += wt * blend_w_emp
+                source_weight[source] += wt
+
+                if np.isfinite(model_cost):
+                    weighted_model_cost += wt * float(model_cost)
+                    model_weight += wt
+                if np.isfinite(empirical_cost):
+                    weighted_emp_cost += wt * float(empirical_cost)
+                    emp_weight += wt
+
+            conf_score = float(weighted_conf)
+            dominant_source = (
+                max(source_weight.items(), key=lambda x: x[1])[0] if source_weight else "heuristic_fallback"
+            )
+            rows.append(
+                {
+                    "origin_airport": origin,
+                    "state_norm": state,
+                    "expected_cost_usd": float(weighted_cost),
+                    "expected_legs": float(weighted_legs),
+                    "sample_size": int(sample_size),
+                    "confidence_tier": tier_from_score(conf_score),
+                    "confidence_score": conf_score,
+                    "model_cost_usd": float(weighted_model_cost / model_weight) if model_weight > 0 else np.nan,
+                    "empirical_route_cost_usd": float(weighted_emp_cost / emp_weight) if emp_weight > 0 else np.nan,
+                    "blended_route_cost_usd": float(weighted_cost),
+                    "support_trip_count": int(support_trip_count),
+                    "blend_weight_empirical": float(weighted_blend_emp),
+                    "prior_source": dominant_source,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def build_heuristic_valid_predictions(
+    valid_df: pd.DataFrame,
+    train_route_stats: pd.DataFrame,
+    train_origin_stats: pd.DataFrame,
+    train_dest_stats: pd.DataFrame,
+    train_global_cost: float,
+    train_global_legs: float,
+) -> np.ndarray:
+    """Predict validation rows using legacy heuristic estimator on train-only stats."""
+    preds = []
+    for _, row in valid_df.iterrows():
+        cost, _, _, _ = estimate_route_cost(
+            origin=str(row["origin"]),
+            destination=str(row["dest"]),
+            route_stats=train_route_stats,
+            origin_stats=train_origin_stats,
+            dest_stats=train_dest_stats,
+            global_cost=train_global_cost,
+            global_legs=train_global_legs,
+        )
+        preds.append(float(cost))
+    return np.array(preds, dtype=float)
 
 
 def main() -> None:
@@ -150,6 +526,39 @@ def main() -> None:
         "--output-dir",
         default=config.OPTIMIZATION_DIR,
         help="Optimization output directory.",
+    )
+    parser.add_argument(
+        "--engine",
+        choices=["hybrid", "heuristic"],
+        default="hybrid",
+        help="Travel-cost matrix engine.",
+    )
+    parser.add_argument(
+        "--min-direct-route-n",
+        type=int,
+        default=5,
+        help="Min direct route sample size before empirical/model blending.",
+    )
+    parser.add_argument(
+        "--shrinkage-k",
+        type=float,
+        default=10.0,
+        help="Shrinkage strength for empirical route blending weight.",
+    )
+    parser.add_argument(
+        "--evaluation-cutoff-date",
+        default=None,
+        help="Optional YYYY-MM-DD cutoff for model train/valid split.",
+    )
+    parser.add_argument(
+        "--bts-prior-csv",
+        default=DEFAULT_BTS_PRIOR_CSV,
+        help="Optional US BTS state-pair fare prior CSV.",
+    )
+    parser.add_argument(
+        "--disable-bts-prior",
+        action="store_true",
+        help="Disable BTS prior even if file is available.",
     )
     args = parser.parse_args()
 
@@ -176,6 +585,7 @@ def main() -> None:
     clean["is_management"] = clean["traveler_role_norm"].str.contains("management") | clean[
         "traveler_name_norm"
     ].isin(management_names)
+    clean["booking_status_norm"] = clean["Booking Status"].fillna("").astype(str).str.upper()
 
     clean["usd_total_paid"] = pd.to_numeric(clean["USD Total Paid"], errors="coerce")
     clean["lead_time_days"] = pd.to_numeric(clean["Booking Lead Time (days)"], errors="coerce")
@@ -187,6 +597,7 @@ def main() -> None:
     clean["destination_state_norm"] = clean["Destination State"].map(normalize_state)
 
     model_flights = clean[~clean["is_management"]].copy()
+    model_flights = model_flights[model_flights["booking_status_norm"].eq("TICKETED")]
     model_flights = model_flights[model_flights["origin"].ne("") & model_flights["dest"].ne("")]
     model_flights = model_flights.dropna(subset=["usd_total_paid"])
 
@@ -241,40 +652,144 @@ def main() -> None:
     )
     default_weights = default_weights / default_weights.sum()
 
-    matrix_rows = []
-    for origin in origins:
-        for state in states:
-            weights = state_weights.get(state, default_weights)
-            weighted_cost = 0.0
-            weighted_legs = 0.0
-            sample_size = 0
-            tiers = []
-            for dest, wt in weights.items():
-                cost, legs, n, tier = estimate_route_cost(
-                    origin=origin,
-                    destination=str(dest),
-                    route_stats=route_stats,
-                    origin_stats=origin_stats,
-                    dest_stats=dest_stats,
-                    global_cost=global_cost,
-                    global_legs=global_legs,
-                )
-                weighted_cost += wt * cost
-                weighted_legs += wt * legs
-                sample_size += n
-                tiers.append(tier)
-            matrix_rows.append(
-                {
-                    "origin_airport": origin,
-                    "state_norm": state,
-                    "expected_cost_usd": weighted_cost,
-                    "expected_legs": weighted_legs,
-                    "sample_size": int(sample_size),
-                    "confidence_tier": mode_confidence(tiers),
-                }
+    metrics: dict = {
+        "engine": args.engine,
+        "min_direct_route_n": int(args.min_direct_route_n),
+        "shrinkage_k": float(args.shrinkage_k),
+        "navan_source": navan_path,
+        "model_flight_rows": int(len(model_flights)),
+        "unique_origins_in_model": int(model_flights["origin"].nunique()),
+        "unique_dests_in_model": int(model_flights["dest"].nunique()),
+    }
+    feature_importance = pd.DataFrame(columns=["feature", "importance"])
+
+    if args.engine == "heuristic":
+        matrix = build_matrix_heuristic(
+            origins=origins,
+            states=states,
+            state_weights=state_weights,
+            default_weights=default_weights,
+            route_stats=route_stats,
+            origin_stats=origin_stats,
+            dest_stats=dest_stats,
+            global_cost=global_cost,
+            global_legs=global_legs,
+        )
+        bts_meta = {
+            "bts_prior_enabled": False,
+            "reason": "engine_heuristic",
+            "state_pairs_loaded": 0,
+        }
+    else:
+        if (
+            prepare_training_frame is None
+            or train_travel_model is None
+            or predict_route_cost is None
+        ):
+            raise ImportError(
+                "Hybrid engine requires scikit-learn. Install dependencies from requirements.txt."
             )
 
-    matrix = pd.DataFrame(matrix_rows)
+        training_frame = prepare_training_frame(model_flights)
+        cutoff = None
+        if args.evaluation_cutoff_date:
+            cutoff = date.fromisoformat(args.evaluation_cutoff_date)
+
+        bundle, model_metrics, feature_importance, train_df, valid_df = train_travel_model(
+            training_frame,
+            evaluation_cutoff_date=cutoff,
+        )
+        metrics.update(model_metrics)
+
+        # Compare against legacy heuristic on holdout for measurable improvement.
+        train_route_stats = (
+            train_df.groupby(["origin", "dest"])
+            .agg(
+                trip_count=("usd_total_paid", "count"),
+                mean_cost=("usd_total_paid", "mean"),
+                mean_legs=("num_legs", "mean"),
+            )
+            .reset_index()
+        )
+        train_origin_stats = (
+            train_df.groupby("origin")
+            .agg(
+                trip_count=("usd_total_paid", "count"),
+                mean_cost=("usd_total_paid", "mean"),
+                mean_legs=("num_legs", "mean"),
+            )
+            .reset_index()
+        )
+        train_dest_stats = (
+            train_df.groupby("dest")
+            .agg(
+                trip_count=("usd_total_paid", "count"),
+                mean_cost=("usd_total_paid", "mean"),
+                mean_legs=("num_legs", "mean"),
+            )
+            .reset_index()
+        )
+        train_global_cost = float(train_df["usd_total_paid"].mean())
+        train_global_legs = float(train_df["num_legs"].mean())
+
+        pred_valid_model = np.expm1(
+            bundle.pipeline.predict(valid_df[bundle.categorical_cols + bundle.numeric_cols])
+        )
+        pred_valid_heur = build_heuristic_valid_predictions(
+            valid_df=valid_df,
+            train_route_stats=train_route_stats,
+            train_origin_stats=train_origin_stats,
+            train_dest_stats=train_dest_stats,
+            train_global_cost=train_global_cost,
+            train_global_legs=train_global_legs,
+        )
+        actual_valid = valid_df["usd_total_paid"].values
+        metrics.update(regression_metrics(actual_valid, pred_valid_model, "valid_model"))
+        metrics.update(regression_metrics(actual_valid, pred_valid_heur, "valid_heuristic"))
+        if metrics["valid_heuristic_mae_usd"] > 0:
+            metrics["valid_mae_improvement_pct_vs_heuristic"] = float(
+                (metrics["valid_heuristic_mae_usd"] - metrics["valid_model_mae_usd"])
+                / metrics["valid_heuristic_mae_usd"]
+                * 100.0
+            )
+        else:
+            metrics["valid_mae_improvement_pct_vs_heuristic"] = 0.0
+        if metrics["valid_heuristic_wmape"] > 0:
+            metrics["valid_wmape_improvement_pct_vs_heuristic"] = float(
+                (metrics["valid_heuristic_wmape"] - metrics["valid_model_wmape"])
+                / metrics["valid_heuristic_wmape"]
+                * 100.0
+            )
+        else:
+            metrics["valid_wmape_improvement_pct_vs_heuristic"] = 0.0
+
+        if args.disable_bts_prior:
+            bts_prior = {}
+            bts_meta = {
+                "bts_prior_enabled": False,
+                "reason": "disabled_by_flag",
+                "state_pairs_loaded": 0,
+            }
+        else:
+            bts_prior, bts_meta = load_bts_prior(args.bts_prior_csv)
+
+        origin_state_lookup = build_origin_state_lookup(candidates, tech)
+        matrix = build_hybrid_matrix(
+            origins=origins,
+            states=states,
+            state_weights=state_weights,
+            default_weights=default_weights,
+            route_stats=route_stats,
+            origin_stats=origin_stats,
+            dest_stats=dest_stats,
+            global_cost=global_cost,
+            global_legs=global_legs,
+            min_direct_route_n=max(1, int(args.min_direct_route_n)),
+            shrinkage_k=max(1e-6, float(args.shrinkage_k)),
+            bundle=bundle,
+            bts_prior=bts_prior,
+            origin_state_lookup=origin_state_lookup,
+        )
 
     report["Booking Status"] = report["Booking Status"].astype(str)
     report["usd_total_paid"] = pd.to_numeric(report["USD Total Paid"], errors="coerce")
@@ -306,22 +821,61 @@ def main() -> None:
         "canceled_voided_handling": "baseline_constant",
     }
 
+    metrics["matrix_rows"] = int(len(matrix))
+    metrics["matrix_origins"] = int(matrix["origin_airport"].nunique())
+    metrics["matrix_states"] = int(matrix["state_norm"].nunique())
+
+    source_counts = matrix["prior_source"].value_counts(dropna=False).to_dict()
+    source_shares = {k: float(v) / max(len(matrix), 1) for k, v in source_counts.items()}
+    coverage_report = {
+        "engine": args.engine,
+        "matrix_rows": int(len(matrix)),
+        "source_counts": source_counts,
+        "source_shares": source_shares,
+        "confidence_tier_counts": matrix["confidence_tier"].value_counts(dropna=False).to_dict(),
+        "mean_confidence_score": float(pd.to_numeric(matrix["confidence_score"], errors="coerce").mean()),
+    }
+
+    bts_cov_report = dict(bts_meta)
+    us_cells = int(matrix["state_norm"].isin(US_ABBR).sum())
+    bts_cells = int((matrix["prior_source"] == "bts_prior").sum()) if "prior_source" in matrix.columns else 0
+    bts_cov_report["us_matrix_cells"] = us_cells
+    bts_cov_report["cells_using_bts_prior"] = bts_cells
+    bts_cov_report["share_us_cells_using_bts_prior"] = float(bts_cells / us_cells) if us_cells else 0.0
+
     out_dir.mkdir(parents=True, exist_ok=True)
     matrix_out = out_dir / "travel_cost_matrix.csv"
     route_out = out_dir / "navan_route_stats.csv"
     flight_out = out_dir / "navan_clean_flights_modeled.csv"
     kpi_out = out_dir / "baseline_kpis.json"
+    metrics_out = out_dir / "travel_model_metrics.json"
+    fi_out = out_dir / "travel_model_feature_importance.csv"
+    coverage_out = out_dir / "travel_matrix_coverage_report.json"
+    bts_cov_out = out_dir / "bts_prior_coverage_report.json"
 
     matrix.to_csv(matrix_out, index=False)
     route_stats.to_csv(route_out, index=False)
     model_flights.to_csv(flight_out, index=False)
     with open(kpi_out, "w") as f:
         json.dump(baseline_kpis, f, indent=2)
+    with open(metrics_out, "w") as f:
+        json.dump(metrics, f, indent=2)
+    feature_importance.to_csv(fi_out, index=False)
+    with open(coverage_out, "w") as f:
+        json.dump(coverage_report, f, indent=2)
+    with open(bts_cov_out, "w") as f:
+        json.dump(bts_cov_report, f, indent=2)
 
     print(f"Saved: {matrix_out}")
     print(f"Saved: {route_out}")
     print(f"Saved: {flight_out}")
     print(f"Saved: {kpi_out}")
+    print(f"Saved: {metrics_out}")
+    print(f"Saved: {fi_out}")
+    print(f"Saved: {coverage_out}")
+    print(f"Saved: {bts_cov_out}")
+    print("\nTravel model metrics:")
+    print(json.dumps(metrics, indent=2))
     print("\nBaseline KPIs:")
     print(json.dumps(baseline_kpis, indent=2))
     print("Step 7 complete.")
