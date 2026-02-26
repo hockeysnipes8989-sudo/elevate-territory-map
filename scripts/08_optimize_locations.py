@@ -151,29 +151,33 @@ def tech_eligible_for_node(tech: pd.Series, node: pd.Series, contractor_scope: s
 
 
 def _infeasible_summary(hire_count: int, message: str, baseline_canceled_voided_usd: float) -> dict:
-    """Build a summary row for a scenario that could not be solved."""
+    """Build a summary row for a scenario that could not be solved.
+
+    Uses None instead of float('nan') so the dict serializes safely via
+    json.dumps (NaN is not valid JSON).
+    """
     return {
         "scenario_hires": int(hire_count),
         "solver_status": -1,
         "solver_proven_optimal": False,
         "solver_message": message,
-        "solver_mip_gap": float("nan"),
+        "solver_mip_gap": None,
         "solver_mip_node_count": 0,
-        "objective_value": float("nan"),
-        "total_appointments": float("nan"),
-        "served_appointments": float("nan"),
-        "unmet_appointments": float("nan"),
-        "travel_cost_usd": float("nan"),
-        "out_of_region_penalty_usd": float("nan"),
-        "hire_cost_usd": float("nan"),
-        "unmet_penalty_usd": float("nan"),
-        "modeled_total_cost_usd": float("nan"),
-        "hours_per_capacity_unit": float("nan"),
-        "new_hire_capacity_hours": float("nan"),
-        "mean_existing_utilization": float("nan"),
-        "max_existing_utilization": float("nan"),
+        "objective_value": None,
+        "total_appointments": None,
+        "served_appointments": None,
+        "unmet_appointments": None,
+        "travel_cost_usd": None,
+        "out_of_region_penalty_usd": None,
+        "hire_cost_usd": None,
+        "unmet_penalty_usd": None,
+        "modeled_total_cost_usd": None,
+        "hours_per_capacity_unit": None,
+        "new_hire_capacity_hours": None,
+        "mean_existing_utilization": None,
+        "max_existing_utilization": None,
         "baseline_canceled_voided_usd": baseline_canceled_voided_usd,
-        "economic_total_with_overhead_usd": float("nan"),
+        "economic_total_with_overhead_usd": None,
     }
 
 

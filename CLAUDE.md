@@ -71,11 +71,12 @@ Expected in `data/raw/`:
 
 ### Optimization External Inputs
 
-Configured in `scripts/config.py`:
+Configured in `scripts/config.py`. Paths default to machine-specific locations but can be
+overridden via environment variables:
 
-- `EXTERNAL_APPOINTMENTS_XLSX`
-- `EXTERNAL_TECH_ROSTER_XLSX`
-- `EXTERNAL_NAVAN_XLSX`
+- `EXTERNAL_APPOINTMENTS_XLSX` (env: `ELEVATE_APPTS_SOURCE`)
+- `EXTERNAL_TECH_ROSTER_XLSX` (env: `ELEVATE_TECH_SOURCE`)
+- `EXTERNAL_NAVAN_XLSX` (env: `ELEVATE_NAVAN_SOURCE`)
 
 Do not commit sensitive external files.
 
@@ -207,6 +208,11 @@ Where:
 - `DEFAULT_OUT_OF_REGION_PENALTY_USD = 0.0`
 - Current model effectively uses flight costs only, with no extra state-crossing surcharge.
 
+### Unmet Demand Penalty
+
+- `DEFAULT_UNMET_PENALTY_USD = 5000.0`
+- Per-appointment penalty for unmet demand in the MILP objective.
+
 ### Canceled/Voided Handling
 
 - Fixed baseline constant from Navan `Report` tab.
@@ -233,8 +239,8 @@ Where:
 Simulation panel (left side) reads scenario files and shows:
 
 - `Total Cost`: `economic_total_with_overhead_usd`
-- `Savings vs N=0`
-- `Marginal Savings` vs previous hire count
+- `Cost Change vs N=0`
+- `Marginal Cost Change` vs previous hire count
 - `Unmet Appointments` (rendered only if any scenario has unmet > 0)
 - `Annual Hire Payroll` (incremental hires only)
 - Mean/max existing-tech utilization
@@ -249,7 +255,7 @@ From current optimization artifacts in this repo:
 - Scenario range: `N=0..4`
 - Proven optimal selection mode: `proven_optimal_only`
 - Best scenario: `N=0`
-- Best total with overhead: `613,042.20` USD
+- Best total with overhead: `612,807.52` USD
 - Baseline canceled/voided constant: `35,632.02` USD
 - Burdened annual per-hire planning cost: `146,640.00` USD
 - Hybrid model valid MAE improvement vs heuristic: `16.20%`

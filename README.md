@@ -48,7 +48,8 @@ python scripts/09_analyze_scenarios.py
 python scripts/05_generate_map.py
 ```
 
-Default external workbook paths are in `scripts/config.py`:
+Default external workbook paths are in `scripts/config.py` (overridable via env vars
+`ELEVATE_APPTS_SOURCE`, `ELEVATE_TECH_SOURCE`, `ELEVATE_NAVAN_SOURCE`):
 
 - `EXTERNAL_APPOINTMENTS_XLSX`
 - `EXTERNAL_TECH_ROSTER_XLSX`
@@ -57,6 +58,7 @@ Default external workbook paths are in `scripts/config.py`:
 ## Current Model Rules (Important)
 
 - Annual burdened planning cost per incremental new hire: `146,640` USD.
+- Unmet demand penalty: `5,000` USD per appointment (`DEFAULT_UNMET_PENALTY_USD`).
 - Out-of-region soft penalty default: `0.0` USD (disabled by default).
 - Canada coverage rule:
   - Techs flagged `constraint_canada_wide=1` (Hakim policy) are Canada-only.
@@ -89,6 +91,7 @@ Default mode is `--engine hybrid`.
   - `travel_matrix_coverage_report.json`
   - `bts_prior_coverage_report.json`
   - `travel_matrix_origin_anomaly_report.json`
+  - `dropped_zero_fare_flights.csv`
 
 Legacy mode remains available: `--engine heuristic`.
 
@@ -111,7 +114,7 @@ From the latest committed optimization artifacts:
 - Navan canceled/voided baseline constant: `35,632.02` USD
 - Scenario window: `N=0..4`
 - Best scenario: `N=0` (proven optimal set)
-- Best total with overhead: `613,042.20` USD
+- Best total with overhead: `612,807.52` USD
 - Hard cap result: no scenario allocates more than 1 hire to the same base
 
 ## Key Output Files

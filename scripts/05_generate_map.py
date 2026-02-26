@@ -593,6 +593,17 @@ def load_simulation_data():
     if summary_df.empty:
         return None
 
+    # Skip infeasible scenarios (solver_status == -1) so NaN/None cost
+    # fields don't break json.dumps or the simulation panel UI.
+    if "solver_status" in summary_df.columns:
+        infeasible_mask = pd.to_numeric(summary_df["solver_status"], errors="coerce") == -1
+        n_infeasible = int(infeasible_mask.sum())
+        if n_infeasible:
+            print(f"  Skipping {n_infeasible} infeasible scenario(s) from simulation panel.")
+            summary_df = summary_df[~infeasible_mask].copy()
+    if summary_df.empty:
+        return None
+
     payload = {}
     for _, row in summary_df.sort_values("scenario_hires").iterrows():
         scenario = int(row["scenario_hires"])
