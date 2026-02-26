@@ -56,6 +56,8 @@ Default external workbook paths are configured in `scripts/config.py`:
 - This value is applied to **incremental new hires only** in Step 8 scenario economics.
 - Default out-of-region soft penalty is `0.0` (`DEFAULT_OUT_OF_REGION_PENALTY_USD`) so
   baseline optimization reflects direct travel costs only.
+- Canada servicing policy: existing techs flagged `constraint_canada_wide=1` are treated as
+  Canada-only resources, and Canada demand is restricted to those techs (Hakim-only policy).
 - Override on demand:
 
 ```bash
