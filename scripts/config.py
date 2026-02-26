@@ -10,6 +10,13 @@ PROCESSED_DIR = os.path.join(PROJECT_ROOT, "data", "processed")
 DOCS_DIR = os.path.join(PROJECT_ROOT, "docs")
 OPTIMIZATION_DIR = os.path.join(PROCESSED_DIR, "optimization")
 
+# Optimization defaults
+# Annual burdened company planning cost per new field-tech hire (not take-home wages).
+DEFAULT_ANNUAL_HIRE_COST_USD = 146640.0
+# Soft penalty applied when assigning work outside a tech's home state.
+# Keep at 0.0 for pure travel-cost-first optimization.
+DEFAULT_OUT_OF_REGION_PENALTY_USD = 0.0
+
 # Source Excel files
 SERVICE_APPTS_DISPATCH = os.path.join(
     RAW_DIR, "UIUC service appointments with dipsatch date - final.xlsx"

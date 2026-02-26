@@ -144,6 +144,7 @@ def main() -> None:
         f"- Baseline (N=0) cost with overhead: **${base_cost:,.2f}**",
         f"- Best scenario cost with overhead: **${best_row['economic_total_with_overhead_usd']:,.2f}**",
         f"- Savings vs N=0: **${report['best_savings_vs_n0_usd']:,.2f} ({report['best_savings_vs_n0_pct']:.2f}%)**",
+        "- Cost totals include annual burdened payroll for incremental new hires.",
         "",
         "## Utilization (Best Scenario)",
         f"- Mean existing-tech utilization: {util_metrics['mean_utilization']:.3f}",

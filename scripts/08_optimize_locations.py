@@ -524,9 +524,17 @@ def main() -> None:
     parser.add_argument("--min-new-hires", type=int, default=0)
     parser.add_argument("--max-new-hires", type=int, default=4)
     parser.add_argument("--target-utilization", type=float, default=0.85)
-    parser.add_argument("--out-of-region-penalty", type=float, default=25.0)
+    parser.add_argument(
+        "--out-of-region-penalty",
+        type=float,
+        default=config.DEFAULT_OUT_OF_REGION_PENALTY_USD,
+    )
     parser.add_argument("--unmet-penalty", type=float, default=5000.0)
-    parser.add_argument("--annual-hire-cost-usd", type=float, default=0.0)
+    parser.add_argument(
+        "--annual-hire-cost-usd",
+        type=float,
+        default=config.DEFAULT_ANNUAL_HIRE_COST_USD,
+    )
     parser.add_argument("--time-limit-sec", type=int, default=180)
     parser.add_argument(
         "--contractor-assignment-scope",
@@ -535,6 +543,10 @@ def main() -> None:
         help="Override contractor assignment geography.",
     )
     args = parser.parse_args()
+    if args.annual_hire_cost_usd < 0:
+        raise ValueError("--annual-hire-cost-usd must be non-negative.")
+    if args.out_of_region_penalty < 0:
+        raise ValueError("--out-of-region-penalty must be non-negative.")
 
     out_dir = Path(args.output_dir)
     inputs = load_inputs(out_dir)
@@ -634,6 +646,8 @@ def main() -> None:
         "out_of_region_penalty": args.out_of_region_penalty,
         "unmet_penalty": args.unmet_penalty,
         "annual_hire_cost_usd": args.annual_hire_cost_usd,
+        "hire_cost_scope": "incremental_new_hires_only",
+        "hire_cost_input_mode": "direct_fixed_value",
         "contractor_assignment_scope": contractor_scope,
         "hps_timeline_assumption": {
             "production_end_estimate": "2027-03-31",

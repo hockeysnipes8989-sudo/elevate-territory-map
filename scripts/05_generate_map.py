@@ -499,6 +499,8 @@ def load_simulation_data():
 
     if "unmet_appointments" not in summary_df.columns:
         summary_df["unmet_appointments"] = 0.0
+    if "hire_cost_usd" not in summary_df.columns:
+        summary_df["hire_cost_usd"] = 0.0
     if "mean_existing_utilization" not in summary_df.columns:
         summary_df["mean_existing_utilization"] = 0.0
     if "max_existing_utilization" not in summary_df.columns:
@@ -565,6 +567,7 @@ def load_simulation_data():
                     row.get("marginal_savings_from_prev_usd", 0)
                 ),
                 "unmet_appointments": float(row.get("unmet_appointments", 0)),
+                "hire_cost_usd": float(row.get("hire_cost_usd", 0)),
                 "mean_existing_utilization": float(row.get("mean_existing_utilization", 0)),
                 "max_existing_utilization": float(row.get("max_existing_utilization", 0)),
             },
@@ -763,6 +766,7 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names):
         <div class="sim-kpi"><div class="label">Savings vs N=0</div><div class="value" id="kpi-savings">-</div></div>
         <div class="sim-kpi"><div class="label">Marginal Savings</div><div class="value" id="kpi-marginal">-</div></div>
         <div class="sim-kpi"><div class="label">Unmet Appointments</div><div class="value" id="kpi-unmet">-</div></div>
+        <div class="sim-kpi"><div class="label">Annual Hire Payroll</div><div class="value" id="kpi-hire-cost">-</div></div>
         <div class="sim-kpi"><div class="label">Mean Utilization</div><div class="value" id="kpi-mean-util">-</div></div>
         <div class="sim-kpi"><div class="label">Max Utilization</div><div class="value" id="kpi-max-util">-</div></div>
       </div>
@@ -818,6 +822,7 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names):
         document.getElementById("kpi-savings").textContent = money(k.savings_vs_n0_usd) + " (" + pct(k.savings_vs_n0_pct) + ")";
         document.getElementById("kpi-marginal").textContent = money(k.marginal_savings_from_prev_usd);
         document.getElementById("kpi-unmet").textContent = Number(k.unmet_appointments || 0).toFixed(1);
+        document.getElementById("kpi-hire-cost").textContent = money(k.hire_cost_usd);
         document.getElementById("kpi-mean-util").textContent = Number(k.mean_existing_utilization || 0).toFixed(3);
         document.getElementById("kpi-max-util").textContent = Number(k.max_existing_utilization || 0).toFixed(3);
       }}
