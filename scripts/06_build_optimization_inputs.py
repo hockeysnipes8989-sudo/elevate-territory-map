@@ -31,13 +31,8 @@ DEFAULT_TECH_XLSX = config.EXTERNAL_TECH_ROSTER_XLSX
 RAW_APPOINTMENTS_SHEET = "report1770130594436"
 DERIVED_APPOINTMENTS_SHEET = "Derived Fields"
 
-TECH_NAME_ALIASES = {
-    "rob cohen": "Robert Cohen",
-    "blad torres": "Bladimir Torres",
-    "damion": "Damion Lyn",
-    "elier": "Elier Martin",
-    "josh brown": "Josh Brown",
-}
+# Tech name aliases are now defined canonically in config.TECH_NAME_ALIASES.
+TECH_NAME_ALIASES = config.TECH_NAME_ALIASES
 
 TECH_LOCATION_AIRPORT_OVERRIDES = {
     "charlotte nc": "CLT",
@@ -99,6 +94,11 @@ def choose_airport_for_location(location: str, airports_df: pd.DataFrame) -> str
             return str(exact.iloc[0]["airport_code"])
         same_state = airports_df[airports_df["state_abbr"] == state_abbr]
         if not same_state.empty:
+            # Prefer a partial city-name match within the state before taking first entry.
+            city_match = same_state[same_state["city_norm"].str.contains(city_norm, na=False)] if city_norm else pd.DataFrame()
+            if not city_match.empty:
+                return str(city_match.iloc[0]["airport_code"])
+            print(f"  NOTE: no exact airport match for '{location}'; using first {state_abbr} airport: {same_state.iloc[0]['airport_code']}")
             return str(same_state.iloc[0]["airport_code"])
     if city_norm:
         near_city = airports_df[airports_df["city_norm"].str.contains(city_norm, na=False)]
@@ -309,6 +309,10 @@ def build_demand_appointments(
     demand["lat"] = demand["lat"].fillna(demand["lat_city_centroid"])
     demand["lon"] = demand["lon"].fillna(demand["lon_city_centroid"])
     demand = demand.drop(columns=["lat_city_centroid", "lon_city_centroid"])
+
+    null_location_count = int(demand["lat"].isna().sum())
+    if null_location_count:
+        print(f"  WARNING: {null_location_count} demand appointments have no geocoded lat/lon and will have no nearest hub airport.")
 
     nearest = demand.apply(
         lambda r: nearest_airport_code(r["lat"], r["lon"], airports_df, r["state_norm"]),

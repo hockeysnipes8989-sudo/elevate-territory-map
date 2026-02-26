@@ -30,17 +30,21 @@ INSTALL_BASE = os.path.join(
     RAW_DIR, "Install Base (all patient sim assets) - final.xlsx"
 )
 
-# External source-of-truth workbooks used by optimization scripts
-EXTERNAL_APPOINTMENTS_XLSX = (
+# External source-of-truth workbooks used by optimization scripts.
+# Set env vars (ELEVATE_APPTS_SOURCE, ELEVATE_TECH_SOURCE, ELEVATE_NAVAN_SOURCE)
+# to override the machine-specific fallback paths below.
+EXTERNAL_APPOINTMENTS_XLSX = os.environ.get(
+    "ELEVATE_APPTS_SOURCE",
     "/Users/patricklipinski/Desktop/opus 4.6 final excel sheets/"
-    "UIUC service appointments with dipsatch date - final.xlsx"
+    "UIUC service appointments with dipsatch date - final.xlsx",
 )
-EXTERNAL_TECH_ROSTER_XLSX = (
-    "/Users/patricklipinski/Downloads/Tech location and product experience (1).xlsx"
+EXTERNAL_TECH_ROSTER_XLSX = os.environ.get(
+    "ELEVATE_TECH_SOURCE",
+    "/Users/patricklipinski/Downloads/Tech location and product experience (1).xlsx",
 )
-EXTERNAL_NAVAN_XLSX = (
-    "/Users/patricklipinski/Downloads/"
-    "REPORT_2026_02_25__13_27_12_948ET-CONTAINS-SENSITIVE-DATA-REMOVE-AFTER-USE.xlsx"
+EXTERNAL_NAVAN_XLSX = os.environ.get(
+    "ELEVATE_NAVAN_SOURCE",
+    "/Users/patricklipinski/Downloads/navan_export.xlsx",
 )
 
 # Processed outputs
@@ -73,29 +77,25 @@ TECH_NAME_MAP = {
     "Elier Alvarez Martin": "Elier Martin",
 }
 
-# Technician status
-TECH_STATUS = {
-    "Alex Rondero": "special",
-    "Ben Walker": "active",
-    "Bladimir Torres": "active",
-    "Clarence Bonner": "active",
-    "Damion Lyn": "special",
-    "Elier Martin": "special",
-    "Eric Olinger": "active",
-    "Hector Arias": "active",
-    "James Sanchez": "active",
-    "Josh Brown": "active",
-    "Robert Cohen": "active",
-    "Scott Fogo": "active",
-    "Tameka Gongs": "active",
-}
-
 # Former technicians to exclude from current-state maps/outputs
 INACTIVE_TECH_NAMES = {
     "David Bazany",
     "John Aleksa",
     "Trent Osborne",
 }
+
+# Technician name aliases (canonical form lookup used in optimization pipeline).
+# Normalized via optimization_utils.normalize_name() before lookup.
+TECH_NAME_ALIASES = {
+    "rob cohen": "Robert Cohen",
+    "blad torres": "Bladimir Torres",
+    "damion": "Damion Lyn",
+    "elier": "Elier Martin",
+    "josh brown": "Josh Brown",
+}
+
+# Optimization cost defaults
+DEFAULT_UNMET_PENALTY_USD = 5000.0
 
 # ---------------------------------------------------------------------------
 # Colors
@@ -180,8 +180,6 @@ GEOCODE_OVERRIDES = {
     "Vallhalla, NY, USA": {"lat": 41.0752130, "lon": -73.7750061},
     "Winnimucca, NV, USA": {"lat": 40.9724295, "lon": -117.7348020},
     "Clarkesville, GA, USA": {"lat": 34.6125971, "lon": -83.5248933},
-    "Gainesville, GA, USA": {"lat": 34.2978794, "lon": -83.8240663},
-    "Bismarck, ND, USA": {"lat": 46.8083270, "lon": -100.7837390},
 }
 
 # ---------------------------------------------------------------------------
@@ -241,6 +239,7 @@ MAJOR_AIRPORTS = [
     {"code": "BIL", "name": "Billings Logan",         "city": "Billings, MT",         "lat": 45.8077, "lon": -108.5428},
     {"code": "FAR", "name": "Fargo Hector",           "city": "Fargo, ND",            "lat": 46.9207, "lon": -96.8158},
     {"code": "BIS", "name": "Bismarck Municipal",     "city": "Bismarck, ND",         "lat": 46.7727, "lon": -100.7467},
+    {"code": "ONT", "name": "Ontario Intl",            "city": "Ontario, CA",          "lat": 34.0558, "lon": -117.6009},
     # --- WEST COAST ---
     {"code": "PHX", "name": "Phoenix Sky Harbor",     "city": "Phoenix, AZ",          "lat": 33.4373, "lon": -112.0078},
     {"code": "TUS", "name": "Tucson Intl",            "city": "Tucson, AZ",           "lat": 32.1161, "lon": -110.9410},

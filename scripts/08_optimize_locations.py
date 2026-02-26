@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import sys
 from pathlib import Path
@@ -53,8 +52,16 @@ def build_demand_nodes(demand: pd.DataFrame) -> pd.DataFrame:
     demand = demand.copy()
     demand["state_norm"] = demand["state_norm"].map(normalize_state)
     demand["duration_hours"] = pd.to_numeric(demand["duration_hours"], errors="coerce").fillna(8.0)
-    demand = demand[demand["state_norm"].notna()].copy()
-    demand = demand[demand["state_norm"] != ""].copy()
+    dropped_mask = demand["state_norm"].isna() | (demand["state_norm"] == "")
+    dropped_count = int(dropped_mask.sum())
+    if dropped_count:
+        dropped_ids = demand.loc[dropped_mask, "appointment_id"].tolist()
+        print(f"  build_demand_nodes: dropping {dropped_count} row(s) with null/empty state_norm.")
+        print(f"    Appointment IDs: {dropped_ids}")
+        pct = dropped_count / max(len(demand), 1) * 100.0
+        if pct > 5.0:
+            print(f"  WARNING: {pct:.1f}% of demand rows dropped — exceeds 5% threshold. Check state_norm values.")
+    demand = demand[~dropped_mask].copy()
 
     grouped = (
         demand.groupby(["state_norm", "skill_class", "required_hps", "required_ls"], as_index=False)
@@ -141,6 +148,33 @@ def tech_eligible_for_node(tech: pd.Series, node: pd.Series, contractor_scope: s
     if not str(tech.get("base_airport_iata", "")).strip():
         return False
     return True
+
+
+def _infeasible_summary(hire_count: int, message: str, baseline_canceled_voided_usd: float) -> dict:
+    """Build a summary row for a scenario that could not be solved."""
+    return {
+        "scenario_hires": int(hire_count),
+        "solver_status": -1,
+        "solver_proven_optimal": False,
+        "solver_message": message,
+        "solver_mip_gap": float("nan"),
+        "solver_mip_node_count": 0,
+        "objective_value": float("nan"),
+        "total_appointments": float("nan"),
+        "served_appointments": float("nan"),
+        "unmet_appointments": float("nan"),
+        "travel_cost_usd": float("nan"),
+        "out_of_region_penalty_usd": float("nan"),
+        "hire_cost_usd": float("nan"),
+        "unmet_penalty_usd": float("nan"),
+        "modeled_total_cost_usd": float("nan"),
+        "hours_per_capacity_unit": float("nan"),
+        "new_hire_capacity_hours": float("nan"),
+        "mean_existing_utilization": float("nan"),
+        "max_existing_utilization": float("nan"),
+        "baseline_canceled_voided_usd": baseline_canceled_voided_usd,
+        "economic_total_with_overhead_usd": float("nan"),
+    }
 
 
 def solve_scenario(
@@ -547,7 +581,7 @@ def main() -> None:
         type=float,
         default=config.DEFAULT_OUT_OF_REGION_PENALTY_USD,
     )
-    parser.add_argument("--unmet-penalty", type=float, default=5000.0)
+    parser.add_argument("--unmet-penalty", type=float, default=config.DEFAULT_UNMET_PENALTY_USD)
     parser.add_argument(
         "--annual-hire-cost-usd",
         type=float,
@@ -573,6 +607,8 @@ def main() -> None:
         raise ValueError("--out-of-region-penalty must be non-negative.")
     if args.max_hires_per_base < 1:
         raise ValueError("--max-hires-per-base must be at least 1.")
+    if not (0 < args.target_utilization <= 1.0):
+        raise ValueError("--target-utilization must be in range (0, 1.0].")
 
     out_dir = Path(args.output_dir)
     inputs = load_inputs(out_dir)
@@ -612,33 +648,53 @@ def main() -> None:
     all_placements = []
     all_util = []
 
+    canceled_voided_usd = float(baseline.get("canceled_voided_spend_usd_report", 0.0))
+
     for hire_count in range(args.min_new_hires, args.max_new_hires + 1):
         print(f"Solving scenario N={hire_count} new hires...")
-        result = solve_scenario(
-            hire_count=hire_count,
-            tech=tech,
-            nodes=demand_nodes,
-            candidates=candidates,
-            exact_cost=exact_cost,
-            origin_avg=origin_avg,
-            global_avg=global_avg,
-            contractor_scope=contractor_scope,
-            target_utilization=args.target_utilization,
-            out_of_region_penalty=args.out_of_region_penalty,
-            unmet_penalty=args.unmet_penalty,
-            annual_hire_cost_usd=args.annual_hire_cost_usd,
-            max_hires_per_base=args.max_hires_per_base,
-            time_limit_sec=args.time_limit_sec,
-        )
+
+        # Pre-check: if we can't possibly satisfy hire_count given candidates and cap, skip.
+        max_hires_possible = len(candidates) * args.max_hires_per_base
+        if hire_count > max_hires_possible:
+            msg = (
+                f"Pre-solve infeasibility: N={hire_count} exceeds max possible hires "
+                f"({max_hires_possible} = {len(candidates)} candidates × {args.max_hires_per_base} cap). "
+                "Skipping."
+            )
+            print(f"  SKIP: {msg}")
+            scenario_summaries.append(_infeasible_summary(hire_count, msg, canceled_voided_usd))
+            continue
+
+        try:
+            result = solve_scenario(
+                hire_count=hire_count,
+                tech=tech,
+                nodes=demand_nodes,
+                candidates=candidates,
+                exact_cost=exact_cost,
+                origin_avg=origin_avg,
+                global_avg=global_avg,
+                contractor_scope=contractor_scope,
+                target_utilization=args.target_utilization,
+                out_of_region_penalty=args.out_of_region_penalty,
+                unmet_penalty=args.unmet_penalty,
+                annual_hire_cost_usd=args.annual_hire_cost_usd,
+                max_hires_per_base=args.max_hires_per_base,
+                time_limit_sec=args.time_limit_sec,
+            )
+        except RuntimeError as exc:
+            msg = f"Solver error for N={hire_count}: {exc}"
+            print(f"  ERROR: {msg}")
+            scenario_summaries.append(_infeasible_summary(hire_count, msg, canceled_voided_usd))
+            continue
+
         summary = result["summary"]
         if not summary["solver_proven_optimal"]:
             print(
                 f"  Warning: N={hire_count} ended without proven optimality "
                 f"(status={summary['solver_status']}, mip_gap={summary['solver_mip_gap']})."
             )
-        summary["baseline_canceled_voided_usd"] = float(
-            baseline.get("canceled_voided_spend_usd_report", 0.0)
-        )
+        summary["baseline_canceled_voided_usd"] = canceled_voided_usd
         summary["economic_total_with_overhead_usd"] = float(
             summary["modeled_total_cost_usd"] + summary["baseline_canceled_voided_usd"]
         )

@@ -35,24 +35,32 @@ def apply_overrides(cache):
     return applied
 
 
-def geocode_key(key, geolocator, cache):
-    """Geocode a single key, using cache if available."""
+def geocode_key(key, geolocator, cache, max_retries=3):
+    """Geocode a single key, using cache if available. Retries on transient errors."""
     if key in cache:
         return cache[key]
 
-    try:
-        location = geolocator.geocode(key, timeout=10)
-        if location:
-            result = {"lat": location.latitude, "lon": location.longitude}
-            cache[key] = result
-            return result
-        else:
-            print(f"  NOT FOUND: {key}")
-            cache[key] = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            location = geolocator.geocode(key, timeout=10)
+            if location:
+                result = {"lat": location.latitude, "lon": location.longitude}
+                cache[key] = result
+                return result
+            else:
+                print(f"  NOT FOUND: {key}")
+                cache[key] = None
+                return None
+        except GeocoderTimedOut as e:
+            wait = 2 ** attempt
+            print(f"  TIMEOUT for {key} (attempt {attempt}/{max_retries}), retrying in {wait}s: {e}")
+            if attempt < max_retries:
+                time.sleep(wait)
+        except GeocoderServiceError as e:
+            print(f"  SERVICE ERROR for {key}: {e}")
             return None
-    except (GeocoderTimedOut, GeocoderServiceError) as e:
-        print(f"  ERROR for {key}: {e}")
-        return None
+    print(f"  FAILED after {max_retries} attempts: {key}")
+    return None
 
 
 def main():

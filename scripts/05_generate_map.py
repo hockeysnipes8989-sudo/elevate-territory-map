@@ -337,7 +337,7 @@ def add_technician_markers(m, techs, layer_name):
     )
     techs_with_coords["location"] = techs_with_coords["location"].fillna("").astype(str)
     techs_with_coords["coord_key"] = techs_with_coords.apply(
-        lambda r: f"{float(r['lat']):.6f}|{float(r['lon']):.6f}|{r['location']}",
+        lambda r: f"{float(r['lat']):.6f}|{float(r['lon']):.6f}",
         axis=1,
     )
 
@@ -824,8 +824,8 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names):
       <div id="sim-buttons"></div>
       <div id="sim-kpis">
         <div class="sim-kpi"><div class="label">Total Cost</div><div class="value" id="kpi-total">-</div></div>
-        <div class="sim-kpi"><div class="label">Savings vs N=0</div><div class="value" id="kpi-savings">-</div></div>
-        <div class="sim-kpi"><div class="label">Marginal Savings</div><div class="value" id="kpi-marginal">-</div></div>
+        <div class="sim-kpi"><div class="label">Cost Change vs N=0</div><div class="value" id="kpi-savings">-</div></div>
+        <div class="sim-kpi"><div class="label">Marginal Cost Change</div><div class="value" id="kpi-marginal">-</div></div>
         <div class="sim-kpi" id="kpi-unmet-card"><div class="label">Unmet Appointments</div><div class="value" id="kpi-unmet">-</div></div>
         <div class="sim-kpi"><div class="label">Annual Hire Payroll</div><div class="value" id="kpi-hire-cost">-</div></div>
         <div class="sim-kpi"><div class="label">Mean Utilization</div><div class="value" id="kpi-mean-util">-</div></div>

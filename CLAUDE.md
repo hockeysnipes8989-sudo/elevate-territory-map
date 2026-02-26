@@ -272,6 +272,10 @@ From current optimization artifacts in this repo:
 2. Canceled/voided overhead is fixed, not behaviorally modeled.
 3. BTS prior is optional and currently inactive if the prior CSV is missing.
 4. Solver runtime for `N=0` can require higher time limits for proven optimality.
+5. YUL (Montreal-Trudeau) travel cost is modeled at ~$676 vs observed ~$959 (29% underestimate).
+   The anomaly-report threshold requires `observed_trip_count >= 2` AND `cost_ratio outside [0.4, 2.2]`.
+   YUL's ratio of 0.705 falls within [0.4, 2.2] so it is not auto-flagged. The gap is real and
+   reflects sparse YUL training data. Manual review of YUL scenario costs is recommended.
 
 ## Recommended Defaults for Re-Runs
 

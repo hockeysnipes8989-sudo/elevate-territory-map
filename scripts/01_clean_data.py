@@ -81,16 +81,25 @@ def load_appointments():
     return df
 
 
+_CANADA_PROVINCE_ABBR = {"AB", "BC", "MB", "NB", "NL", "NS", "NT", "NU", "ON", "PE", "QC", "SK", "YT"}
+_CANADA_PROVINCE_NAMES = {
+    "Alberta", "British Columbia", "Manitoba", "New Brunswick",
+    "Newfoundland and Labrador", "Nova Scotia", "Northwest Territories",
+    "Nunavut", "Ontario", "Prince Edward Island", "Quebec", "Saskatchewan", "Yukon",
+}
+
+
 def build_geocode_key(city, state):
     """Build a geocode-friendly string from city and state."""
     if pd.isna(city) or pd.isna(state):
         return None
     city = str(city).strip()
     state = str(state).strip()
-    if state in ("Canada", "Ontario"):
-        if state == "Ontario":
-            return f"{city}, Ontario, Canada"
-        return f"{city}, Canada"
+    # Detect Canadian provinces by abbreviation or full name
+    if state in _CANADA_PROVINCE_ABBR or state in _CANADA_PROVINCE_NAMES or state == "Canada":
+        if state in _CANADA_PROVINCE_ABBR:
+            return f"{city}, {state}, Canada"
+        return f"{city}, {state}, Canada"
     return f"{city}, {state}, USA"
 
 
@@ -194,9 +203,9 @@ def load_install_base():
     ]
     df = df[[c for c in keep_cols if c in df.columns]].copy()
 
-    # Flag active contracts
+    # Flag active contracts — use word-boundary match to avoid "inactive" matching "active".
     df["has_active_contract"] = df["Contract_Status_Clean"].str.lower().str.contains(
-        "active", na=False
+        r"\bactive\b", regex=True, na=False
     )
 
     print(f"  Total assets: {len(df)}")

@@ -64,7 +64,9 @@ def main() -> None:
     summary["marginal_savings_from_prev_usd"] = summary["marginal_savings_from_prev_usd"].fillna(0.0)
 
     if "solver_proven_optimal" in summary.columns:
-        proven = summary[summary["solver_proven_optimal"].astype(bool)].copy()
+        # Use pd.to_numeric to handle string "0"/"1" values correctly before bool conversion.
+        proven_mask = pd.to_numeric(summary["solver_proven_optimal"], errors="coerce").eq(1)
+        proven = summary[proven_mask].copy()
     else:
         proven = pd.DataFrame()
 

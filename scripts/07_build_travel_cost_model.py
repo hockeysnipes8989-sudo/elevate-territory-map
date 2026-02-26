@@ -719,7 +719,7 @@ def main() -> None:
     clean["is_management"] = clean["traveler_role_norm"].str.contains("management") | clean[
         "traveler_name_norm"
     ].isin(management_names)
-    clean["booking_status_norm"] = clean["Booking Status"].fillna("").astype(str).str.upper()
+    clean["booking_status_norm"] = clean["Booking Status"].fillna("").astype(str).str.strip().str.upper()
 
     clean["usd_total_paid"] = pd.to_numeric(clean["USD Total Paid"], errors="coerce")
     clean["lead_time_days"] = pd.to_numeric(clean["Booking Lead Time (days)"], errors="coerce")
@@ -735,9 +735,23 @@ def main() -> None:
     model_flights = model_flights[model_flights["origin"].ne("") & model_flights["dest"].ne("")]
     model_flights = model_flights.dropna(subset=["usd_total_paid"])
     rows_before_positive_filter = int(len(model_flights))
-    non_positive_rows = int((pd.to_numeric(model_flights["usd_total_paid"], errors="coerce") <= 0).sum())
+    positive_mask = pd.to_numeric(model_flights["usd_total_paid"], errors="coerce") > 0
+    non_positive_rows = int((~positive_mask).sum())
+    dropped_flights = model_flights[~positive_mask].copy() if non_positive_rows else pd.DataFrame()
     if non_positive_rows:
-        model_flights = model_flights[pd.to_numeric(model_flights["usd_total_paid"], errors="coerce") > 0].copy()
+        model_flights = model_flights[positive_mask].copy()
+
+    # Guard: need enough rows to build a useful model.
+    if len(model_flights) == 0:
+        raise ValueError(
+            "No valid model flights after filtering. Check that Clean Flights sheet has "
+            "TICKETED, non-management, positive-cost rows."
+        )
+    if args.engine == "hybrid" and len(model_flights) < 20:
+        raise ValueError(
+            f"Too few model flights ({len(model_flights)}) to train hybrid engine. "
+            "Need at least 20. Use --engine heuristic or provide more flight data."
+        )
 
     route_stats = (
         model_flights.groupby(["origin", "dest"])
@@ -794,7 +808,7 @@ def main() -> None:
         "engine": args.engine,
         "min_direct_route_n": int(args.min_direct_route_n),
         "shrinkage_k": float(args.shrinkage_k),
-        "navan_source": navan_path,
+        "navan_source": "REDACTED",
         "model_rows_before_positive_filter": rows_before_positive_filter,
         "removed_non_positive_paid_rows": non_positive_rows,
         "model_flight_rows": int(len(model_flights)),
@@ -947,7 +961,7 @@ def main() -> None:
     )
 
     baseline_kpis = {
-        "navan_source": navan_path,
+        "navan_source": "REDACTED",
         "ticketed_spend_usd_report": ticketed_spend,
         "canceled_voided_spend_usd_report": canceled_voided_spend,
         "total_spend_usd_report": total_spend,
@@ -984,10 +998,16 @@ def main() -> None:
     bts_cov_report["share_us_cells_using_bts_prior"] = float(bts_cells / us_cells) if us_cells else 0.0
     anomaly_report = build_origin_anomaly_report(matrix=matrix, origin_stats=origin_stats)
 
+    # Validate matrix: warn on any NaN cost cells.
+    nan_cost_count = int(matrix["expected_cost_usd"].isna().sum())
+    if nan_cost_count:
+        print(f"WARNING: {nan_cost_count} NaN expected_cost_usd entries in travel_cost_matrix.csv")
+
     out_dir.mkdir(parents=True, exist_ok=True)
     matrix_out = out_dir / "travel_cost_matrix.csv"
     route_out = out_dir / "navan_route_stats.csv"
     flight_out = out_dir / "navan_clean_flights_modeled.csv"
+    dropped_out = out_dir / "dropped_zero_fare_flights.csv"
     kpi_out = out_dir / "baseline_kpis.json"
     metrics_out = out_dir / "travel_model_metrics.json"
     fi_out = out_dir / "travel_model_feature_importance.csv"
@@ -998,6 +1018,7 @@ def main() -> None:
     matrix.to_csv(matrix_out, index=False)
     route_stats.to_csv(route_out, index=False)
     model_flights.to_csv(flight_out, index=False)
+    dropped_flights.to_csv(dropped_out, index=False)
     with open(kpi_out, "w") as f:
         json.dump(baseline_kpis, f, indent=2)
     with open(metrics_out, "w") as f:
@@ -1013,6 +1034,8 @@ def main() -> None:
     print(f"Saved: {matrix_out}")
     print(f"Saved: {route_out}")
     print(f"Saved: {flight_out}")
+    if not dropped_flights.empty:
+        print(f"Saved: {dropped_out} ({len(dropped_flights)} dropped zero/negative-fare rows)")
     print(f"Saved: {kpi_out}")
     print(f"Saved: {metrics_out}")
     print(f"Saved: {fi_out}")
