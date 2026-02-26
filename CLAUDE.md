@@ -21,6 +21,8 @@ This file is the canonical context handoff for future chats.
 - Default out-of-region penalty is disabled (`0` USD).
 - Hakim-only Canada servicing rule is implemented (Canada is restricted to Canada-wide specialist techs).
 - Simulation panel reads optimization outputs and shows scenario KPIs for `N=0..4`.
+- Technician markers are grouped by shared coordinates so all 16 roster members are visible via popup rosters.
+- New-hire allocation is hard-capped at 1 hire per base by default.
 
 ## Repository Structure (Important Paths)
 
@@ -93,7 +95,7 @@ Typical UI-only changes require Step 5 only.
 
 1. `06_build_optimization_inputs.py`
 2. `07_build_travel_cost_model.py --engine hybrid --min-direct-route-n 5 --shrinkage-k 10`
-3. `08_optimize_locations.py --min-new-hires 0 --max-new-hires 4 --time-limit-sec 600`
+3. `08_optimize_locations.py --min-new-hires 0 --max-new-hires 4 --max-hires-per-base 1 --time-limit-sec 600`
 4. `09_analyze_scenarios.py`
 5. `05_generate_map.py` to refresh scenario panel in map output.
 
@@ -123,7 +125,7 @@ Training rows for the model are filtered to:
 - non-management travelers
 - `Booking Status == TICKETED`
 - valid origin/destination
-- valid numeric paid amount
+- positive numeric paid amount (`USD Total Paid > 0`)
 
 Hybrid route cost logic:
 
@@ -131,9 +133,12 @@ Hybrid route cost logic:
 2. If direct empirical route support is strong:
    - blend empirical and model cost using shrinkage:
    - `w_empirical = n_direct / (n_direct + shrinkage_k)`
-3. If confidence is low on US route and BTS prior is available:
+3. For sparse/non-direct routes:
+   - blend model and heuristic costs using support-based model weight.
+   - apply heuristic-relative guardrails to prevent implausible near-zero route costs.
+4. If confidence is low on US route and BTS prior is available:
    - apply BTS state-pair prior.
-4. If cost is still invalid:
+5. If cost is still invalid:
    - fallback to heuristic estimator.
 
 Outputs:
@@ -144,6 +149,7 @@ Outputs:
 - `travel_model_feature_importance.csv`
 - `travel_matrix_coverage_report.json`
 - `bts_prior_coverage_report.json`
+- `travel_matrix_origin_anomaly_report.json`
 
 Current note:
 
@@ -163,6 +169,7 @@ Decision variables:
 Objective (modeled):
 
 - minimize travel cost + out-of-region penalties + hire payroll + unmet penalties
+- enforce `max_hires_per_base` hard cap across candidate bases (default `1`)
 
 Formally:
 
@@ -216,6 +223,11 @@ Where:
 
 - Default scope is `texas_only` unless explicitly overridden.
 
+### Current Technician Roster Baseline
+
+- Expected current technician count is 16 (includes both HTX contractors).
+- If count diverges from expectation in pipeline/map reads, code now emits a warning for data-gap triage.
+
 ## Map UI and KPI Interpretation
 
 Simulation panel (left side) reads scenario files and shows:
@@ -223,7 +235,7 @@ Simulation panel (left side) reads scenario files and shows:
 - `Total Cost`: `economic_total_with_overhead_usd`
 - `Savings vs N=0`
 - `Marginal Savings` vs previous hire count
-- `Unmet Appointments`
+- `Unmet Appointments` (rendered only if any scenario has unmet > 0)
 - `Annual Hire Payroll` (incremental hires only)
 - Mean/max existing-tech utilization
 - Recommended base placements
@@ -237,16 +249,18 @@ From current optimization artifacts in this repo:
 - Scenario range: `N=0..4`
 - Proven optimal selection mode: `proven_optimal_only`
 - Best scenario: `N=0`
-- Best total with overhead: `499,422.43` USD
+- Best total with overhead: `613,042.20` USD
 - Baseline canceled/voided constant: `35,632.02` USD
 - Burdened annual per-hire planning cost: `146,640.00` USD
-- Hybrid model valid MAE improvement vs heuristic: `10.74%`
+- Hybrid model valid MAE improvement vs heuristic: `16.20%`
 - Navan flight date window used in Step 7: `2025-07-09` to `2026-03-13`
+- No scenario allocates more than one hire to a single base (`max_hires_per_base=1`).
 
 ## Important File Outputs to Check First
 
 - `data/processed/optimization/travel_model_metrics.json`
 - `data/processed/optimization/travel_matrix_coverage_report.json`
+- `data/processed/optimization/travel_matrix_origin_anomaly_report.json`
 - `data/processed/optimization/baseline_kpis.json`
 - `data/processed/optimization/scenario_summary.csv`
 - `data/processed/optimization/analysis_report.json`
@@ -266,7 +280,7 @@ Use these commands unless a test requires deviation:
 ```bash
 /opt/miniconda3/bin/python3 scripts/06_build_optimization_inputs.py
 /opt/miniconda3/bin/python3 scripts/07_build_travel_cost_model.py --engine hybrid --min-direct-route-n 5 --shrinkage-k 10
-/opt/miniconda3/bin/python3 scripts/08_optimize_locations.py --min-new-hires 0 --max-new-hires 4 --time-limit-sec 600
+/opt/miniconda3/bin/python3 scripts/08_optimize_locations.py --min-new-hires 0 --max-new-hires 4 --max-hires-per-base 1 --time-limit-sec 600
 /opt/miniconda3/bin/python3 scripts/09_analyze_scenarios.py
 /opt/miniconda3/bin/python3 scripts/05_generate_map.py
 ```
@@ -281,3 +295,4 @@ State these immediately to avoid context drift:
 4. Canceled/voided cost is fixed baseline overhead, not scenario-variable.
 5. Hakim-only Canada rule is active.
 6. Scenario panel `Total Cost` includes canceled/voided overhead.
+7. Technician map points are grouped by base; roster details are in marker popup.

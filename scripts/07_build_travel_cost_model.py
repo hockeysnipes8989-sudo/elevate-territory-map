@@ -385,16 +385,30 @@ def build_hybrid_matrix(
             float(r["mean_cost"]),
             int(r["trip_count"]),
         )
+    origin_trip_map = {
+        str(r["origin"]): int(r["trip_count"])
+        for _, r in origin_stats.iterrows()
+    }
+    dest_trip_map = {
+        str(r["dest"]): int(r["trip_count"])
+        for _, r in dest_stats.iterrows()
+    }
 
     rows = []
     for origin in origins:
+        origin_support = int(origin_trip_map.get(origin, 0))
         for state in states:
             weights = state_weights.get(state, default_weights)
             weighted_cost = 0.0
             weighted_legs = 0.0
             weighted_model_cost = 0.0
+            weighted_heur_cost = 0.0
             weighted_emp_cost = 0.0
             weighted_blend_emp = 0.0
+            weighted_model_weight = 0.0
+            weighted_origin_support = 0.0
+            weighted_dest_support = 0.0
+            guardrail_hit_weight = 0.0
             weighted_conf = 0.0
             model_weight = 0.0
             emp_weight = 0.0
@@ -421,6 +435,7 @@ def build_hybrid_matrix(
                 else:
                     empirical_cost, direct_n = np.nan, 0
                 support_trip_count += int(direct_n)
+                dest_support = int(dest_trip_map.get(str(dest), 0))
 
                 model_cost = predict_route_cost(
                     bundle=bundle,
@@ -433,15 +448,51 @@ def build_hybrid_matrix(
                 source = "model"
                 conf = 0.3
                 route_cost = float(model_cost)
+                model_mix_weight = 0.0
+                guardrailed = False
 
                 if direct_n >= min_direct_route_n and np.isfinite(empirical_cost):
                     blend_w_emp = float(direct_n) / float(direct_n + shrinkage_k)
-                    route_cost = blend_w_emp * float(empirical_cost) + (1.0 - blend_w_emp) * float(model_cost)
-                    source = "navan_empirical_blend"
+                    if np.isfinite(model_cost):
+                        route_cost = (
+                            blend_w_emp * float(empirical_cost)
+                            + (1.0 - blend_w_emp) * float(model_cost)
+                        )
+                        source = "navan_empirical_blend"
+                    else:
+                        route_cost = float(empirical_cost)
+                        source = "navan_empirical_only"
                     conf = min(0.98, 0.55 + 0.04 * min(direct_n, 10))
                 else:
-                    in_training_space = origin in bundle.seen_origins and str(dest) in bundle.seen_dests
-                    conf = 0.55 if in_training_space else 0.3
+                    if not np.isfinite(model_cost):
+                        route_cost = float(heur_cost)
+                        source = "heuristic_fallback"
+                        conf = 0.2
+                    else:
+                        in_training_space = (
+                            origin in bundle.seen_origins and str(dest) in bundle.seen_dests
+                        )
+                        model_mix_weight = 0.15
+                        if in_training_space:
+                            model_mix_weight += 0.35
+                        model_mix_weight += min(0.30, 0.03 * min(origin_support, 10))
+                        model_mix_weight += min(0.20, 0.02 * min(dest_support, 10))
+                        model_mix_weight = float(min(0.80, max(0.15, model_mix_weight)))
+                        route_cost = (
+                            model_mix_weight * float(model_cost)
+                            + (1.0 - model_mix_weight) * float(heur_cost)
+                        )
+                        source = "model_heuristic_blend"
+                        conf = 0.25 + 0.55 * model_mix_weight
+
+                        # Guardrail sparse model predictions so they do not collapse to near-zero.
+                        floor_cost = max(35.0, 0.35 * float(heur_cost))
+                        ceil_cost = max(floor_cost + 25.0, 3.0 * float(heur_cost))
+                        bounded = float(np.clip(route_cost, floor_cost, ceil_cost))
+                        guardrailed = abs(bounded - route_cost) > 1e-6
+                        if guardrailed:
+                            source = "model_heuristic_blend_guardrailed"
+                            route_cost = bounded
 
                 if state in US_ABBR and conf < 0.35 and bts_prior:
                     origin_state = origin_state_lookup.get(origin)
@@ -457,11 +508,18 @@ def build_hybrid_matrix(
                     source = "heuristic_fallback"
                     conf = 0.2
                     blend_w_emp = 0.0
+                    model_mix_weight = 0.0
 
                 weighted_cost += wt * route_cost
                 weighted_legs += wt * float(heur_legs)
+                weighted_heur_cost += wt * float(heur_cost)
                 weighted_conf += wt * conf
                 weighted_blend_emp += wt * blend_w_emp
+                weighted_model_weight += wt * model_mix_weight
+                weighted_origin_support += wt * float(origin_support)
+                weighted_dest_support += wt * float(dest_support)
+                if guardrailed:
+                    guardrail_hit_weight += wt
                 source_weight[source] += wt
 
                 if np.isfinite(model_cost):
@@ -485,14 +543,90 @@ def build_hybrid_matrix(
                     "confidence_tier": tier_from_score(conf_score),
                     "confidence_score": conf_score,
                     "model_cost_usd": float(weighted_model_cost / model_weight) if model_weight > 0 else np.nan,
+                    "heuristic_cost_usd": float(weighted_heur_cost),
                     "empirical_route_cost_usd": float(weighted_emp_cost / emp_weight) if emp_weight > 0 else np.nan,
                     "blended_route_cost_usd": float(weighted_cost),
                     "support_trip_count": int(support_trip_count),
                     "blend_weight_empirical": float(weighted_blend_emp),
+                    "blend_weight_model": float(weighted_model_weight),
+                    "origin_support_trip_count": float(weighted_origin_support),
+                    "destination_support_trip_count": float(weighted_dest_support),
+                    "guardrail_hit_weight": float(guardrail_hit_weight),
                     "prior_source": dominant_source,
                 }
             )
     return pd.DataFrame(rows)
+
+
+def build_origin_anomaly_report(matrix: pd.DataFrame, origin_stats: pd.DataFrame) -> dict:
+    """Summarize origin-level matrix anomalies against observed Navan origin means."""
+    if matrix.empty:
+        return {
+            "origin_count": 0,
+            "flagged_count": 0,
+            "flagged_origins": [],
+        }
+
+    matrix_origin = (
+        matrix.groupby("origin_airport", as_index=False)
+        .agg(
+            matrix_mean_expected_cost_usd=("expected_cost_usd", "mean"),
+            matrix_min_expected_cost_usd=("expected_cost_usd", "min"),
+            matrix_max_expected_cost_usd=("expected_cost_usd", "max"),
+            mean_confidence_score=("confidence_score", "mean"),
+            dominant_prior_source=(
+                "prior_source",
+                lambda s: s.value_counts().idxmax() if not s.empty else "unknown",
+            ),
+            mean_guardrail_hit_weight=("guardrail_hit_weight", "mean"),
+        )
+        .rename(columns={"origin_airport": "origin"})
+    )
+    observed = origin_stats.rename(
+        columns={
+            "trip_count": "observed_trip_count",
+            "mean_cost": "observed_mean_cost_usd",
+        }
+    )[["origin", "observed_trip_count", "observed_mean_cost_usd"]]
+    merged = matrix_origin.merge(observed, on="origin", how="left")
+    merged["observed_trip_count"] = (
+        pd.to_numeric(merged["observed_trip_count"], errors="coerce")
+        .fillna(0)
+        .astype(int)
+    )
+    merged["observed_mean_cost_usd"] = pd.to_numeric(
+        merged["observed_mean_cost_usd"], errors="coerce"
+    )
+    merged["cost_ratio_vs_observed"] = np.where(
+        merged["observed_mean_cost_usd"].fillna(0) > 0,
+        merged["matrix_mean_expected_cost_usd"] / merged["observed_mean_cost_usd"],
+        np.nan,
+    )
+    merged["abs_delta_vs_observed_usd"] = (
+        merged["matrix_mean_expected_cost_usd"] - merged["observed_mean_cost_usd"]
+    ).abs()
+
+    flag_mask = (
+        (merged["observed_trip_count"] >= 2)
+        & (merged["abs_delta_vs_observed_usd"] >= 120.0)
+        & (
+            (merged["cost_ratio_vs_observed"] <= 0.4)
+            | (merged["cost_ratio_vs_observed"] >= 2.2)
+        )
+    )
+    flagged = merged[flag_mask].copy().sort_values(
+        "abs_delta_vs_observed_usd", ascending=False
+    )
+    top_low = merged.sort_values("matrix_mean_expected_cost_usd").head(10)
+    top_high = merged.sort_values("matrix_mean_expected_cost_usd", ascending=False).head(10)
+
+    return {
+        "origin_count": int(len(merged)),
+        "flagged_count": int(len(flagged)),
+        "flagged_origins": flagged.to_dict(orient="records"),
+        "lowest_mean_expected_cost_origins": top_low.to_dict(orient="records"),
+        "highest_mean_expected_cost_origins": top_high.to_dict(orient="records"),
+    }
 
 
 def build_heuristic_valid_predictions(
@@ -600,6 +734,10 @@ def main() -> None:
     model_flights = model_flights[model_flights["booking_status_norm"].eq("TICKETED")]
     model_flights = model_flights[model_flights["origin"].ne("") & model_flights["dest"].ne("")]
     model_flights = model_flights.dropna(subset=["usd_total_paid"])
+    rows_before_positive_filter = int(len(model_flights))
+    non_positive_rows = int((pd.to_numeric(model_flights["usd_total_paid"], errors="coerce") <= 0).sum())
+    if non_positive_rows:
+        model_flights = model_flights[pd.to_numeric(model_flights["usd_total_paid"], errors="coerce") > 0].copy()
 
     route_stats = (
         model_flights.groupby(["origin", "dest"])
@@ -657,6 +795,8 @@ def main() -> None:
         "min_direct_route_n": int(args.min_direct_route_n),
         "shrinkage_k": float(args.shrinkage_k),
         "navan_source": navan_path,
+        "model_rows_before_positive_filter": rows_before_positive_filter,
+        "removed_non_positive_paid_rows": non_positive_rows,
         "model_flight_rows": int(len(model_flights)),
         "unique_origins_in_model": int(model_flights["origin"].nunique()),
         "unique_dests_in_model": int(model_flights["dest"].nunique()),
@@ -842,6 +982,7 @@ def main() -> None:
     bts_cov_report["us_matrix_cells"] = us_cells
     bts_cov_report["cells_using_bts_prior"] = bts_cells
     bts_cov_report["share_us_cells_using_bts_prior"] = float(bts_cells / us_cells) if us_cells else 0.0
+    anomaly_report = build_origin_anomaly_report(matrix=matrix, origin_stats=origin_stats)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     matrix_out = out_dir / "travel_cost_matrix.csv"
@@ -852,6 +993,7 @@ def main() -> None:
     fi_out = out_dir / "travel_model_feature_importance.csv"
     coverage_out = out_dir / "travel_matrix_coverage_report.json"
     bts_cov_out = out_dir / "bts_prior_coverage_report.json"
+    anomaly_out = out_dir / "travel_matrix_origin_anomaly_report.json"
 
     matrix.to_csv(matrix_out, index=False)
     route_stats.to_csv(route_out, index=False)
@@ -865,6 +1007,8 @@ def main() -> None:
         json.dump(coverage_report, f, indent=2)
     with open(bts_cov_out, "w") as f:
         json.dump(bts_cov_report, f, indent=2)
+    with open(anomaly_out, "w") as f:
+        json.dump(anomaly_report, f, indent=2)
 
     print(f"Saved: {matrix_out}")
     print(f"Saved: {route_out}")
@@ -874,6 +1018,7 @@ def main() -> None:
     print(f"Saved: {fi_out}")
     print(f"Saved: {coverage_out}")
     print(f"Saved: {bts_cov_out}")
+    print(f"Saved: {anomaly_out}")
     print("\nTravel model metrics:")
     print(json.dumps(metrics, indent=2))
     print("\nBaseline KPIs:")

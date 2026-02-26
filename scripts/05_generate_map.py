@@ -45,6 +45,24 @@ def exclude_inactive_technicians(techs):
     return filtered.copy()
 
 
+def validate_current_tech_headcount(techs):
+    """Warn if current technician roster count differs from configured expectation."""
+    expected = getattr(config, "EXPECTED_CURRENT_TECH_COUNT", None)
+    if expected is None:
+        return
+    actual = int(len(techs))
+    if actual == int(expected):
+        return
+    names = sorted(techs["name"].dropna().astype(str).tolist()) if "name" in techs.columns else []
+    print(
+        f"WARNING: Expected {int(expected)} current technicians but found {actual} in technicians dataset."
+    )
+    if names:
+        print("  Technician names loaded:")
+        for name in names:
+            print(f"    - {name}")
+
+
 def get_choropleth_color(value, min_val, max_val, colors):
     """Map a value to a color in the gradient."""
     if max_val == min_val:
@@ -309,30 +327,68 @@ def add_technician_markers(m, techs, layer_name):
     fg = folium.FeatureGroup(name=layer_name, show=True)
 
     techs_with_coords = exclude_inactive_technicians(techs).dropna(subset=["lat", "lon"])
+    if techs_with_coords.empty:
+        fg.add_to(m)
+        return fg
 
-    for _, row in techs_with_coords.iterrows():
-        status = row.get("status", "active")
-        color = config.TECH_COLORS.get(status, "blue")
+    techs_with_coords = techs_with_coords.copy()
+    techs_with_coords["status"] = (
+        techs_with_coords["status"].fillna("active").astype(str).str.lower()
+    )
+    techs_with_coords["location"] = techs_with_coords["location"].fillna("").astype(str)
+    techs_with_coords["coord_key"] = techs_with_coords.apply(
+        lambda r: f"{float(r['lat']):.6f}|{float(r['lon']):.6f}|{r['location']}",
+        axis=1,
+    )
 
-        icon_map = {
-            "active": "user",
-            "special": "star",
-        }
-        icon_name = icon_map.get(status, "user")
+    grouped = techs_with_coords.groupby("coord_key", sort=False)
+    for _, group in grouped:
+        group = group.sort_values(["status", "name"])
+        lat = float(group.iloc[0]["lat"])
+        lon = float(group.iloc[0]["lon"])
+        location = str(group.iloc[0].get("location", "")).strip() or "Unknown"
+        num_techs = int(len(group))
 
+        if num_techs == 1:
+            row = group.iloc[0]
+            status = str(row.get("status", "active")).lower()
+            color = config.TECH_COLORS.get(status, "blue")
+            icon_name = "star" if status == "special" else "user"
+            tooltip = f"{row['name']} ({status})"
+        else:
+            status_counts = group["status"].value_counts().to_dict()
+            if len(status_counts) == 1:
+                only_status = next(iter(status_counts.keys()))
+                color = config.TECH_COLORS.get(only_status, "blue")
+            else:
+                color = "blue"
+            icon_name = "users"
+            tooltip = f"{location} ({num_techs} techs)"
+
+        roster_lines = []
+        for _, r in group.iterrows():
+            name = str(r.get("name", "")).strip()
+            status = str(r.get("status", "active")).strip().title()
+            comment_raw = r.get("comment", "")
+            comment = "" if pd.isna(comment_raw) else str(comment_raw).strip()
+            if comment.lower() == "nan":
+                comment = ""
+            extra = f" - {comment}" if comment else ""
+            roster_lines.append(f"<li><b>{name}</b> ({status}){extra}</li>")
+        roster_html = "".join(roster_lines)
         popup_html = (
-            f"<b>{row['name']}</b><br>"
-            f"Location: {row['location']}<br>"
-            f"Status: {status.title()}<br>"
+            f"<b>{location}</b><br>"
+            f"Technicians at this base: <b>{num_techs}</b><br>"
+            "<div style='margin-top:6px;'>"
+            "<b>Roster</b>"
+            f"<ul style='margin:4px 0 0 16px; padding:0;'>{roster_html}</ul>"
+            "</div>"
         )
-        comment = row.get("comment")
-        if pd.notna(comment):
-            popup_html += f"Role: {comment}"
 
         folium.Marker(
-            location=[row["lat"], row["lon"]],
-            popup=folium.Popup(popup_html, max_width=300),
-            tooltip=f"{row['name']} ({status})",
+            location=[lat, lon],
+            popup=folium.Popup(popup_html, max_width=360),
+            tooltip=tooltip,
             icon=folium.Icon(color=color, icon=icon_name, prefix="fa"),
         ).add_to(fg)
 
@@ -414,6 +470,11 @@ def add_service_type_legend(m, service_type_counts):
         if status == "former":
             continue
         legend_html += f'<span style="background:{color};width:12px;height:12px;display:inline-block;margin-right:4px;border-radius:50%;border:1px solid #999;"></span>{status.title()}<br>'
+    legend_html += (
+        "<div style='margin-top:6px;color:#666;font-size:10px;'>"
+        "Tech markers may represent multiple technicians at the same base location."
+        "</div>"
+    )
     legend_html += "</div>"
     m.get_root().html.add_child(folium.Element(legend_html))
 
@@ -765,7 +826,7 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names):
         <div class="sim-kpi"><div class="label">Total Cost</div><div class="value" id="kpi-total">-</div></div>
         <div class="sim-kpi"><div class="label">Savings vs N=0</div><div class="value" id="kpi-savings">-</div></div>
         <div class="sim-kpi"><div class="label">Marginal Savings</div><div class="value" id="kpi-marginal">-</div></div>
-        <div class="sim-kpi"><div class="label">Unmet Appointments</div><div class="value" id="kpi-unmet">-</div></div>
+        <div class="sim-kpi" id="kpi-unmet-card"><div class="label">Unmet Appointments</div><div class="value" id="kpi-unmet">-</div></div>
         <div class="sim-kpi"><div class="label">Annual Hire Payroll</div><div class="value" id="kpi-hire-cost">-</div></div>
         <div class="sim-kpi"><div class="label">Mean Utilization</div><div class="value" id="kpi-mean-util">-</div></div>
         <div class="sim-kpi"><div class="label">Max Utilization</div><div class="value" id="kpi-max-util">-</div></div>
@@ -783,6 +844,9 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names):
       const scenarioLayerNames = {layer_js};
       const orderedScenarios = {json.dumps(ordered_keys)};
       const defaultScenario = "{default_key}";
+      const showUnmetKpi = orderedScenarios.some((s) =>
+        Number(((scenarioData[s] || {{}}).kpis || {{}}).unmet_appointments || 0) > 0
+      );
       let mapRef = null;
       let scenarioLayers = {{}};
 
@@ -821,7 +885,9 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names):
         document.getElementById("kpi-total").textContent = money(k.economic_total_with_overhead_usd);
         document.getElementById("kpi-savings").textContent = money(k.savings_vs_n0_usd) + " (" + pct(k.savings_vs_n0_pct) + ")";
         document.getElementById("kpi-marginal").textContent = money(k.marginal_savings_from_prev_usd);
-        document.getElementById("kpi-unmet").textContent = Number(k.unmet_appointments || 0).toFixed(1);
+        if (showUnmetKpi) {{
+          document.getElementById("kpi-unmet").textContent = Number(k.unmet_appointments || 0).toFixed(1);
+        }}
         document.getElementById("kpi-hire-cost").textContent = money(k.hire_cost_usd);
         document.getElementById("kpi-mean-util").textContent = Number(k.mean_existing_utilization || 0).toFixed(3);
         document.getElementById("kpi-max-util").textContent = Number(k.max_existing_utilization || 0).toFixed(3);
@@ -907,6 +973,10 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names):
           return;
         }}
         renderButtons();
+        const unmetCard = document.getElementById("kpi-unmet-card");
+        if (unmetCard && !showUnmetKpi) {{
+          unmetCard.style.display = "none";
+        }}
         wireMobileToggle();
         showScenario(defaultScenario);
       }}
@@ -941,6 +1011,7 @@ def main():
     techs = pd.read_csv(config.GEOCODED_TECHS_CSV)
     raw_tech_count = len(techs)
     techs = exclude_inactive_technicians(techs)
+    validate_current_tech_headcount(techs)
     filtered_out = raw_tech_count - len(techs)
     if filtered_out:
         print(f"  Filtered inactive technicians from map layer: {filtered_out}")

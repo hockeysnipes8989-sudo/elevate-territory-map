@@ -167,6 +167,11 @@ def load_technicians():
         return f"{loc}, USA"
 
     df["geocode_key"] = df["location"].apply(tech_geocode_key)
+    expected = getattr(config, "EXPECTED_CURRENT_TECH_COUNT", None)
+    if expected is not None and int(len(df)) != int(expected):
+        print(
+            f"  WARNING: Expected {int(expected)} current technicians but loaded {len(df)} from source roster."
+        )
     print(f"  Technicians: {len(df)}")
     return df.reset_index(drop=True)
 

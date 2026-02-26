@@ -16,6 +16,8 @@ DEFAULT_ANNUAL_HIRE_COST_USD = 146640.0
 # Soft penalty applied when assigning work outside a tech's home state.
 # Keep at 0.0 for pure travel-cost-first optimization.
 DEFAULT_OUT_OF_REGION_PENALTY_USD = 0.0
+# Verified current field-tech roster count (includes HTX contractors).
+EXPECTED_CURRENT_TECH_COUNT = 16
 
 # Source Excel files
 SERVICE_APPTS_DISPATCH = os.path.join(

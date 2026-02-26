@@ -43,7 +43,7 @@ Outputs are written to `data/processed/optimization/`.
 ```bash
 python scripts/06_build_optimization_inputs.py
 python scripts/07_build_travel_cost_model.py --engine hybrid --min-direct-route-n 5 --shrinkage-k 10
-python scripts/08_optimize_locations.py --min-new-hires 0 --max-new-hires 4 --time-limit-sec 600
+python scripts/08_optimize_locations.py --min-new-hires 0 --max-new-hires 4 --max-hires-per-base 1 --time-limit-sec 600
 python scripts/09_analyze_scenarios.py
 python scripts/05_generate_map.py
 ```
@@ -66,17 +66,21 @@ Default external workbook paths are in `scripts/config.py`:
   - Not optimized per scenario.
   - Added as a fixed baseline constant from Navan `Report` tab to every scenario.
 - Contractor scope defaults to `texas_only` unless explicitly overridden.
+- New-hire concentration cap defaults to `1` per base (`--max-hires-per-base 1`).
+- Current verified technician roster is 16 total (including both HTX contractors).
+- Technician markers are grouped by shared base location (popup lists all names at that base).
 
 ## Travel Cost Engine (Step 7)
 
 Default mode is `--engine hybrid`.
 
 - Inputs: Navan `Clean Flights` + `Report`.
-- Training rows: non-management, `TICKETED`, valid origin/destination, numeric paid amount.
+- Training rows: non-management, `TICKETED`, valid origin/destination, positive paid amount.
 - Hybrid route estimate logic:
   - Use empirical direct-route information when support is strong.
-  - Blend empirical + model prediction using shrinkage.
-  - Use model-only estimate for sparse/unseen pairs.
+  - Blend empirical + model prediction using shrinkage for strong direct routes.
+  - For sparse routes, blend model prediction with heuristic estimate using support-based weights.
+  - Apply guardrails so sparse predictions cannot collapse to unrealistic near-zero fares.
   - Optional BTS prior for low-confidence US gaps.
   - Final fallback to legacy heuristic if needed.
 - Diagnostics written:
@@ -84,6 +88,7 @@ Default mode is `--engine hybrid`.
   - `travel_model_feature_importance.csv`
   - `travel_matrix_coverage_report.json`
   - `bts_prior_coverage_report.json`
+  - `travel_matrix_origin_anomaly_report.json`
 
 Legacy mode remains available: `--engine heuristic`.
 
@@ -106,7 +111,8 @@ From the latest committed optimization artifacts:
 - Navan canceled/voided baseline constant: `35,632.02` USD
 - Scenario window: `N=0..4`
 - Best scenario: `N=0` (proven optimal set)
-- Best total with overhead: `499,422.43` USD
+- Best total with overhead: `613,042.20` USD
+- Hard cap result: no scenario allocates more than 1 hire to the same base
 
 ## Key Output Files
 
@@ -118,6 +124,7 @@ From the latest committed optimization artifacts:
 - `data/processed/optimization/scenario_summary_enhanced.csv`
 - `data/processed/optimization/recommended_hire_locations.csv`
 - `data/processed/optimization/analysis_report.json`
+- `data/processed/optimization/travel_matrix_origin_anomaly_report.json`
 - `docs/index.html`
 
 ## Deeper Documentation

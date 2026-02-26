@@ -156,6 +156,7 @@ def solve_scenario(
     out_of_region_penalty: float,
     unmet_penalty: float,
     annual_hire_cost_usd: float,
+    max_hires_per_base: int,
     time_limit_sec: int,
 ) -> dict:
     """Solve one MILP scenario for a fixed new-hire count."""
@@ -255,7 +256,7 @@ def solve_scenario(
         y_idx[ci] = idx
         var_names.append(f"y__{crow['candidate_id']}")
         lb.append(0.0)
-        ub.append(float(hire_count))
+        ub.append(float(min(hire_count, max_hires_per_base)))
         integrality.append(1)
         obj.append(float(annual_hire_cost_usd))
         meta.append({"var_type": "y", "candidate_idx": ci})
@@ -554,6 +555,12 @@ def main() -> None:
     )
     parser.add_argument("--time-limit-sec", type=int, default=180)
     parser.add_argument(
+        "--max-hires-per-base",
+        type=int,
+        default=1,
+        help="Hard cap on hires allocated to any single candidate base.",
+    )
+    parser.add_argument(
         "--contractor-assignment-scope",
         choices=["texas_only", "anywhere"],
         default=None,
@@ -564,6 +571,8 @@ def main() -> None:
         raise ValueError("--annual-hire-cost-usd must be non-negative.")
     if args.out_of_region_penalty < 0:
         raise ValueError("--out-of-region-penalty must be non-negative.")
+    if args.max_hires_per_base < 1:
+        raise ValueError("--max-hires-per-base must be at least 1.")
 
     out_dir = Path(args.output_dir)
     inputs = load_inputs(out_dir)
@@ -618,6 +627,7 @@ def main() -> None:
             out_of_region_penalty=args.out_of_region_penalty,
             unmet_penalty=args.unmet_penalty,
             annual_hire_cost_usd=args.annual_hire_cost_usd,
+            max_hires_per_base=args.max_hires_per_base,
             time_limit_sec=args.time_limit_sec,
         )
         summary = result["summary"]
@@ -669,6 +679,7 @@ def main() -> None:
         "out_of_region_penalty": args.out_of_region_penalty,
         "unmet_penalty": args.unmet_penalty,
         "annual_hire_cost_usd": args.annual_hire_cost_usd,
+        "max_hires_per_base": args.max_hires_per_base,
         "hire_cost_scope": "incremental_new_hires_only",
         "hire_cost_input_mode": "direct_fixed_value",
         "contractor_assignment_scope": contractor_scope,
