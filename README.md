@@ -106,7 +106,7 @@ Legacy mode remains available: `--engine heuristic`.
 
 **Step 10** corrects the raw matrix with BTS government fares (`travel_cost_matrix_bts_corrected.csv`).
 
-- Embeds BTS Q2 2025 itinerary fares ÷ 2 × 1.22 corporate premium for 59 US airports + 6 Canadian airports (×2.0 cross-border multiplier).
+- Embeds BTS Q2 2025 itinerary fares ÷ 2 × 1.22 corporate premium for 62 US airports + 6 Canadian airports (×2.0 cross-border multiplier).
 - Blends BTS benchmarks with Navan actuals by data density (0–4 flights → 80% BTS; 5–9 → 60% BTS; 10–19 → 40% BTS; 20+ → Navan only).
 - Per-route override: routes with ≥5 Navan flights use observed actuals directly.
 - Audit log written to `cost_correction_log.csv` (one row per origin airport).
@@ -133,7 +133,40 @@ From the latest committed optimization artifacts (BTS-corrected matrix + full co
 - N=0 total with overhead: `1,287,451.57` USD *(includes hotel $399 + rental $235 per fly trip)*
 - N=0 travel cost: `1,251,819.55` USD
 - Hard cap result: no scenario allocates more than 1 hire to the same base
-- All 5 scenarios solved to proven optimality
+- All 5 scenarios solved to proven optimality (MIP gap = 0.0)
+- All 1,480 appointments served across all scenarios (zero unmet)
+- Active techs at N=0: 15 (one tech has `availability_fte=0.0`)
+- Target utilization: 85% (demand-normalized capacity model)
+
+### Scenario Results
+
+| N | Travel | Payroll | Overhead | Total |
+|---|--------|---------|----------|-------|
+| 0 | $1,251,819.55 | $0 | $35,632.02 | **$1,287,451.57** |
+| 1 | $1,164,360.50 | $146,640 | $35,632.02 | $1,346,632.52 |
+| 2 | $1,095,731.96 | $293,280 | $35,632.02 | $1,424,643.98 |
+| 3 | $1,036,813.64 | $439,920 | $35,632.02 | $1,512,365.66 |
+| 4 | $989,421.17 | $586,560 | $35,632.02 | $1,611,613.19 |
+
+### Hiring Recommendations by Scenario
+
+| N | Recommended Bases |
+|---|-------------------|
+| 1 | CLE (Cleveland, OH) |
+| 2 | CLE, MKE (Milwaukee, WI) |
+| 3 | BOS (Boston, MA), CLE, ORD (Chicago, IL) |
+| 4 | BOS, CLE, ORD, Fort Smith AR (→ LIT airport) |
+
+All scenarios cost more than N=0. Marginal travel savings diminish with each additional hire.
+
+## Key Caveats
+
+- Hotel cost is flat $399/trip (Navan 2.5-night average). Trip bundling is not modeled.
+- Great-circle distance (not road distance) for drive/fly classification at 300 mi threshold.
+- No seasonality — all appointments treated equivalently regardless of time of year.
+- New hires cannot serve HPS nodes (policy constraint). 115 HPS appointments are served by existing certified techs.
+- SHV and ICT travel costs use proxy airports (LIT and TUL respectively), not direct BTS-calibrated values.
+- BTS fares are Q2 2025 data. Tier-2 airports (~24 of 68) use estimated midpoints.
 
 ## Key Output Files
 
@@ -142,7 +175,7 @@ From the latest committed optimization artifacts (BTS-corrected matrix + full co
 - `data/processed/optimization/candidate_bases.csv`
 - `data/processed/optimization/travel_cost_matrix.csv` — raw hybrid model matrix
 - `data/processed/optimization/travel_cost_matrix_bts_corrected.csv` — BTS-calibrated matrix (active)
-- `data/processed/optimization/full_cost_table.csv` — per-(tech/candidate, node) drive/fly cost table
+- `data/processed/optimization/full_cost_table.csv` — per-(tech/candidate, node) drive/fly cost table (8,008 rows)
 - `data/processed/optimization/cost_correction_log.csv` — per-airport BTS correction audit trail
 - `data/processed/optimization/scenario_summary.csv`
 - `data/processed/optimization/scenario_summary_enhanced.csv`

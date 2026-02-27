@@ -5,7 +5,7 @@
 This repository supports Elevate Healthcare service planning across the US and Canada with:
 
 1. An interactive map (`docs/index.html`) for assets, appointments, technicians, territories, airports, and scenario overlays.
-2. A cost optimization pipeline (`scripts/06` to `09`) for evaluating incremental hiring scenarios.
+2. A cost optimization pipeline (`scripts/06` to `11`) for evaluating incremental hiring scenarios.
 
 This file is the canonical context handoff for future chats.
 
@@ -214,7 +214,7 @@ Where:
 ### Out-of-Region Friction
 
 - `DEFAULT_OUT_OF_REGION_PENALTY_USD = 0.0`
-- Current model effectively uses flight costs only, with no extra state-crossing surcharge.
+- No extra state-crossing surcharge. Travel cost alone drives assignment decisions.
 
 ### Unmet Demand Penalty
 
@@ -232,6 +232,22 @@ Where:
 - Canada nodes can only be assigned to techs with `constraint_canada_wide = 1`.
 - Those techs are restricted to Canada nodes only.
 - New hires are currently blocked from serving Canada nodes.
+
+### Skill Constraints (HPS / LS)
+
+- Existing techs must have `skill_hps=1` to serve HPS nodes and `skill_ls=1` to serve LS nodes.
+- **New hires cannot serve HPS nodes** — hard variable bound (`ub=0.0`) in Step 8. This is a policy assumption, not a data-driven constraint. If new hires can be HPS-trained, the model underestimates their value.
+- New hires can serve LS and regular nodes with no restriction.
+- 115 HPS appointments in the demand pool are all served by existing HPS-certified techs.
+
+### Capacity Model
+
+- Capacity is **demand-normalized**, not calendar-based. There is no fixed "2,080 annual hours" concept.
+- Formula: `hours_per_unit = total_demand_hours / (total_FTE × target_utilization)`
+- Each tech's capacity: `availability_fte × hours_per_unit`
+- `target_utilization` defaults to `0.85` (Step 08 CLI argument, not in config.py). This means the fleet targets 85% utilization at N=0, leaving 15% buffer for scheduling friction.
+- Techs with `availability_fte=0.0` (e.g., James Sanchez / Alex Rondero) get zero capacity and zero assignments.
+- Current computed values: total_FTE=13.25, total_demand=86,760 hrs, hours_per_unit=7,703.44
 
 ### Contractor Scope
 
@@ -272,6 +288,31 @@ From current optimization artifacts (BTS-corrected matrix + full cost model acti
 - Drive/fly split in cost table: 8.5% drive, 91.5% fly
 - Navan flight date window used in Step 7: `2025-07-09` to `2026-03-13`
 - No scenario allocates more than one hire to a single base (`max_hires_per_base=1`).
+- All 1,480 appointments served across all scenarios (zero unmet).
+- Active techs at N=0: 15 (excludes James Sanchez / Rondero, `availability_fte=0.0`).
+- Mean utilization at N=0: 85.7%. Max: 99.99% (one tech near ceiling — workforce is tightly loaded).
+
+### Scenario Cost Summary
+
+| N | Travel | Payroll | Overhead | Total |
+|---|--------|---------|----------|-------|
+| 0 | $1,251,819.55 | $0 | $35,632.02 | $1,287,451.57 |
+| 1 | $1,164,360.50 | $146,640 | $35,632.02 | $1,346,632.52 |
+| 2 | $1,095,731.96 | $293,280 | $35,632.02 | $1,424,643.98 |
+| 3 | $1,036,813.64 | $439,920 | $35,632.02 | $1,512,365.66 |
+| 4 | $989,421.17 | $586,560 | $35,632.02 | $1,611,613.19 |
+
+Marginal travel savings diminish: $87K (N=0→1), $69K (N=1→2), $59K (N=2→3), $47K (N=3→4).
+
+### Hiring Placements by Scenario
+
+| N | Recommended Bases |
+|---|-------------------|
+| 1 | CLE (Cleveland, OH) |
+| 2 | CLE, MKE (Milwaukee, WI) |
+| 3 | BOS (Boston, MA), CLE, ORD (Chicago, IL) |
+| 4 | BOS, CLE, ORD, Fort Smith AR (→ LIT airport) |
+
 - BTS-corrected matrix airport benchmarks (key sanity checks):
   - MDW: $471 → $199 (-57.7%) — now grounded in BTS data, not model speculation
   - TPA: $418 → $563 (+34.5%) — 6 TPA-based techs now realistically priced
@@ -296,24 +337,33 @@ From current optimization artifacts (BTS-corrected matrix + full cost model acti
 - `data/processed/optimization/model_assumptions.json`
 - `docs/index.html`
 
-## Known Limitations
+## Known Limitations and Caveats
 
+### Data Sparsity
 1. Navan coverage window is shorter than full appointment history, so route learning is partially sparse.
-2. Canceled/voided overhead is fixed, not behaviorally modeled.
-3. BTS prior is optional and currently inactive if the prior CSV is missing.
-4. Solver runtime for `N=0..4` now solves to proven optimality (full cost model appears to create a cleaner objective landscape).
-5. YUL (Montreal-Trudeau) raw hybrid model estimated ~$676 vs observed ~$959 (29% underestimate).
-   The BTS correction blends 60% Navan actual ($959) + 40% BTS cross-border ($447) → $754. The
-   remaining ~$205 gap vs observed reflects that cross-border fares vary by specific routing.
-6. BTS fares embedded in Step 10 are Q2 2025 data. Tier 2 airports (~24 of 66) use estimated
-   midpoints rather than directly verified BTS figures. Re-run Step 10 if fare data is refreshed.
-7. 57 of 66 origin airports had fewer than 10 Navan flights; 25 had zero. BTS correction addresses
-   the resulting bias but does not replace the need for broader Navan flight data over time.
-8. Full cost model uses median haversine (great-circle) distance per node, not road distance. Great-circle
-   is typically 10–25% shorter than road. Hotel is flat $399/trip regardless of appointment duration
-   (Navan 2.5-night average). Same-city trip bundling is not modeled (each appointment = one trip).
-9. Full cost model hotel/rental constants ($399, $235) are 2025 Navan actuals. Re-update in
-   `config.py` if Navan benchmarks change meaningfully.
+2. 57 of 68 origin airports had fewer than 10 Navan flights; 27 had zero. BTS correction addresses the resulting bias but does not replace the need for broader Navan flight data over time.
+3. BTS fares embedded in Step 10 are Q2 2025 data. Tier 2 airports (~24 of 68) use estimated midpoints rather than directly verified BTS figures. Re-run Step 10 if fare data is refreshed.
+
+### Cost Model Simplifications
+4. Hotel cost is flat $399/trip regardless of appointment duration (based on Navan 2.5-night average). Multi-day appointments may cost more.
+5. Same-city trip bundling is not modeled — each of 1,480 appointments is treated as a separate trip. In practice, techs bundle nearby appointments.
+6. Great-circle distance (not road distance) for drive/fly classification. Road distance is typically 10–25% longer, meaning some trips classified as "drive" might actually exceed 300 road-miles.
+7. Canceled/voided overhead ($35,632) is fixed across all scenarios, not re-estimated per hiring level.
+8. Full cost model hotel/rental constants ($399, $235) are 2025 Navan actuals. Re-update in `config.py` if Navan benchmarks change meaningfully.
+
+### Model Assumptions
+9. **No seasonality** — the model treats all appointments as equivalent regardless of when they occur during the year.
+10. **New hires cannot serve HPS nodes** — this is a policy assumption. If new hires can be HPS-trained, the model underestimates their value.
+11. Capacity model is demand-normalized (not calendar-based). See "Capacity Model" section above.
+12. BTS prior is optional and currently inactive if the prior CSV is missing.
+
+### Proxy and Approximation Notes
+13. **SHV and ICT travel costs are proxy-based, not BTS-calibrated.** Their matrix rows were generated from LIT (for SHV) and TUL (for ICT) as proxies. SHV mean cost ($476) and ICT mean cost ($370) are reasonable for regional airports but are not BTS-grounded.
+14. **Fort Smith AR maps to LIT (Little Rock, ~157 mi).** No closer airport is in the 68-airport list. Fort Smith has a small regional airport (FSM) not in our candidate pool.
+15. YUL (Montreal-Trudeau) raw hybrid model estimated ~$676 vs observed ~$959 (29% underestimate). The BTS correction blends 60% Navan actual ($959) + 40% BTS cross-border ($447) → $754. The remaining ~$205 gap vs observed reflects that cross-border fares vary by specific routing.
+
+### Solver
+16. All 5 scenarios solve to proven optimality (MIP gap = 0.0). Max existing-tech utilization is 99.99% at N=0, indicating the workforce is very tightly loaded.
 
 ## Recommended Defaults for Re-Runs
 
@@ -337,11 +387,15 @@ To revert to the flight-cost-only model, set `FULL_COST_MODEL = False` in `scrip
 State these immediately to avoid context drift:
 
 1. Hybrid travel-cost engine is already implemented and in use.
-2. **Full cost model is active** (Step 11): hotel + rental on all trips; drive/fly classified by 300-mile threshold.
-3. Burdened hire cost is `146,640` per incremental hire.
-4. Out-of-region penalty default is `0`.
-5. Canceled/voided cost is fixed baseline overhead, not scenario-variable.
-6. Hakim-only Canada rule is active.
-7. Scenario panel `Total Cost` includes canceled/voided overhead.
-8. Technician map points are grouped by base; roster details are in marker popup.
-9. N=0 total with full cost model: `$1,287,452` (was `$700,408` flight-only).
+2. **Full cost model is active** (Step 11): hotel + rental on all fly trips; IRS mileage + hotel on drive trips; drive/fly classified by 300-mile haversine threshold.
+3. **BTS-calibrated cost matrix is active** (Step 10): 68 airports, 1.22× corporate premium, 2.0× Canadian cross-border multiplier.
+4. Burdened hire cost is `146,640` per incremental hire.
+5. Out-of-region penalty default is `0`.
+6. Canceled/voided cost is fixed baseline overhead (`$35,632`), not scenario-variable.
+7. Hakim-only Canada rule is active. New hires blocked from Canada nodes.
+8. **New hires cannot serve HPS nodes** (policy constraint, hard variable bound).
+9. Capacity model is demand-normalized with `target_utilization=0.85`.
+10. Scenario panel `Total Cost` includes canceled/voided overhead.
+11. Technician map points are grouped by base; roster details are in marker popup.
+12. N=0 total: `$1,287,451.57`. Best scenario is N=0 — all hiring scenarios cost more.
+13. Pipeline order: 06 → 07 → 10 → 11 → 08 → 09 → 05.
