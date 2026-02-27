@@ -268,7 +268,7 @@ From current optimization artifacts (BTS-corrected matrix + full cost model acti
 - Baseline canceled/voided constant: `35,632.02` USD
 - Burdened annual per-hire planning cost: `146,640.00` USD
 - Full cost model constants: IRS $0.70/mi, rental $235/trip, hotel $399/trip, drive threshold 300 mi
-- Full cost table: 7,854 rows (16 techs × 77 nodes + 86 candidates × 77 nodes)
+- Full cost table: 8,008 rows (16 techs × 77 nodes + 88 candidates × 77 nodes)
 - Drive/fly split in cost table: 8.5% drive, 91.5% fly
 - Navan flight date window used in Step 7: `2025-07-09` to `2026-03-13`
 - No scenario allocates more than one hire to a single base (`max_hires_per_base=1`).
