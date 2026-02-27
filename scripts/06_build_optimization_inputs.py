@@ -404,7 +404,7 @@ def build_candidate_bases(
         axis=1,
     )
     demand_city["candidate_id"] = demand_city.apply(
-        lambda r: f"demand_{slugify(f'{r['city']}_{r['state_norm']}')}",
+        lambda r: "demand_{}".format(slugify("{}_{}".format(r["city"], r["state_norm"]))),
         axis=1,
     )
     demand_city["candidate_type"] = "demand_city"

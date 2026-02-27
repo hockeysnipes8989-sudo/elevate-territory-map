@@ -257,6 +257,7 @@ def solve_scenario(
     y_idx: dict[int, int] = {}
     u_idx: dict[int, int] = {}
     candidate_indices = list(candidates.index) if hire_count > 0 else []
+    _full_cost_fallback_count = 0  # track missing full_cost_lookup entries
 
     # Existing tech assignment vars: appointments assigned to node.
     for ti, trow in tech.iterrows():
@@ -271,8 +272,11 @@ def solve_scenario(
             integrality.append(1)
 
             if full_cost_lookup is not None:
+                _fc_key = (str(trow["tech_id"]), str(nrow["node_id"]))
+                if _fc_key not in full_cost_lookup:
+                    _full_cost_fallback_count += 1
                 base_cost = full_cost_lookup.get(
-                    (str(trow["tech_id"]), str(nrow["node_id"])),
+                    _fc_key,
                     global_avg + config.RENTAL_CAR_AVG_USD + config.HOTEL_AVG_USD,
                 )
             else:
@@ -297,21 +301,31 @@ def solve_scenario(
             )
 
     # New-hire assignment vars.
+    # New hires are NOT eligible for HPS-required nodes (skill_class "hps" or
+    # "hps_ls") — they lack HPS certification. They CAN serve "regular" and "ls"
+    # nodes. Canada exclusion (Hakim policy) also enforced.
     for ci in candidate_indices:
         crow = candidates.loc[ci]
         for ni, nrow in nodes.iterrows():
             node_is_canada = is_canada_node_state(str(nrow["state_norm"]))
+            node_requires_hps = int(nrow.get("required_hps", 0)) == 1
             idx = len(var_names)
             z_idx[(ci, ni)] = idx
             var_names.append(f"z__{crow['candidate_id']}__{nrow['node_id']}")
             lb.append(0.0)
-            # New hires should not be used for Canada demand (Hakim-only Canada policy).
-            ub.append(0.0 if node_is_canada else float(nrow["appointment_count"]))
+            # Block new hires from Canada demand and HPS-required nodes.
+            if node_is_canada or node_requires_hps:
+                ub.append(0.0)
+            else:
+                ub.append(float(nrow["appointment_count"]))
             integrality.append(1)
 
             if full_cost_lookup is not None:
+                _fc_key = (str(crow["candidate_id"]), str(nrow["node_id"]))
+                if _fc_key not in full_cost_lookup:
+                    _full_cost_fallback_count += 1
                 base_cost = full_cost_lookup.get(
-                    (str(crow["candidate_id"]), str(nrow["node_id"])),
+                    _fc_key,
                     global_avg + config.RENTAL_CAR_AVG_USD + config.HOTEL_AVG_USD,
                 )
             else:
@@ -334,6 +348,10 @@ def solve_scenario(
                     "out_region_penalty": penalty,
                 }
             )
+
+    if full_cost_lookup is not None and _full_cost_fallback_count > 0:
+        print(f"  WARNING: {_full_cost_fallback_count} (tech/candidate, node) pairs missing from "
+              f"full_cost_table.csv — used global_avg fallback (${global_avg + config.RENTAL_CAR_AVG_USD + config.HOTEL_AVG_USD:,.2f}).")
 
     # Candidate hire-count integer vars.
     for ci in candidate_indices:

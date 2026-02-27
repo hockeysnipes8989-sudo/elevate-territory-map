@@ -51,14 +51,12 @@ def geocode_key(key, geolocator, cache, max_retries=3):
                 print(f"  NOT FOUND: {key}")
                 cache[key] = None
                 return None
-        except GeocoderTimedOut as e:
+        except (GeocoderTimedOut, GeocoderServiceError) as e:
             wait = 2 ** attempt
-            print(f"  TIMEOUT for {key} (attempt {attempt}/{max_retries}), retrying in {wait}s: {e}")
+            label = "TIMEOUT" if isinstance(e, GeocoderTimedOut) else "SERVICE ERROR"
+            print(f"  {label} for {key} (attempt {attempt}/{max_retries}), retrying in {wait}s: {e}")
             if attempt < max_retries:
                 time.sleep(wait)
-        except GeocoderServiceError as e:
-            print(f"  SERVICE ERROR for {key}: {e}")
-            return None
     print(f"  FAILED after {max_retries} attempts: {key}")
     return None
 

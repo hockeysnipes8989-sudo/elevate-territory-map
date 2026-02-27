@@ -25,6 +25,8 @@ from optimization_utils import (
     normalize_state,
 )
 
+from travel_cost_modeling import _wmape
+
 try:
     from travel_cost_modeling import predict_route_cost, prepare_training_frame, train_travel_model
 except ImportError:
@@ -151,13 +153,6 @@ def tier_from_score(score: float) -> str:
     if score >= 0.4:
         return "medium"
     return "low"
-
-
-def _wmape(actual: np.ndarray, pred: np.ndarray) -> float:
-    denom = np.sum(np.abs(actual))
-    if denom <= 0:
-        return 0.0
-    return float(np.sum(np.abs(actual - pred)) / denom)
 
 
 def regression_metrics(actual: np.ndarray, pred: np.ndarray, prefix: str) -> dict:
@@ -291,7 +286,7 @@ def load_bts_prior(path: str) -> tuple[dict[tuple[str, str], float], dict]:
             ),
             include_groups=False,
         )
-        .reset_index(drop=True)
+        .reset_index()
     )
 
     mapping = {

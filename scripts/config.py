@@ -167,7 +167,6 @@ MAP_ZOOM = 4
 MAP_TILES = "CartoDB positron"
 GEOCODE_USER_AGENT = "elevate_healthcare_uiuc"
 GEOCODE_DELAY = 1.1  # seconds between Nominatim requests
-TERRITORY_BUFFER_DEG = 0.3  # buffer around convex hull in degrees
 
 # ---------------------------------------------------------------------------
 # Per-tech territory visualization (scenario-based assignment coloring)
@@ -259,6 +258,7 @@ MAJOR_AIRPORTS = [
     {"code": "MSP", "name": "Minneapolis-St. Paul",   "city": "Minneapolis, MN",      "lat": 44.8848, "lon": -93.2223},
     {"code": "STL", "name": "St. Louis Lambert",      "city": "St. Louis, MO",        "lat": 38.7487, "lon": -90.3700},
     {"code": "MCI", "name": "Kansas City Intl",       "city": "Kansas City, MO",      "lat": 39.2976, "lon": -94.7139},
+    {"code": "ICT", "name": "Wichita Eisenhower",    "city": "Wichita, KS",          "lat": 37.6499, "lon": -97.4331},
     {"code": "OMA", "name": "Omaha Eppley",           "city": "Omaha, NE",            "lat": 41.3032, "lon": -95.8940},
     {"code": "DSM", "name": "Des Moines Intl",        "city": "Des Moines, IA",       "lat": 41.5340, "lon": -93.6631},
     # --- SOUTH / GULF COAST ---
@@ -266,6 +266,7 @@ MAJOR_AIRPORTS = [
     {"code": "MEM", "name": "Memphis Intl",           "city": "Memphis, TN",          "lat": 35.0424, "lon": -89.9767},
     {"code": "BHM", "name": "Birmingham Shuttlesworth","city": "Birmingham, AL",      "lat": 33.5629, "lon": -86.7527},
     {"code": "MSY", "name": "New Orleans Intl",       "city": "New Orleans, LA",      "lat": 29.9934, "lon": -90.2580},
+    {"code": "SHV", "name": "Shreveport Regional",   "city": "Shreveport, LA",       "lat": 32.4466, "lon": -93.8261},
     {"code": "IAH", "name": "Houston Intercontinental","city": "Houston, TX",         "lat": 29.9902, "lon": -95.3368},
     {"code": "SAT", "name": "San Antonio Intl",       "city": "San Antonio, TX",      "lat": 29.5337, "lon": -98.4698},
     {"code": "AUS", "name": "Austin-Bergstrom",       "city": "Austin, TX",           "lat": 30.1975, "lon": -97.6664},

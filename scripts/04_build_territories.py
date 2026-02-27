@@ -133,8 +133,10 @@ def load_geojson_with_cache(url, cache_path):
         with open(cache_path, "w") as f:
             f.write(payload)
         return data
-    except Exception:
+    except Exception as exc:
+        print(f"  WARNING: Failed to fetch {url}: {exc}")
         if os.path.exists(cache_path):
+            print(f"  Falling back to cached file: {cache_path}")
             with open(cache_path, "r") as f:
                 return json.load(f)
         raise

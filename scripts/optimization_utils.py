@@ -80,7 +80,7 @@ CANADA_PROV_ABBR = {
 }
 
 CANADA_ABBR = set(CANADA_PROV_ABBR.values())
-US_ABBR = set(US_STATE_ABBR.values()) | {"DC"}
+US_ABBR = set(US_STATE_ABBR.values())
 
 
 def slugify(value: str) -> str:

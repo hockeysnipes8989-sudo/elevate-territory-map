@@ -41,7 +41,7 @@ elevate-territory-map/
     08_optimize_locations.py
     09_analyze_scenarios.py
     10_correct_travel_costs.py
-    11_build_full_cost_table.py        # NEW: per-(tech/candidate, node) drive/fly cost table
+    11_build_full_cost_table.py        # per-(tech/candidate, node) drive/fly cost table
     travel_cost_modeling.py
     optimization_utils.py
     config.py
@@ -286,7 +286,14 @@ From current optimization artifacts (BTS-corrected matrix + full cost model acti
 - `data/processed/optimization/travel_matrix_origin_anomaly_report.json`
 - `data/processed/optimization/baseline_kpis.json`
 - `data/processed/optimization/scenario_summary.csv`
+- `data/processed/optimization/scenario_summary_enhanced.csv`
+- `data/processed/optimization/scenario_placements.csv`
+- `data/processed/optimization/scenario_assignments_existing.csv`
+- `data/processed/optimization/scenario_assignments_newhires.csv`
+- `data/processed/optimization/scenario_tech_utilization.csv`
+- `data/processed/optimization/full_cost_table.csv`
 - `data/processed/optimization/analysis_report.json`
+- `data/processed/optimization/model_assumptions.json`
 - `docs/index.html`
 
 ## Known Limitations

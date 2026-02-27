@@ -67,9 +67,10 @@ def load_appointments():
     df["Service Resource: Name"] = df["Service Resource: Name"].apply(normalize_tech_name)
 
     # Build geocode key from cleaned city + normalized state, while preserving raw values
+    # City column is already cleaned above; no need to re-apply clean_city().
     df["geocode_key"] = df.apply(
         lambda r: build_geocode_key(
-            clean_city(r["City"]),
+            r["City"],
             normalize_state_for_geocode(r["State/Province"]),
         ),
         axis=1,
