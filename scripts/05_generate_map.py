@@ -2,7 +2,6 @@
 import json
 import os
 import sys
-import numpy as np
 import pandas as pd
 import folium
 from collections import defaultdict
@@ -75,12 +74,12 @@ def get_choropleth_color(value, min_val, max_val, colors):
     return colors[idx]
 
 
-def add_territory_boundaries(m, geojson_path, layer_name):
+def add_territory_boundaries(m, geojson_path, layer_name, show=False):
     """Add territory boundary polygons as a toggleable layer."""
     with open(geojson_path, "r") as f:
         geojson = json.load(f)
 
-    fg = folium.FeatureGroup(name=layer_name, show=True)
+    fg = folium.FeatureGroup(name=layer_name, show=show)
 
     for feature in geojson["features"]:
         name = feature["properties"]["name"]
@@ -651,7 +650,7 @@ def load_simulation_data():
 
 
 # ---------------------------------------------------------------------------
-# Territory visualization: per-tech assignment dots + concave hulls
+# Territory visualization: per-tech assignment dots
 # ---------------------------------------------------------------------------
 
 
@@ -874,143 +873,10 @@ def build_tech_color_map(territory_data):
     return color_map
 
 
-def compute_alpha_shape(points, alpha):
-    """Compute the alpha shape (concave hull) of a set of 2D points.
-
-    Returns list of [lat, lon] forming the boundary polygon, or None.
-    """
-    from scipy.spatial import Delaunay, ConvexHull
-
-    points = np.array(points)
-    if len(points) < 3:
-        return None
-
-    # Check for degenerate geometry (collinear points)
-    centered = points - points.mean(axis=0)
-    if np.linalg.matrix_rank(centered, tol=1e-10) < 2:
-        return None
-
-    try:
-        tri = Delaunay(points)
-    except Exception:
-        return None
-
-    # For each triangle, compute circumradius and filter
-    edges = set()
-    for simplex in tri.simplices:
-        pa, pb, pc = points[simplex]
-        a = np.linalg.norm(pa - pb)
-        b = np.linalg.norm(pb - pc)
-        c = np.linalg.norm(pc - pa)
-        s = (a + b + c) / 2.0
-        area = max(s * (s - a) * (s - b) * (s - c), 0)
-        area = np.sqrt(area)
-        if area == 0:
-            continue
-        circumradius = (a * b * c) / (4.0 * area)
-        if circumradius < 1.0 / alpha:
-            for i, j in [(0, 1), (1, 2), (2, 0)]:
-                edge = tuple(sorted([simplex[i], simplex[j]]))
-                if edge in edges:
-                    edges.remove(edge)
-                else:
-                    edges.add(edge)
-
-    if not edges:
-        # Fallback to convex hull
-        try:
-            hull = ConvexHull(points)
-            return [[float(points[v][0]), float(points[v][1])] for v in hull.vertices]
-        except Exception:
-            return None
-
-    # Walk boundary edges to produce ordered polygon
-    adjacency = defaultdict(set)
-    for i, j in edges:
-        adjacency[i].add(j)
-        adjacency[j].add(i)
-
-    # Start from first edge
-    start = next(iter(edges))[0]
-    polygon = [start]
-    visited = {start}
-    current = start
-    while True:
-        neighbors = adjacency[current] - visited
-        if not neighbors:
-            break
-        nxt = min(neighbors)
-        polygon.append(nxt)
-        visited.add(nxt)
-        current = nxt
-
-    if len(polygon) < 3:
-        try:
-            hull = ConvexHull(points)
-            return [[float(points[v][0]), float(points[v][1])] for v in hull.vertices]
-        except Exception:
-            return None
-
-    return [[float(points[v][0]), float(points[v][1])] for v in polygon]
-
-
-def compute_tech_hulls(tech_points):
-    """Compute concave hull(s) for a tech's appointment locations.
-
-    Returns list of hull polygons (each a list of [lat, lon] pairs).
-    """
-    from sklearn.cluster import DBSCAN
-
-    if len(tech_points) < config.TERRITORY_HULL_MIN_POINTS:
-        return []
-
-    points_array = np.array(tech_points)
-
-    # Cluster with DBSCAN to handle scattered assignments
-    clustering = DBSCAN(
-        eps=config.TERRITORY_DBSCAN_EPS_DEG,
-        min_samples=config.TERRITORY_DBSCAN_MIN_SAMPLES,
-    ).fit(points_array)
-
-    labels = clustering.labels_
-    unique_labels = set(labels)
-    unique_labels.discard(-1)
-
-    if not unique_labels:
-        return []
-
-    # Take the largest cluster
-    largest_label = max(unique_labels, key=lambda l: (labels == l).sum())
-    cluster_points = points_array[labels == largest_label]
-
-    if len(cluster_points) < 3:
-        return []
-
-    # Compute adaptive alpha based on point density
-    from scipy.spatial import distance
-
-    if len(cluster_points) >= 2:
-        dists = distance.cdist(cluster_points, cluster_points)
-        np.fill_diagonal(dists, np.inf)
-        nearest_dists = dists.min(axis=1)
-        median_nn = float(np.median(nearest_dists))
-        if median_nn > 0:
-            alpha = 2.0 / median_nn
-        else:
-            alpha = 1.0
-    else:
-        alpha = 1.0
-
-    hull = compute_alpha_shape(cluster_points, alpha)
-    if hull:
-        return [hull]
-    return []
-
-
 def add_territory_assignment_layers(m, assignment_map, territory_data, tech_color_map):
-    """Add per-scenario territory dots and hull layers to the map.
+    """Add per-scenario territory dot layers to the map.
 
-    Returns {scenario_str: {"dots_layer": js_name, "hulls_layer": js_name, "tech_stats": {...}}}.
+    Returns {scenario_str: {"dots_layer": js_name, "tech_stats": {...}}}.
     """
     demand_appts = territory_data["demand_appts"]
     tech_master = territory_data["tech_master"]
@@ -1105,13 +971,6 @@ def add_territory_assignment_layers(m, assignment_map, territory_data, tech_colo
                 ).add_to(dots_fg)
         dots_fg.add_to(m)
 
-        # --- Hulls layer ---
-        hulls_fg = folium.FeatureGroup(
-            name=f"Territory Hulls N={scenario}",
-            show=is_default,
-            control=False,
-        )
-
         # Build per-tech stats
         tech_stats = {}
         for assignee_id, appts_list in tech_appts.items():
@@ -1163,35 +1022,8 @@ def add_territory_assignment_layers(m, assignment_map, territory_data, tech_colo
                 "states": states_served,
             }
 
-            # Compute hull for this tech
-            points = [(lat, lon) for lat, lon, _ in appts_list]
-            hulls = compute_tech_hulls(points)
-            color = tech_color_map.get(assignee_id, "#888888")
-            for hull in hulls:
-                popup_html = (
-                    f"<b>{tech_name}</b><br>"
-                    f"Base: {base_loc}<br>"
-                    f"Appointments: <b>{len(appts_list)}</b><br>"
-                    f"Travel cost: ${travel_cost:,.0f}<br>"
-                    f"Utilization: {utilization:.1%}<br>"
-                    f"States: {', '.join(states_served)}"
-                )
-                folium.Polygon(
-                    locations=hull,
-                    color=color,
-                    fill=True,
-                    fill_color=color,
-                    fill_opacity=config.TERRITORY_HULL_FILL_OPACITY,
-                    weight=config.TERRITORY_HULL_WEIGHT,
-                    popup=folium.Popup(popup_html, max_width=300),
-                    tooltip=f"{tech_name} territory",
-                ).add_to(hulls_fg)
-
-        hulls_fg.add_to(m)
-
         result[scenario_str] = {
             "dots_layer": dots_fg.get_name(),
-            "hulls_layer": hulls_fg.get_name(),
             "tech_stats": tech_stats,
         }
 
@@ -1269,16 +1101,13 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names,
 
     # Territory layer JS maps
     territory_dots_entries = []
-    territory_hulls_entries = []
     tech_colors_js = json.dumps(tech_color_map) if tech_color_map else "{}"
     if territory_layer_names:
         for key in ordered_keys:
             info = territory_layer_names.get(key)
             if info:
                 territory_dots_entries.append(f'"{key}": "{info["dots_layer"]}"')
-                territory_hulls_entries.append(f'"{key}": "{info["hulls_layer"]}"')
     territory_dots_js = "{\n" + ",\n".join(territory_dots_entries) + "\n}" if territory_dots_entries else "{}"
-    territory_hulls_js = "{\n" + ",\n".join(territory_hulls_entries) + "\n}" if territory_hulls_entries else "{}"
 
     panel_html = """
     <style>
@@ -1447,7 +1276,6 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names,
       const scenarioData = {payload_js};
       const scenarioLayerNames = {layer_js};
       const territoryDotLayerNames = {territory_dots_js};
-      const territoryHullLayerNames = {territory_hulls_js};
       const techColors = {tech_colors_js};
       const orderedScenarios = {json.dumps(ordered_keys)};
       const defaultScenario = "{default_key}";
@@ -1458,7 +1286,6 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names,
       let mapRef = null;
       let scenarioLayers = {{}};
       let territoryDotLayers = {{}};
-      let territoryHullLayers = {{}};
 
       function money(v) {{
         const n = Number(v || 0);
@@ -1557,10 +1384,6 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names,
           if (dotLayer && mapRef.hasLayer(dotLayer)) {{
             mapRef.removeLayer(dotLayer);
           }}
-          const hullLayer = territoryHullLayers[s];
-          if (hullLayer && mapRef.hasLayer(hullLayer)) {{
-            mapRef.removeLayer(hullLayer);
-          }}
         }});
         const target = scenarioLayers[scenario];
         if (target && !mapRef.hasLayer(target)) {{
@@ -1569,10 +1392,6 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names,
         const dotTarget = territoryDotLayers[scenario];
         if (dotTarget && !mapRef.hasLayer(dotTarget)) {{
           mapRef.addLayer(dotTarget);
-        }}
-        const hullTarget = territoryHullLayers[scenario];
-        if (hullTarget && !mapRef.hasLayer(hullTarget)) {{
-          mapRef.addLayer(hullTarget);
         }}
         setActiveButton(scenario);
         renderKpis(scenario);
@@ -1597,12 +1416,10 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names,
           }}
         }});
         scenarioLayers = resolved;
-        // Resolve territory layers (no-op if empty)
+        // Resolve territory dot layers (no-op if empty)
         orderedScenarios.forEach((s) => {{
           const dotVar = territoryDotLayerNames[s];
           if (dotVar && window[dotVar]) territoryDotLayers[s] = window[dotVar];
-          const hullVar = territoryHullLayerNames[s];
-          if (hullVar && window[hullVar]) territoryHullLayers[s] = window[hullVar];
         }});
         return missing;
       }}
@@ -1797,7 +1614,7 @@ def main():
                 tech_color_map = build_tech_color_map(territory_data)
                 total_assigned = sum(len(v) for v in assignment_map.values())
                 print(f"  Resolved {total_assigned} total appointment assignments across {len(assignment_map)} scenarios")
-                print("  Generating territory layers (dots + hulls)...")
+                print("  Generating territory dot layers...")
                 territory_layer_info = add_territory_assignment_layers(
                     m, assignment_map, territory_data, tech_color_map
                 )

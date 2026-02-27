@@ -183,12 +183,7 @@ TECH_TERRITORY_PALETTE = [
     "#aa6e28",  # dk gold
     "#800000",  # maroon
 ]
-TERRITORY_HULL_MIN_POINTS = 3       # min points to attempt hull
-TERRITORY_DBSCAN_EPS_DEG = 8.0      # DBSCAN epsilon in degrees (~550 mi)
-TERRITORY_DBSCAN_MIN_SAMPLES = 2    # DBSCAN min cluster size
-TERRITORY_HULL_FILL_OPACITY = 0.08  # fill opacity for hull polygons
-TERRITORY_HULL_WEIGHT = 2           # border line weight for hulls
-TERRITORY_DOT_RADIUS = 4            # CircleMarker radius for assignment dots
+TERRITORY_DOT_RADIUS = 6            # CircleMarker radius for assignment dots
 TERRITORY_DOT_OPACITY = 0.85        # CircleMarker fill opacity
 ENABLE_SIMULATION_UI = True
 SIM_SCENARIO_MIN = 0
