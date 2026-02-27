@@ -23,11 +23,17 @@ CANADA_NODE_STATES = set(CANADA_ABBR) | {"CANADA"}
 
 def load_inputs(output_dir: Path) -> dict:
     """Load all prerequisite optimization inputs."""
+    corrected_path = output_dir / "travel_cost_matrix_bts_corrected.csv"
+    if config.BTS_CORRECTED_MATRIX and corrected_path.exists():
+        cost_matrix_file = corrected_path
+        print("  [BTS] Using BTS-calibrated travel cost matrix.")
+    else:
+        cost_matrix_file = output_dir / "travel_cost_matrix.csv"
     files = {
         "tech": output_dir / "tech_master.csv",
         "demand": output_dir / "demand_appointments.csv",
         "candidates": output_dir / "candidate_bases.csv",
-        "cost_matrix": output_dir / "travel_cost_matrix.csv",
+        "cost_matrix": cost_matrix_file,
         "baseline": output_dir / "baseline_kpis.json",
     }
     missing = [str(path) for path in files.values() if not path.exists()]

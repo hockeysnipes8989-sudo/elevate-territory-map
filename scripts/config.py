@@ -97,6 +97,9 @@ TECH_NAME_ALIASES = {
 # Optimization cost defaults
 DEFAULT_UNMET_PENALTY_USD = 5000.0
 
+# Travel cost matrix selection
+BTS_CORRECTED_MATRIX = True   # Set True to use BTS-calibrated matrix in optimizer
+
 # ---------------------------------------------------------------------------
 # Colors
 # ---------------------------------------------------------------------------
