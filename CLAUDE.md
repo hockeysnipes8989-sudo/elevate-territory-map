@@ -17,6 +17,7 @@ This file is the canonical context handoff for future chats.
 ## Current High-Level State
 
 - Hybrid travel-cost engine is implemented and active in Step 7.
+- **BTS-calibrated cost matrix is active** (Step 10). The optimizer reads `travel_cost_matrix_bts_corrected.csv` when `config.BTS_CORRECTED_MATRIX = True`. Original matrix is preserved as `travel_cost_matrix.csv`.
 - Burdened new-hire payroll is modeled in Step 8 (`146,640` USD per incremental hire).
 - Default out-of-region penalty is disabled (`0` USD).
 - Hakim-only Canada servicing rule is implemented (Canada is restricted to Canada-wide specialist techs).
@@ -92,13 +93,16 @@ Do not commit sensitive external files.
 
 Typical UI-only changes require Step 5 only.
 
-### Steps 6-9 (Optimization)
+### Steps 6-10 (Optimization)
 
 1. `06_build_optimization_inputs.py`
 2. `07_build_travel_cost_model.py --engine hybrid --min-direct-route-n 5 --shrinkage-k 10`
-3. `08_optimize_locations.py --min-new-hires 0 --max-new-hires 4 --max-hires-per-base 1 --time-limit-sec 600`
-4. `09_analyze_scenarios.py`
-5. `05_generate_map.py` to refresh scenario panel in map output.
+3. `10_correct_travel_costs.py` — BTS calibration; produces `travel_cost_matrix_bts_corrected.csv`
+4. `08_optimize_locations.py --min-new-hires 0 --max-new-hires 4 --max-hires-per-base 1 --time-limit-sec 600`
+5. `09_analyze_scenarios.py`
+6. `05_generate_map.py` to refresh scenario panel in map output.
+
+Step 10 only needs to re-run when the raw travel cost matrix (`travel_cost_matrix.csv`) changes. Toggle `config.BTS_CORRECTED_MATRIX` to switch which matrix the optimizer uses without re-running Step 10.
 
 ## Optimization Model: Exact Logic
 
@@ -250,17 +254,24 @@ This means `Total Cost` already includes fixed canceled/voided baseline overhead
 
 ## Latest Validated Run Snapshot
 
-From current optimization artifacts in this repo:
+From current optimization artifacts in this repo (BTS-corrected matrix active):
 
 - Scenario range: `N=0..4`
-- Proven optimal selection mode: `proven_optimal_only`
+- Selection mode: `all_scenarios_no_proven_optimal` (solver hit 600s time limit; MIP gap ~3e-5, near-optimal)
 - Best scenario: `N=0`
-- Best total with overhead: `612,807.52` USD
+- Best total with overhead: `700,408.18` USD  *(was `612,807.52` on original matrix — increase driven by TPA correction +34.5%)*
+- N=0 travel cost: `664,776.16` USD  *(was `577,175` on original matrix)*
 - Baseline canceled/voided constant: `35,632.02` USD
 - Burdened annual per-hire planning cost: `146,640.00` USD
 - Hybrid model valid MAE improvement vs heuristic: `16.20%`
 - Navan flight date window used in Step 7: `2025-07-09` to `2026-03-13`
 - No scenario allocates more than one hire to a single base (`max_hires_per_base=1`).
+- BTS-corrected matrix airport benchmarks (key sanity checks):
+  - MDW: $471 → $199 (-57.7%) — now grounded in BTS data, not model speculation
+  - TPA: $418 → $563 (+34.5%) — 6 TPA-based techs now realistically priced
+  - IND: $267 → $225 (-15.9%)
+  - BOI: $322 → $220 (-31.5%)
+  - YUL: $676 → $754 (+11.6%) — 60/40 blend of 10 Navan actuals + BTS cross-border
 
 ## Important File Outputs to Check First
 
@@ -277,11 +288,14 @@ From current optimization artifacts in this repo:
 1. Navan coverage window is shorter than full appointment history, so route learning is partially sparse.
 2. Canceled/voided overhead is fixed, not behaviorally modeled.
 3. BTS prior is optional and currently inactive if the prior CSV is missing.
-4. Solver runtime for `N=0` can require higher time limits for proven optimality.
-5. YUL (Montreal-Trudeau) travel cost is modeled at ~$676 vs observed ~$959 (29% underestimate).
-   The anomaly-report threshold requires `observed_trip_count >= 2` AND `cost_ratio outside [0.4, 2.2]`.
-   YUL's ratio of 0.705 falls within [0.4, 2.2] so it is not auto-flagged. The gap is real and
-   reflects sparse YUL training data. Manual review of YUL scenario costs is recommended.
+4. Solver runtime for `N=0..4` hits the 600s time limit; MIP gap ~3e-5 (effectively optimal in practice).
+5. YUL (Montreal-Trudeau) raw hybrid model estimated ~$676 vs observed ~$959 (29% underestimate).
+   The BTS correction blends 60% Navan actual ($959) + 40% BTS cross-border ($447) → $754. The
+   remaining ~$205 gap vs observed reflects that cross-border fares vary by specific routing.
+6. BTS fares embedded in Step 10 are Q2 2025 data. Tier 2 airports (~24 of 66) use estimated
+   midpoints rather than directly verified BTS figures. Re-run Step 10 if fare data is refreshed.
+7. 57 of 66 origin airports had fewer than 10 Navan flights; 25 had zero. BTS correction addresses
+   the resulting bias but does not replace the need for broader Navan flight data over time.
 
 ## Recommended Defaults for Re-Runs
 
@@ -290,10 +304,13 @@ Use these commands unless a test requires deviation:
 ```bash
 /opt/miniconda3/bin/python3 scripts/06_build_optimization_inputs.py
 /opt/miniconda3/bin/python3 scripts/07_build_travel_cost_model.py --engine hybrid --min-direct-route-n 5 --shrinkage-k 10
+/opt/miniconda3/bin/python3 scripts/10_correct_travel_costs.py
 /opt/miniconda3/bin/python3 scripts/08_optimize_locations.py --min-new-hires 0 --max-new-hires 4 --max-hires-per-base 1 --time-limit-sec 600
 /opt/miniconda3/bin/python3 scripts/09_analyze_scenarios.py
 /opt/miniconda3/bin/python3 scripts/05_generate_map.py
 ```
+
+To revert to the original (uncorrected) matrix without re-running, set `BTS_CORRECTED_MATRIX = False` in `scripts/config.py` and re-run steps 8–9–5.
 
 ## If Starting a New Chat
 

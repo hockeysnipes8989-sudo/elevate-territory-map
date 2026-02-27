@@ -11,6 +11,7 @@ Interactive US/Canada map and optimization model for service coverage, travel co
 2. Optimization scenario panel on the map for `N=0..4` new hires.
 3. End-to-end MILP pipeline for travel + hiring economics.
 4. Hybrid travel-cost engine built from Navan flight data.
+5. BTS-calibrated cost matrix (Step 10) replacing speculative airport benchmarks with government fare data + 1.22× corporate premium.
 
 ## Install
 
@@ -36,17 +37,20 @@ python scripts/05_generate_map.py
 
 Source files for steps 1-4 are expected in `data/raw/`. Geocoding cache lives in `data/geocode_cache.json`.
 
-## Optimization Pipeline (Steps 6-9)
+## Optimization Pipeline (Steps 6-10)
 
 Outputs are written to `data/processed/optimization/`.
 
 ```bash
 python scripts/06_build_optimization_inputs.py
 python scripts/07_build_travel_cost_model.py --engine hybrid --min-direct-route-n 5 --shrinkage-k 10
+python scripts/10_correct_travel_costs.py
 python scripts/08_optimize_locations.py --min-new-hires 0 --max-new-hires 4 --max-hires-per-base 1 --time-limit-sec 600
 python scripts/09_analyze_scenarios.py
 python scripts/05_generate_map.py
 ```
+
+Step 10 (BTS calibration) only needs to re-run when `travel_cost_matrix.csv` changes. Toggle `BTS_CORRECTED_MATRIX` in `scripts/config.py` to switch between matrices without re-running.
 
 Default external workbook paths are in `scripts/config.py` (overridable via env vars
 `ELEVATE_APPTS_SOURCE`, `ELEVATE_TECH_SOURCE`, `ELEVATE_NAVAN_SOURCE`):
@@ -72,9 +76,9 @@ Default external workbook paths are in `scripts/config.py` (overridable via env 
 - Current verified technician roster is 16 total (including both HTX contractors).
 - Technician markers are grouped by shared base location (popup lists all names at that base).
 
-## Travel Cost Engine (Step 7)
+## Travel Cost Engine (Steps 7 + 10)
 
-Default mode is `--engine hybrid`.
+**Step 7** builds the raw hybrid matrix (`travel_cost_matrix.csv`). Default mode is `--engine hybrid`.
 
 - Inputs: Navan `Clean Flights` + `Report`.
 - Training rows: non-management, `TICKETED`, valid origin/destination, positive paid amount.
@@ -95,6 +99,13 @@ Default mode is `--engine hybrid`.
 
 Legacy mode remains available: `--engine heuristic`.
 
+**Step 10** corrects the raw matrix with BTS government fares (`travel_cost_matrix_bts_corrected.csv`).
+
+- Embeds BTS Q2 2025 itinerary fares ÷ 2 × 1.22 corporate premium for 59 US airports + 6 Canadian airports (×2.0 cross-border multiplier).
+- Blends BTS benchmarks with Navan actuals by data density (0–4 flights → 80% BTS; 5–9 → 60% BTS; 10–19 → 40% BTS; 20+ → Navan only).
+- Per-route override: routes with ≥5 Navan flights use observed actuals directly.
+- Audit log written to `cost_correction_log.csv` (one row per origin airport).
+
 ## Scenario Cost Formula
 
 Step 8 computes:
@@ -109,20 +120,24 @@ Where:
 
 ## Latest Baseline Snapshot (Current Repo Outputs)
 
-From the latest committed optimization artifacts:
+From the latest committed optimization artifacts (BTS-corrected matrix active):
 
 - Navan canceled/voided baseline constant: `35,632.02` USD
 - Scenario window: `N=0..4`
-- Best scenario: `N=0` (proven optimal set)
-- Best total with overhead: `612,807.52` USD
+- Best scenario: `N=0`
+- Best total with overhead: `700,408.18` USD *(up from `612,807.52` on original matrix — reflects TPA route correction +34.5%)*
+- N=0 travel cost: `664,776.16` USD *(was `577,175` on original matrix)*
 - Hard cap result: no scenario allocates more than 1 hire to the same base
+- Solver MIP gap: ~3e-5 (near-optimal; 600s time limit reached)
 
 ## Key Output Files
 
 - `data/processed/optimization/tech_master.csv`
 - `data/processed/optimization/demand_appointments.csv`
 - `data/processed/optimization/candidate_bases.csv`
-- `data/processed/optimization/travel_cost_matrix.csv`
+- `data/processed/optimization/travel_cost_matrix.csv` — raw hybrid model matrix
+- `data/processed/optimization/travel_cost_matrix_bts_corrected.csv` — BTS-calibrated matrix (active)
+- `data/processed/optimization/cost_correction_log.csv` — per-airport BTS correction audit trail
 - `data/processed/optimization/scenario_summary.csv`
 - `data/processed/optimization/scenario_summary_enhanced.csv`
 - `data/processed/optimization/recommended_hire_locations.csv`
