@@ -113,9 +113,11 @@ def main() -> None:
         "num_over_95pct": int((util_best["utilization"] > 0.95).sum()) if not util_best.empty else 0,
     }
 
+    full_cost_model_active = bool(assumptions.get("full_cost_model", False))
     report = {
         "best_scenario_hires": best_hires,
         "selection_mode": selection_mode,
+        "full_cost_model_active": full_cost_model_active,
         "best_total_cost_with_overhead_usd": float(best_row["economic_total_with_overhead_usd"]),
         "baseline_n0_cost_with_overhead_usd": base_cost,
         "best_savings_vs_n0_usd": float(base_cost - best_row["economic_total_with_overhead_usd"]),
@@ -138,9 +140,15 @@ def main() -> None:
     with open(report_out, "w") as f:
         json.dump(report, f, indent=2)
 
+    cost_model_label = (
+        "Full cost model active (drive/fly + rental + hotel)"
+        if full_cost_model_active
+        else "Flight-cost-only model (no rental/hotel)"
+    )
     lines = [
         "# Optimization Scenario Analysis",
         "",
+        f"- Cost model: **{cost_model_label}**",
         f"- Selection mode: **{selection_mode}**",
         f"- Best scenario: **{best_hires}** new hires",
         f"- Baseline (N=0) cost with overhead: **${base_cost:,.2f}**",

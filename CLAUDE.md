@@ -18,6 +18,7 @@ This file is the canonical context handoff for future chats.
 
 - Hybrid travel-cost engine is implemented and active in Step 7.
 - **BTS-calibrated cost matrix is active** (Step 10). The optimizer reads `travel_cost_matrix_bts_corrected.csv` when `config.BTS_CORRECTED_MATRIX = True`. Original matrix is preserved as `travel_cost_matrix.csv`.
+- **Full cost model is active** (Step 11). `config.FULL_COST_MODEL = True`. Each trip now includes hotel ($399) and rental car ($235) for fly trips, or IRS mileage ($0.70/mi × round-trip) + hotel ($399) for drive trips (<300 miles). Step 11 pre-computes a per-(tech/candidate, node) cost table (`full_cost_table.csv`) used by the optimizer.
 - Burdened new-hire payroll is modeled in Step 8 (`146,640` USD per incremental hire).
 - Default out-of-region penalty is disabled (`0` USD).
 - Hakim-only Canada servicing rule is implemented (Canada is restricted to Canada-wide specialist techs).
@@ -39,6 +40,8 @@ elevate-territory-map/
     07_build_travel_cost_model.py
     08_optimize_locations.py
     09_analyze_scenarios.py
+    10_correct_travel_costs.py
+    11_build_full_cost_table.py        # NEW: per-(tech/candidate, node) drive/fly cost table
     travel_cost_modeling.py
     optimization_utils.py
     config.py
@@ -93,14 +96,15 @@ Do not commit sensitive external files.
 
 Typical UI-only changes require Step 5 only.
 
-### Steps 6-10 (Optimization)
+### Steps 6-11 (Optimization)
 
 1. `06_build_optimization_inputs.py`
 2. `07_build_travel_cost_model.py --engine hybrid --min-direct-route-n 5 --shrinkage-k 10`
 3. `10_correct_travel_costs.py` — BTS calibration; produces `travel_cost_matrix_bts_corrected.csv`
-4. `08_optimize_locations.py --min-new-hires 0 --max-new-hires 4 --max-hires-per-base 1 --time-limit-sec 600`
-5. `09_analyze_scenarios.py`
-6. `05_generate_map.py` to refresh scenario panel in map output.
+4. `11_build_full_cost_table.py` — pre-computes `full_cost_table.csv` (drive/fly + rental + hotel). Re-run when `demand_appointments.csv`, `tech_master.csv`, or cost matrix changes.
+5. `08_optimize_locations.py --min-new-hires 0 --max-new-hires 4 --max-hires-per-base 1 --time-limit-sec 600`
+6. `09_analyze_scenarios.py`
+7. `05_generate_map.py` to refresh scenario panel in map output.
 
 Step 10 only needs to re-run when the raw travel cost matrix (`travel_cost_matrix.csv`) changes. Toggle `config.BTS_CORRECTED_MATRIX` to switch which matrix the optimizer uses without re-running Step 10.
 
@@ -254,16 +258,18 @@ This means `Total Cost` already includes fixed canceled/voided baseline overhead
 
 ## Latest Validated Run Snapshot
 
-From current optimization artifacts in this repo (BTS-corrected matrix active):
+From current optimization artifacts (BTS-corrected matrix + full cost model active):
 
 - Scenario range: `N=0..4`
-- Selection mode: `all_scenarios_no_proven_optimal` (solver hit 600s time limit; MIP gap ~3e-5, near-optimal)
+- Selection mode: `proven_optimal_only` (all 5 scenarios solved to proven optimality — faster convergence under full cost model)
 - Best scenario: `N=0`
-- Best total with overhead: `700,408.18` USD  *(was `612,807.52` on original matrix — increase driven by TPA correction +34.5%)*
-- N=0 travel cost: `664,776.16` USD  *(was `577,175` on original matrix)*
+- **N=0 travel cost: `1,251,819.55` USD** *(was `664,776.16` flight-only — +88.3% from adding rental + hotel)*
+- **N=0 total with overhead: `1,287,451.57` USD** *(was `700,408.18` flight-only — +83.8%)*
 - Baseline canceled/voided constant: `35,632.02` USD
 - Burdened annual per-hire planning cost: `146,640.00` USD
-- Hybrid model valid MAE improvement vs heuristic: `16.20%`
+- Full cost model constants: IRS $0.70/mi, rental $235/trip, hotel $399/trip, drive threshold 300 mi
+- Full cost table: 7,854 rows (16 techs × 77 nodes + 86 candidates × 77 nodes)
+- Drive/fly split in cost table: 8.5% drive, 91.5% fly
 - Navan flight date window used in Step 7: `2025-07-09` to `2026-03-13`
 - No scenario allocates more than one hire to a single base (`max_hires_per_base=1`).
 - BTS-corrected matrix airport benchmarks (key sanity checks):
@@ -288,7 +294,7 @@ From current optimization artifacts in this repo (BTS-corrected matrix active):
 1. Navan coverage window is shorter than full appointment history, so route learning is partially sparse.
 2. Canceled/voided overhead is fixed, not behaviorally modeled.
 3. BTS prior is optional and currently inactive if the prior CSV is missing.
-4. Solver runtime for `N=0..4` hits the 600s time limit; MIP gap ~3e-5 (effectively optimal in practice).
+4. Solver runtime for `N=0..4` now solves to proven optimality (full cost model appears to create a cleaner objective landscape).
 5. YUL (Montreal-Trudeau) raw hybrid model estimated ~$676 vs observed ~$959 (29% underestimate).
    The BTS correction blends 60% Navan actual ($959) + 40% BTS cross-border ($447) → $754. The
    remaining ~$205 gap vs observed reflects that cross-border fares vary by specific routing.
@@ -296,6 +302,11 @@ From current optimization artifacts in this repo (BTS-corrected matrix active):
    midpoints rather than directly verified BTS figures. Re-run Step 10 if fare data is refreshed.
 7. 57 of 66 origin airports had fewer than 10 Navan flights; 25 had zero. BTS correction addresses
    the resulting bias but does not replace the need for broader Navan flight data over time.
+8. Full cost model uses median haversine (great-circle) distance per node, not road distance. Great-circle
+   is typically 10–25% shorter than road. Hotel is flat $399/trip regardless of appointment duration
+   (Navan 2.5-night average). Same-city trip bundling is not modeled (each appointment = one trip).
+9. Full cost model hotel/rental constants ($399, $235) are 2025 Navan actuals. Re-update in
+   `config.py` if Navan benchmarks change meaningfully.
 
 ## Recommended Defaults for Re-Runs
 
@@ -305,21 +316,25 @@ Use these commands unless a test requires deviation:
 /opt/miniconda3/bin/python3 scripts/06_build_optimization_inputs.py
 /opt/miniconda3/bin/python3 scripts/07_build_travel_cost_model.py --engine hybrid --min-direct-route-n 5 --shrinkage-k 10
 /opt/miniconda3/bin/python3 scripts/10_correct_travel_costs.py
+/opt/miniconda3/bin/python3 scripts/11_build_full_cost_table.py
 /opt/miniconda3/bin/python3 scripts/08_optimize_locations.py --min-new-hires 0 --max-new-hires 4 --max-hires-per-base 1 --time-limit-sec 600
 /opt/miniconda3/bin/python3 scripts/09_analyze_scenarios.py
 /opt/miniconda3/bin/python3 scripts/05_generate_map.py
 ```
 
-To revert to the original (uncorrected) matrix without re-running, set `BTS_CORRECTED_MATRIX = False` in `scripts/config.py` and re-run steps 8–9–5.
+To revert to the original (uncorrected) matrix without re-running, set `BTS_CORRECTED_MATRIX = False` in `scripts/config.py` and re-run steps 11–8–9–5.
+To revert to the flight-cost-only model, set `FULL_COST_MODEL = False` in `scripts/config.py` and re-run steps 8–9–5 (Step 11 can be skipped).
 
 ## If Starting a New Chat
 
 State these immediately to avoid context drift:
 
 1. Hybrid travel-cost engine is already implemented and in use.
-2. Burdened hire cost is `146,640` per incremental hire.
-3. Out-of-region penalty default is `0`.
-4. Canceled/voided cost is fixed baseline overhead, not scenario-variable.
-5. Hakim-only Canada rule is active.
-6. Scenario panel `Total Cost` includes canceled/voided overhead.
-7. Technician map points are grouped by base; roster details are in marker popup.
+2. **Full cost model is active** (Step 11): hotel + rental on all trips; drive/fly classified by 300-mile threshold.
+3. Burdened hire cost is `146,640` per incremental hire.
+4. Out-of-region penalty default is `0`.
+5. Canceled/voided cost is fixed baseline overhead, not scenario-variable.
+6. Hakim-only Canada rule is active.
+7. Scenario panel `Total Cost` includes canceled/voided overhead.
+8. Technician map points are grouped by base; roster details are in marker popup.
+9. N=0 total with full cost model: `$1,287,452` (was `$700,408` flight-only).

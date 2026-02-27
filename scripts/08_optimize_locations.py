@@ -44,13 +44,32 @@ def load_inputs(output_dir: Path) -> dict:
     with open(files["baseline"], "r") as f:
         baseline = json.load(f)
 
-    return {
+    result = {
         "tech": pd.read_csv(files["tech"]),
         "demand": pd.read_csv(files["demand"]),
         "candidates": pd.read_csv(files["candidates"]),
         "cost_matrix": pd.read_csv(files["cost_matrix"]),
         "baseline": baseline,
+        "full_cost_df": None,
     }
+
+    if config.FULL_COST_MODEL:
+        full_cost_path = output_dir / "full_cost_table.csv"
+        if full_cost_path.exists():
+            result["full_cost_df"] = pd.read_csv(full_cost_path)
+            print(
+                f"  [FullCost] Loaded full_cost_table.csv "
+                f"({len(result['full_cost_df']):,} rows, "
+                f"drive/fly model active)."
+            )
+        else:
+            print(
+                "  [FullCost] WARNING: FULL_COST_MODEL=True but full_cost_table.csv not found. "
+                "Run scripts/11_build_full_cost_table.py first. "
+                "Falling back to flight-cost-only model."
+            )
+
+    return result
 
 
 def build_demand_nodes(demand: pd.DataFrame) -> pd.DataFrame:
@@ -117,6 +136,16 @@ def get_cost(
     if origin_airport in origin_avg:
         return float(origin_avg[origin_airport])
     return float(global_avg)
+
+
+def build_full_cost_lookup(
+    full_cost_df: pd.DataFrame,
+) -> dict[tuple[str, str], float]:
+    """Build (tech_or_candidate_id, node_id) → unit_cost_usd from full_cost_table.csv."""
+    return {
+        (str(row.tech_or_candidate_id), str(row.node_id)): float(row.unit_cost_usd)
+        for row in full_cost_df.itertuples(index=False)
+    }
 
 
 def is_canada_node_state(state_norm: str) -> bool:
@@ -202,6 +231,7 @@ def solve_scenario(
     annual_hire_cost_usd: float,
     max_hires_per_base: int,
     time_limit_sec: int,
+    full_cost_lookup: dict[tuple[str, str], float] | None = None,
 ) -> dict:
     """Solve one MILP scenario for a fixed new-hire count."""
     nodes = nodes.reset_index(drop=True).copy()
@@ -240,13 +270,19 @@ def solve_scenario(
             ub.append(float(nrow["appointment_count"]))
             integrality.append(1)
 
-            base_cost = get_cost(
-                str(trow["base_airport_iata"]),
-                str(nrow["state_norm"]),
-                exact_cost,
-                origin_avg,
-                global_avg,
-            )
+            if full_cost_lookup is not None:
+                base_cost = full_cost_lookup.get(
+                    (str(trow["tech_id"]), str(nrow["node_id"])),
+                    global_avg + config.RENTAL_CAR_AVG_USD + config.HOTEL_AVG_USD,
+                )
+            else:
+                base_cost = get_cost(
+                    str(trow["base_airport_iata"]),
+                    str(nrow["state_norm"]),
+                    exact_cost,
+                    origin_avg,
+                    global_avg,
+                )
             is_out_region = int(str(trow.get("base_state", "")) != str(nrow["state_norm"]))
             penalty = out_of_region_penalty if is_out_region else 0.0
             obj.append(base_cost + penalty)
@@ -273,13 +309,19 @@ def solve_scenario(
             ub.append(0.0 if node_is_canada else float(nrow["appointment_count"]))
             integrality.append(1)
 
-            base_cost = get_cost(
-                str(crow["airport_iata"]),
-                str(nrow["state_norm"]),
-                exact_cost,
-                origin_avg,
-                global_avg,
-            )
+            if full_cost_lookup is not None:
+                base_cost = full_cost_lookup.get(
+                    (str(crow["candidate_id"]), str(nrow["node_id"])),
+                    global_avg + config.RENTAL_CAR_AVG_USD + config.HOTEL_AVG_USD,
+                )
+            else:
+                base_cost = get_cost(
+                    str(crow["airport_iata"]),
+                    str(nrow["state_norm"]),
+                    exact_cost,
+                    origin_avg,
+                    global_avg,
+                )
             is_out_region = int(str(crow.get("state", "")) != str(nrow["state_norm"]))
             penalty = out_of_region_penalty if is_out_region else 0.0
             obj.append(base_cost + penalty)
@@ -642,6 +684,11 @@ def main() -> None:
     demand_nodes = build_demand_nodes(demand)
     exact_cost, origin_avg, global_avg = build_cost_lookup(cost_matrix)
 
+    full_cost_lookup: dict[tuple[str, str], float] | None = None
+    if config.FULL_COST_MODEL and inputs["full_cost_df"] is not None:
+        full_cost_lookup = build_full_cost_lookup(inputs["full_cost_df"])
+        print(f"  [FullCost] Lookup built: {len(full_cost_lookup):,} (entity, node) pairs.")
+
     if args.contractor_assignment_scope:
         contractor_scope = args.contractor_assignment_scope
     else:
@@ -691,6 +738,7 @@ def main() -> None:
                 annual_hire_cost_usd=args.annual_hire_cost_usd,
                 max_hires_per_base=args.max_hires_per_base,
                 time_limit_sec=args.time_limit_sec,
+                full_cost_lookup=full_cost_lookup,
             )
         except RuntimeError as exc:
             msg = f"Solver error for N={hire_count}: {exc}"
@@ -749,6 +797,13 @@ def main() -> None:
         "hire_cost_scope": "incremental_new_hires_only",
         "hire_cost_input_mode": "direct_fixed_value",
         "contractor_assignment_scope": contractor_scope,
+        "full_cost_model": config.FULL_COST_MODEL and full_cost_lookup is not None,
+        "full_cost_model_constants": {
+            "irs_mileage_rate_usd_per_mi": config.IRS_MILEAGE_RATE_USD_PER_MI,
+            "rental_car_avg_usd": config.RENTAL_CAR_AVG_USD,
+            "hotel_avg_usd": config.HOTEL_AVG_USD,
+            "drive_threshold_miles": config.DRIVE_THRESHOLD_MILES,
+        },
         "hps_timeline_assumption": {
             "production_end_estimate": "2027-03-31",
             "service_tail_end_estimate": "2031-03-31",

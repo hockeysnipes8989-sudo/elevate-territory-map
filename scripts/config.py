@@ -100,6 +100,15 @@ DEFAULT_UNMET_PENALTY_USD = 5000.0
 # Travel cost matrix selection
 BTS_CORRECTED_MATRIX = True   # Set True to use BTS-calibrated matrix in optimizer
 
+# Full cost model: drive/fly classification with rental car and hotel costs.
+# Requires full_cost_table.csv produced by scripts/11_build_full_cost_table.py.
+# Set False to revert to flight-cost-only model (original behavior).
+FULL_COST_MODEL = True
+IRS_MILEAGE_RATE_USD_PER_MI = 0.70   # 2025 IRS standard mileage rate
+RENTAL_CAR_AVG_USD = 235.0            # Navan average across 82 confirmed bookings
+HOTEL_AVG_USD = 399.0                 # Navan average across 125 confirmed bookings (2.5 nights)
+DRIVE_THRESHOLD_MILES = 300.0         # Great-circle miles; ≈ 5 hours driving
+
 # ---------------------------------------------------------------------------
 # Colors
 # ---------------------------------------------------------------------------
