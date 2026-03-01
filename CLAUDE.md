@@ -25,6 +25,7 @@ This file is the canonical context handoff for future chats.
 - Simulation panel reads optimization outputs and shows scenario KPIs for `N=0..4`.
 - Technician markers are grouped by shared coordinates so all 16 roster members are visible via popup rosters.
 - New-hire allocation is hard-capped at 1 hire per base by default.
+- **Revenue-from-freed-capacity analysis is active** (Step 09). Three MSRP-based revenue scenarios ($50K/$120K/$250K per install) + $7K annual service contracts quantify the net economic value of freed technician capacity. This is supplementary analysis — the MILP optimizer and N=0 recommendation are unchanged.
 
 ## Repository Structure (Important Paths)
 
@@ -196,12 +197,14 @@ Where:
 
 - Computes savings vs `N=0`.
 - Computes marginal savings from previous `N`.
+- **Capacity-freed analysis:** converts freed existing-tech hours → realistic installation estimates using avg duration days (3.25), travel overhead (1.0 day), and 75% utilization factor.
+- **Revenue-from-freed-capacity analysis:** for each hiring scenario, computes net economic value across 3 revenue tiers (conservative/moderate/aggressive) plus annual service contract revenue. Includes ROI and break-even installations per tier.
 - Picks best scenario using proven-optimal solutions first (`selection_mode = proven_optimal_only`).
 - Writes:
-  - `scenario_summary_enhanced.csv`
+  - `scenario_summary_enhanced.csv` (includes 21 revenue columns: 7 metrics × 3 tiers)
   - `recommended_hire_locations.csv`
-  - `analysis_report.json`
-  - `analysis_report.md`
+  - `analysis_report.json` (includes `revenue_scenarios`, `avg_annual_service_contract_usd`, per-scenario `revenue_analysis`)
+  - `analysis_report.md` (includes revenue summary table and caveats)
 
 ## Business Rules and Assumptions (Current)
 
@@ -248,6 +251,28 @@ Where:
 - `target_utilization` defaults to `0.85` (Step 08 CLI argument, not in config.py). This means the fleet targets 85% utilization at N=0, leaving 15% buffer for scheduling friction.
 - Techs with `availability_fte=0.0` (e.g., James Sanchez / Alex Rondero) get zero capacity and zero assignments.
 - Current computed values: total_FTE=13.25, total_demand=86,760 hrs, hours_per_unit=7,703.44
+
+### Revenue-from-Freed-Capacity Model (Step 09)
+
+- **Framing:** Below 15% volume reduction (Shannon Drew directive), the value of hiring should be understood as capacity for revenue, not cost savings.
+- Three MSRP-based revenue scenarios (Year 1 gross per installation):
+  - Conservative: `$50,000` (small systems — Aria, Apollo)
+  - Moderate: `$120,000` (mid-range — Lucina, Evo)
+  - Aggressive: `$250,000` (large systems — HPS full suite)
+- Annual recurring service contract: `$7,000/system` (UIUC pricing, conservative fleet-weighted estimate skewed toward Peak-tier).
+- Revenue figures are **capacity enabled, not guaranteed** — actual revenue depends on sales pipeline and market demand.
+- Revenue is MSRP-based gross, not profit margin or P&L impact.
+- Estimates are Year 1 only — no multi-year NPV.
+- The MILP optimizer recommendation (N=0) is unchanged; revenue analysis is purely supplementary.
+- Config constants: `REVENUE_PER_INSTALLATION_CONSERVATIVE_USD`, `REVENUE_PER_INSTALLATION_MODERATE_USD`, `REVENUE_PER_INSTALLATION_AGGRESSIVE_USD`, `AVG_ANNUAL_SERVICE_CONTRACT_USD`.
+
+### Capacity-Freed Model Parameters (Step 09)
+
+- `TRAVEL_DAYS_PER_INSTALLATION = 1.0` — travel overhead per installation (days).
+- `FREED_CAPACITY_UTILIZATION_FACTOR = 0.75` — fraction of freed days practically usable (accounts for scheduling gaps, PTO, non-installation work).
+- Avg duration days per installation: `3.25` (computed from appointment data: ISO 2.1d, AVS ISO 3.6d, AVS 1.1d).
+- Effective days per installation: `4.25` (3.25 duration + 1.0 travel).
+- Realistic installations = (freed days × 0.75) / 4.25.
 
 ### Contractor Scope
 
@@ -303,6 +328,18 @@ From current optimization artifacts (BTS-corrected matrix + full cost model acti
 | 4 | $989,421.17 | $586,560 | $35,632.02 | $1,611,613.19 |
 
 Marginal travel savings diminish: $87K (N=0→1), $69K (N=1→2), $59K (N=2→3), $47K (N=3→4).
+
+### Revenue-from-Freed-Capacity Summary
+
+| N | Realistic Installs | Net Cost Increase | Net Value (Conservative) | Net Value (Moderate) | Net Value (Aggressive) | Break-Even (Mod) |
+|---|-------------------:|------------------:|-------------------------:|---------------------:|-----------------------:|-----------------:|
+| 0 | 0.0 | $0 | $0 | $0 | $0 | 0.0 |
+| 1 | 56.7 | $59,181 | $3,170,383 | $7,136,513 | $14,502,184 | 0.5 |
+| 2 | 113.3 | $137,192 | $6,323,699 | $14,258,128 | $28,993,495 | 1.1 |
+| 3 | 170.0 | $224,914 | $9,464,213 | $21,363,141 | $43,461,150 | 1.8 |
+| 4 | 226.6 | $324,162 | $12,593,155 | $28,456,526 | $57,917,072 | 2.6 |
+
+Key takeaway: Even at conservative estimates, N=1 enables ~$3.2M in revenue capacity for only ~$59K incremental cost (break-even at 1.0 install under conservative, 0.5 under moderate). The cost-only optimizer says N=0 is cheapest, but the revenue lens shows substantial economic upside from hiring.
 
 ### Hiring Placements by Scenario
 
@@ -362,8 +399,15 @@ Marginal travel savings diminish: $87K (N=0→1), $69K (N=1→2), $59K (N=2→3)
 14. **Fort Smith AR maps to LIT (Little Rock, ~157 mi).** No closer airport is in the 68-airport list. Fort Smith has a small regional airport (FSM) not in our candidate pool.
 15. YUL (Montreal-Trudeau) raw hybrid model estimated ~$676 vs observed ~$959 (29% underestimate). The BTS correction blends 60% Navan actual ($959) + 40% BTS cross-border ($447) → $754. The remaining ~$205 gap vs observed reflects that cross-border fares vary by specific routing.
 
+### Revenue Model Caveats
+16. Revenue figures represent **capacity enabled**, not guaranteed bookings — actual revenue depends on sales pipeline and market demand.
+17. Revenue is **MSRP-based gross revenue**, not profit margin or P&L impact. Actual margins vary by product line.
+18. Service contract revenue assumes each new installation generates an annual $7K contract. Fleet mix may shift this up (Apex-tier) or down (Peak-tier).
+19. Estimates are **Year 1 only** — multi-year NPV would require discount rate assumptions.
+20. Revenue analysis is supplementary — the MILP optimizer recommendation (N=0) is unchanged and based purely on cost minimization.
+
 ### Solver
-16. All 5 scenarios solve to proven optimality (MIP gap = 0.0). Max existing-tech utilization is 99.99% at N=0, indicating the workforce is very tightly loaded.
+21. All 5 scenarios solve to proven optimality (MIP gap = 0.0). Max existing-tech utilization is 99.99% at N=0, indicating the workforce is very tightly loaded.
 
 ## Recommended Defaults for Re-Runs
 
@@ -398,4 +442,5 @@ State these immediately to avoid context drift:
 10. Scenario panel `Total Cost` includes canceled/voided overhead.
 11. Technician map points are grouped by base; roster details are in marker popup.
 12. N=0 total: `$1,287,451.57`. Best scenario is N=0 — all hiring scenarios cost more.
-13. Pipeline order: 06 → 07 → 10 → 11 → 08 → 09 → 05.
+13. **Revenue-from-freed-capacity analysis is active** in Step 09: 3 revenue tiers ($50K/$120K/$250K) + $7K service contracts. N=1 moderate net value: ~$7.1M. This is supplementary — MILP recommendation unchanged.
+14. Pipeline order: 06 → 07 → 10 → 11 → 08 → 09 → 05.
