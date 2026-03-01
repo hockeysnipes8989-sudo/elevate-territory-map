@@ -109,9 +109,16 @@ RENTAL_CAR_AVG_USD = 235.0            # Navan average across 82 confirmed bookin
 HOTEL_AVG_USD = 399.0                 # Navan average across 125 confirmed bookings (2.5 nights)
 DRIVE_THRESHOLD_MILES = 300.0         # Great-circle miles; ≈ 5 hours driving
 
-# Revenue per installation — used for break-even calculation in Step 09.
-# Set to a dollar amount to enable break-even analysis; None disables it.
-DEFAULT_AVG_REVENUE_PER_INSTALLATION_USD = None
+# Revenue-from-freed-capacity analysis (Step 09).
+# Three installation revenue scenarios (MSRP-based, Year 1 gross revenue per installation).
+REVENUE_PER_INSTALLATION_CONSERVATIVE_USD = 50_000    # Small systems (Aria, Apollo)
+REVENUE_PER_INSTALLATION_MODERATE_USD = 120_000       # Mid-range (Lucina, Evo)
+REVENUE_PER_INSTALLATION_AGGRESSIVE_USD = 250_000     # Large systems (HPS full suite)
+
+# Average annual recurring service contract revenue per installed system.
+# Based on UIUC Service Contract pricing: Apex $7K-$24K, Peak $2K-$8.5K.
+# $7K is a conservative fleet-weighted estimate skewed toward Peak-tier.
+AVG_ANNUAL_SERVICE_CONTRACT_USD = 7_000
 
 # Realistic installation estimate parameters (Step 09 capacity-freed analysis).
 TRAVEL_DAYS_PER_INSTALLATION = 1.0            # Travel overhead per installation (days)

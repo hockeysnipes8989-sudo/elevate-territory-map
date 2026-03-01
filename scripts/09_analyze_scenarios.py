@@ -129,15 +129,54 @@ def main() -> None:
         (summary["freed_duration_days"] * util_factor) / effective_days_per_install,
     )
 
-    rev_per_install = config.DEFAULT_AVG_REVENUE_PER_INSTALLATION_USD
-    if rev_per_install is not None and rev_per_install > 0:
-        summary["break_even_installations"] = np.where(
-            summary["savings_vs_n0_usd"] >= 0,
-            0.0,
-            (-summary["savings_vs_n0_usd"]) / rev_per_install,
+    # --- Block C: Revenue-from-freed-capacity analysis ---
+    revenue_scenarios = {
+        "conservative": config.REVENUE_PER_INSTALLATION_CONSERVATIVE_USD,
+        "moderate": config.REVENUE_PER_INSTALLATION_MODERATE_USD,
+        "aggressive": config.REVENUE_PER_INSTALLATION_AGGRESSIVE_USD,
+    }
+    service_contract_annual = config.AVG_ANNUAL_SERVICE_CONTRACT_USD
+
+    for label, rev_per_install in revenue_scenarios.items():
+        # Net cost increase vs N=0 (positive = costs more to hire)
+        col_net_cost = f"net_cost_increase_{label}_usd"
+        summary[col_net_cost] = summary["economic_total_with_overhead_usd"] - base_cost
+
+        # Installation revenue (realistic installs × revenue per install)
+        col_install_rev = f"installation_revenue_{label}_usd"
+        summary[col_install_rev] = summary["realistic_installations_enabled"] * rev_per_install
+
+        # Service contract revenue (realistic installs × annual contract)
+        col_svc_rev = f"service_contract_revenue_{label}_usd"
+        summary[col_svc_rev] = summary["realistic_installations_enabled"] * service_contract_annual
+
+        # Total revenue enabled
+        col_total_rev = f"total_revenue_enabled_{label}_usd"
+        summary[col_total_rev] = summary[col_install_rev] + summary[col_svc_rev]
+
+        # Net economic value = total revenue - net cost increase
+        col_net_value = f"net_economic_value_{label}_usd"
+        summary[col_net_value] = summary[col_total_rev] - summary[col_net_cost]
+
+        # ROI = net economic value / net cost increase (only where cost > 0)
+        col_roi = f"roi_{label}_pct"
+        summary[col_roi] = np.where(
+            summary[col_net_cost] > 0,
+            (summary[col_net_value] / summary[col_net_cost]) * 100.0,
+            np.nan,
         )
-    else:
-        summary["break_even_installations"] = np.nan
+
+        # Break-even installations for this revenue scenario
+        col_be = f"break_even_installations_{label}"
+        rev_plus_svc = rev_per_install + service_contract_annual
+        summary[col_be] = np.where(
+            summary[col_net_cost] > 0,
+            summary[col_net_cost] / rev_plus_svc,
+            0.0,
+        )
+
+    # Keep a unified break_even column using the moderate scenario
+    summary["break_even_installations"] = summary["break_even_installations_moderate"]
 
     if "solver_proven_optimal" in summary.columns:
         # Use pd.to_numeric to handle string "0"/"1" values correctly before bool conversion.
@@ -213,7 +252,12 @@ def main() -> None:
         "travel_days_per_installation": travel_days,
         "freed_capacity_utilization_factor": util_factor,
         "installation_type_breakdown": install_type_breakdown,
-        "avg_revenue_per_installation_usd": rev_per_install,
+        "revenue_scenarios": {
+            "conservative_per_install_usd": config.REVENUE_PER_INSTALLATION_CONSERVATIVE_USD,
+            "moderate_per_install_usd": config.REVENUE_PER_INSTALLATION_MODERATE_USD,
+            "aggressive_per_install_usd": config.REVENUE_PER_INSTALLATION_AGGRESSIVE_USD,
+        },
+        "avg_annual_service_contract_usd": service_contract_annual,
         "capacity_freed_all_scenarios": [
             {
                 "scenario_hires": int(r["scenario_hires"]),
@@ -228,6 +272,20 @@ def main() -> None:
                 "break_even_installations": round(float(r["break_even_installations"]), 1)
                 if not np.isnan(r["break_even_installations"])
                 else None,
+                "revenue_analysis": {
+                    lbl: {
+                        "installation_revenue_usd": round(float(r[f"installation_revenue_{lbl}_usd"]), 2),
+                        "service_contract_revenue_usd": round(float(r[f"service_contract_revenue_{lbl}_usd"]), 2),
+                        "total_revenue_enabled_usd": round(float(r[f"total_revenue_enabled_{lbl}_usd"]), 2),
+                        "net_cost_increase_usd": round(float(r[f"net_cost_increase_{lbl}_usd"]), 2),
+                        "net_economic_value_usd": round(float(r[f"net_economic_value_{lbl}_usd"]), 2),
+                        "roi_pct": round(float(r[f"roi_{lbl}_pct"]), 1)
+                        if not np.isnan(r[f"roi_{lbl}_pct"])
+                        else None,
+                        "break_even_installations": round(float(r[f"break_even_installations_{lbl}"]), 1),
+                    }
+                    for lbl in ["conservative", "moderate", "aggressive"]
+                },
             }
             for _, r in summary.iterrows()
         ],
@@ -304,13 +362,9 @@ def main() -> None:
         lines.append(
             f"- Avg calendar hours per installation: **{avg_calendar_hours_per_installation:.1f}** (theoretical max reference)"
         )
-    if rev_per_install is not None:
-        lines.append(f"- Avg revenue per installation: **${rev_per_install:,.0f}**")
-    else:
-        lines.append("- Avg revenue per installation: **not configured** (set DEFAULT_AVG_REVENUE_PER_INSTALLATION_USD in config.py)")
     lines.append("")
-    lines.append("| Scenario | Days Freed | Usable Days | Realistic Installs | Theoretical Max | Break-Even |")
-    lines.append("|----------|----------:|-----------:|-------------------:|----------------:|----------:|")
+    lines.append("| Scenario | Days Freed | Usable Days | Realistic Installs | Theoretical Max | Break-Even (Mod) |")
+    lines.append("|----------|----------:|-----------:|-------------------:|----------------:|-----------------:|")
     for _, r in summary.iterrows():
         n = int(r["scenario_hires"])
         df = r["freed_duration_days"]
@@ -322,6 +376,50 @@ def main() -> None:
         tm_str = f"{tm:,.0f}" if not np.isnan(tm) else "N/A"
         be_str = f"{be:,.1f}" if not np.isnan(be) else "N/A"
         lines.append(f"| N={n} | {df:,.1f} | {ud:,.1f} | {ri_str} | {tm_str} | {be_str} |")
+
+    # --- Revenue-from-Freed-Capacity Analysis ---
+    lines.append("")
+    lines.append("## Revenue-from-Freed-Capacity Analysis")
+    lines.append("")
+    lines.append("> **Framing note:** Below 15% volume reduction, the value of hiring should be")
+    lines.append("> understood as capacity for revenue, not cost savings. These estimates represent")
+    lines.append("> what freed technician time could enable, not guaranteed revenue.")
+    lines.append("")
+    lines.append("### Assumptions")
+    lines.append(f"- Conservative: ${config.REVENUE_PER_INSTALLATION_CONSERVATIVE_USD:,}/install (small systems)")
+    lines.append(f"- Moderate: ${config.REVENUE_PER_INSTALLATION_MODERATE_USD:,}/install (mid-range systems)")
+    lines.append(f"- Aggressive: ${config.REVENUE_PER_INSTALLATION_AGGRESSIVE_USD:,}/install (large/HPS systems)")
+    lines.append(f"- Annual service contract: ${service_contract_annual:,}/system")
+    lines.append("- Revenue is Year 1 MSRP gross, not profit margin")
+    lines.append("")
+    lines.append("### Revenue Summary by Scenario")
+    lines.append("")
+    lines.append("| Hires | Realistic Installs | Rev Scenario | Install Rev | Svc Contract Rev | Total Rev | Net Cost Increase | Net Economic Value | ROI | Break-Even Installs |")
+    lines.append("|------:|-------------------:|:-------------|------------:|-----------------:|----------:|------------------:|-------------------:|----:|--------------------:|")
+    for _, r in summary.iterrows():
+        n = int(r["scenario_hires"])
+        ri = r["realistic_installations_enabled"]
+        ri_str = f"{ri:,.1f}" if not np.isnan(ri) else "N/A"
+        for lbl in ["conservative", "moderate", "aggressive"]:
+            ir = r[f"installation_revenue_{lbl}_usd"]
+            sr = r[f"service_contract_revenue_{lbl}_usd"]
+            tr = r[f"total_revenue_enabled_{lbl}_usd"]
+            nc = r[f"net_cost_increase_{lbl}_usd"]
+            nv = r[f"net_economic_value_{lbl}_usd"]
+            roi = r[f"roi_{lbl}_pct"]
+            be = r[f"break_even_installations_{lbl}"]
+            roi_str = f"{roi:,.0f}%" if not np.isnan(roi) else "N/A"
+            lines.append(
+                f"| {n} | {ri_str} | {lbl} | ${ir:,.0f} | ${sr:,.0f} | ${tr:,.0f} | ${nc:,.0f} | ${nv:,.0f} | {roi_str} | {be:,.1f} |"
+            )
+
+    lines.append("")
+    lines.append("### Caveats")
+    lines.append("1. Revenue figures represent **capacity enabled**, not guaranteed bookings — actual revenue depends on sales pipeline and market demand.")
+    lines.append("2. Revenue is **MSRP-based gross revenue**, not profit margin or P&L impact.")
+    lines.append("3. Service contract revenue assumes each new installation generates an annual contract.")
+    lines.append("4. Estimates are **Year 1 only** — multi-year NPV would require discount rate assumptions.")
+    lines.append("5. The MILP optimizer recommendation (N=0) is unchanged — this analysis is supplementary.")
 
     with open(markdown_out, "w") as f:
         f.write("\n".join(lines))
@@ -352,6 +450,26 @@ def main() -> None:
         tm_str = f"{tm:,.0f}" if not np.isnan(tm) else "N/A"
         be_str = f"{be:,.1f}" if not np.isnan(be) else "N/A"
         print(f"  N={n:<7} {df:>11,.1f} {ud:>12,.1f} {ri_str:>10} {tm_str:>12} {be_str:>11}")
+
+    # --- Block F: Console revenue summary ---
+    print(f"\nRevenue-from-Freed-Capacity Analysis:")
+    print(f"  Revenue per install: Conservative=${config.REVENUE_PER_INSTALLATION_CONSERVATIVE_USD//1000:.0f}K | Moderate=${config.REVENUE_PER_INSTALLATION_MODERATE_USD//1000:.0f}K | Aggressive=${config.REVENUE_PER_INSTALLATION_AGGRESSIVE_USD//1000:.0f}K")
+    print(f"  Annual service contract: ${service_contract_annual:,}/system")
+    print()
+    print(f"  {'Scenario':<10} {'Installs':>9} {'Net Cost Incr':>14}    {'Conservative':>14} {'Moderate':>14} {'Aggressive':>14}    {'BE (Mod)':>9}")
+    print(f"  {'':<10} {'':>9} {'':>14}    {'--- Net Economic Value ---':^44}    {'':>9}")
+    print(f"  {'-'*10} {'-'*9} {'-'*14}    {'-'*14} {'-'*14} {'-'*14}    {'-'*9}")
+    for _, r in summary.iterrows():
+        n = int(r["scenario_hires"])
+        ri = r["realistic_installations_enabled"]
+        ri_str = f"{ri:,.1f}" if not np.isnan(ri) else "N/A"
+        nc = r["net_cost_increase_moderate_usd"]
+        nv_c = r["net_economic_value_conservative_usd"]
+        nv_m = r["net_economic_value_moderate_usd"]
+        nv_a = r["net_economic_value_aggressive_usd"]
+        be = r["break_even_installations"]
+        be_str = f"{be:,.1f}" if not np.isnan(be) else "N/A"
+        print(f"  N={n:<7} {ri_str:>9} {'${:>,.0f}'.format(nc):>14}    {'${:>,.0f}'.format(nv_c):>14} {'${:>,.0f}'.format(nv_m):>14} {'${:>,.0f}'.format(nv_a):>14}    {be_str:>9}")
 
 
 if __name__ == "__main__":
