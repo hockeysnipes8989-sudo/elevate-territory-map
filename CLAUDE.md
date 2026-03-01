@@ -265,7 +265,7 @@ Where:
 - Formula: `hours_per_unit = total_demand_hours / (total_FTE × target_utilization)`
 - Each tech's capacity: `availability_fte × hours_per_unit`
 - `target_utilization` defaults to `0.85` (Step 08 CLI argument, not in config.py). This means the fleet targets 85% utilization at N=0, leaving 15% buffer for scheduling friction.
-- Techs with `availability_fte=0.0` (e.g., James Sanchez / Alex Rondero) get zero capacity and zero assignments.
+- Techs with `availability_fte=0.0` (e.g., James Sanchez) get zero capacity and zero assignments.
 - Current computed values: total_FTE=13.25, total_demand=86,760 hrs, hours_per_unit=7,703.44
 
 ### Revenue-from-Freed-Capacity Model (Step 09)
@@ -334,7 +334,7 @@ From current optimization artifacts (BTS-corrected matrix + full cost model + an
 - Navan flight date window used in Step 7: `2025-07-09` to `2026-03-13`
 - No scenario allocates more than one hire to a single base (`max_hires_per_base=1`).
 - All 1,480 appointments served across all scenarios (zero unmet).
-- Active techs at N=0: 15 (excludes James Sanchez / Rondero, `availability_fte=0.0`).
+- Active techs at N=0: 15 (excludes James Sanchez (availability_fte=0.0, on phones temporarily)).
 - Mean utilization at N=0: 85.7%. Max: 99.99% (one tech near ceiling — workforce is tightly loaded).
 
 ### Scenario Cost Summary (Annualized)

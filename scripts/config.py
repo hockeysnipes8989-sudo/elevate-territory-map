@@ -82,6 +82,7 @@ INACTIVE_TECH_NAMES = {
     "David Bazany",
     "John Aleksa",
     "Trent Osborne",
+    "Alex Rondero",
 }
 
 # Technician name aliases (canonical form lookup used in optimization pipeline).
