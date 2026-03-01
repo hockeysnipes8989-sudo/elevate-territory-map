@@ -1,0 +1,1524 @@
+================================================================================
+  ELEVATE HEALTHCARE — FIELD SERVICE OPTIMIZATION PIPELINE
+  COMPREHENSIVE TECHNICAL REFERENCE DOCUMENT
+================================================================================
+
+  Prepared: February 28, 2026 | Last Updated: March 1, 2026
+  Organization: Elevate Healthcare (UIUC Senior Design)
+  Repository: https://github.com/hockeysnipes8989-sudo/elevate-territory-map
+  Live Map: https://hockeysnipes8989-sudo.github.io/elevate-territory-map/
+
+  This document provides a complete, A-to-Z explanation of the optimization
+  simulation, its data sources, constraints, calculations, cost model,
+  mathematical formulation, outputs, and known limitations.
+
+================================================================================
+TABLE OF CONTENTS
+================================================================================
+
+  1.  Executive Summary
+  2.  Problem Statement and Business Context
+  3.  Data Sources and Inputs
+  4.  Pipeline Architecture and Execution Order
+  5.  Step 06: Building Optimization Inputs
+  6.  Step 07: Travel Cost Model (Hybrid Engine)
+  7.  Step 10: BTS-Calibrated Cost Correction
+  8.  Step 11: Full Cost Table (Drive/Fly Model)
+  9.  Step 08: MILP Optimization (Mathematical Formulation)
+  10. Step 09: Scenario Analysis and Recommendations
+  11. Step 05: Interactive Map Generation
+  12. Technician Roster and Constraints
+  13. Candidate Pool Construction
+  14. Capacity Model and Utilization
+  15. Travel Cost Breakdown
+  16. Scenario Results and Cost Summary
+  17. Installation Capacity Estimates
+  18. Revenue-from-Freed-Capacity Analysis
+  19. Model Limitations and Bias Analysis
+  20. Verification and Audit Results
+  21. Glossary of Terms
+
+================================================================================
+1. EXECUTIVE SUMMARY
+================================================================================
+
+This pipeline answers a single strategic question for Elevate Healthcare:
+
+  "Should the company hire additional field service technicians, and if so,
+   where should they be based to minimize total annual operating cost?"
+
+The answer is produced by a Mixed-Integer Linear Program (MILP) that
+evaluates hiring scenarios from N=0 (no new hires) through N=4 (four new
+hires). Each scenario is solved to proven global optimality using the HiGHS
+solver via SciPy's milp() interface.
+
+KEY FINDING (COST): N=0 is the lowest-cost scenario at $1,287,451.57. Every
+additional hire increases total cost because burdened payroll ($146,640/hire)
+exceeds the travel savings the hire generates. The model proves this
+mathematically with zero MIP gap across all five scenarios.
+
+KEY FINDING (REVENUE): However, hiring frees existing-technician capacity
+that enables revenue-generating installations. A supplementary revenue
+analysis (Section 18) shows that even at conservative estimates ($50K per
+installation), N=1 enables ~$3.2M in revenue capacity for only ~$59K
+incremental cost. Under the moderate scenario ($120K per install), N=1 yields
+~$7.1M in net economic value. Break-even is reached at less than 1 additional
+installation under every revenue scenario. The cost-only optimizer says N=0
+is cheapest, but the revenue lens shows substantial economic upside from
+hiring — framing the decision as capacity for revenue rather than cost savings
+(per Shannon Drew, Elevate VP directive).
+
+The pipeline comprises 7 computational steps (06 → 07 → 10 → 11 → 08 → 09
+→ 05), processing three external data sources (appointments, technician
+roster, Navan travel bookings) through geocoding, cost modeling, optimization,
+and visualization.
+
+
+================================================================================
+2. PROBLEM STATEMENT AND BUSINESS CONTEXT
+================================================================================
+
+Elevate Healthcare deploys field service technicians across the United States
+and Canada to perform maintenance (PM), repair, and installation (ISO, AVS
+ISO, AVS) appointments on patient simulation equipment. Technicians travel
+from their home bases to customer sites, generating significant travel costs
+including flights, rental cars, hotel stays, and mileage reimbursement.
+
+The optimization pipeline answers:
+
+  (a) What is the minimum-cost assignment of 1,480 known service appointments
+      across the existing 16-person technician roster?
+
+  (b) If the company hires 1, 2, 3, or 4 additional technicians, where
+      should they be stationed to minimize total cost (travel + payroll)?
+
+  (c) How much existing-technician capacity is freed by each hire, and how
+      many additional installations could that freed capacity support?
+
+  (d) What is the net economic value of freed capacity when installations
+      generate revenue? (Revenue-from-freed-capacity analysis)
+
+The model treats the appointment demand as fixed (no demand growth or
+seasonality), the technician roster as given, and optimizes assignment to
+minimize the sum of travel costs, payroll burden, and penalties.
+
+
+================================================================================
+3. DATA SOURCES AND INPUTS
+================================================================================
+
+The pipeline consumes three primary external data sources. None are committed
+to the repository; they are referenced by path in scripts/config.py and can
+be overridden via environment variables.
+
+3.1  APPOINTMENTS WORKBOOK
+     -----------------------------------------------------------------------
+     Path: EXTERNAL_APPOINTMENTS_XLSX (env: ELEVATE_APPTS_SOURCE)
+     Default: ~/Desktop/opus 4.6 final excel sheets/UIUC service
+              appointments with dipsatch date - final.xlsx
+     Sheets used:
+       - "report1770130594436" (raw appointment data)
+       - "Derived Fields" (computed fields: Duration Hours, Duration Days,
+         Scheduled Start/End, Service Type, City, State/Province, Territory)
+
+     What it contains:
+       - 1,480 service appointments with fields:
+         * Appointment Number (unique ID)
+         * Account: Account Name (customer name)
+         * Service Resource: Name (assigned technician)
+         * Description and Subject (free-text; parsed for skill requirements)
+         * Service Type: PM, Repair, ISO, AVS ISO, AVS, or Other
+         * City, State/Province, Territory
+         * Scheduled Start, Scheduled End
+         * Duration Hours (calendar hours from start to end)
+         * Duration Days (calendar days from start to end)
+         * Dispatched Date/Time
+
+     Unit clarification: "Duration Hours" is the CALENDAR window from
+     Scheduled Start to Scheduled End — NOT labor hours. The relationship
+     is exactly: Duration Hours = Duration Days × 24. A 3-day appointment
+     = 72 calendar hours, regardless of how many labor hours the tech works.
+
+3.2  TECHNICIAN ROSTER WORKBOOK
+     -----------------------------------------------------------------------
+     Path: EXTERNAL_TECH_ROSTER_XLSX (env: ELEVATE_TECH_SOURCE)
+     Default: ~/Downloads/Tech location and product experience (1).xlsx
+
+     What it contains:
+       - 16 field service technicians (including 2 HTX contractors)
+       - For each tech: name, home base location, product certifications
+         (HPS, LearningSpace, All Other Patient Sims), employment type
+         (FTE vs contractor), and comments (geographic constraints)
+       - Comments are parsed for constraint flags:
+         * "only covers Florida" → constraint_florida_only = 1
+         * "covers all of Canada" → constraint_canada_wide = 1
+
+3.3  NAVAN TRAVEL BOOKINGS WORKBOOK
+     -----------------------------------------------------------------------
+     Path: EXTERNAL_NAVAN_XLSX (env: ELEVATE_NAVAN_SOURCE)
+     Default: ~/Downloads/navan_export.xlsx
+     Sheets used:
+       - "Clean Flights" (flight-level booking data)
+       - "Report" (aggregate spend by booking status)
+       - "Tech Roster" (management classification)
+
+     What it contains:
+       - Flight booking records with: Traveling User, Traveler Role,
+         Booking Status (TICKETED/CANCELED/VOIDED), USD Total Paid,
+         Origin Airport, Final Destination Airport, Destination State,
+         Number of Legs, Booking Lead Time (days), Short or Long Haul,
+         Domestic or International, Flight miles, Out-of-Policy flag,
+         Booking Start Date, Booking End Date
+       - Date range in current data: 2025-07-09 to 2026-03-13
+
+     Filtering for model training:
+       - Non-management travelers only (management names from Tech Roster)
+       - Booking Status = TICKETED
+       - Valid origin and destination airports
+       - Positive USD Total Paid (> $0)
+       → Yields 372 usable training flights
+
+3.4  SUPPLEMENTARY DATA
+     -----------------------------------------------------------------------
+     (a) Geocoded appointments CSV (data/processed/appointments_geocoded.csv)
+         - Latitude/longitude for each appointment, produced by Step 02
+         - Used to compute nearest hub airport and driving distances
+
+     (b) BTS state-pair fare CSV (data/external/bts/state_pair_fares.csv)
+         - Optional Bureau of Transportation Statistics fare data
+         - Used as a low-confidence prior for sparse routes in Step 07
+
+     (c) Travel Cost Audit Report XLSX
+         - Manual external file placed in optimization directory
+         - Used by Step 10 for BTS calibration corrections
+         - Contains airport-level and route-level Navan flight statistics
+
+
+================================================================================
+4. PIPELINE ARCHITECTURE AND EXECUTION ORDER
+================================================================================
+
+The optimization pipeline runs in the following strict order:
+
+  Step 06 → Step 07 → Step 10 → Step 11 → Step 08 → Step 09 → Step 05
+
+  Step 06: Build optimization inputs (tech_master, demand, candidates)
+  Step 07: Build travel cost model (hybrid gradient-boosted regression)
+  Step 10: Apply BTS fare corrections to travel cost matrix
+  Step 11: Pre-compute full per-(entity, node) trip cost table
+  Step 08: Run MILP optimization for scenarios N=0 through N=4
+  Step 09: Analyze scenario results and generate reports
+  Step 05: Regenerate interactive map with scenario simulation panel
+
+Each step reads the outputs of its predecessors and produces CSV/JSON files
+in data/processed/optimization/. All computations use Python 3 with NumPy,
+Pandas, SciPy, and scikit-learn.
+
+Recommended invocations:
+
+  /opt/miniconda3/bin/python3 scripts/06_build_optimization_inputs.py
+  /opt/miniconda3/bin/python3 scripts/07_build_travel_cost_model.py \
+      --engine hybrid --min-direct-route-n 5 --shrinkage-k 10
+  /opt/miniconda3/bin/python3 scripts/10_correct_travel_costs.py
+  /opt/miniconda3/bin/python3 scripts/11_build_full_cost_table.py
+  /opt/miniconda3/bin/python3 scripts/08_optimize_locations.py \
+      --min-new-hires 0 --max-new-hires 4 --max-hires-per-base 1 \
+      --time-limit-sec 600
+  /opt/miniconda3/bin/python3 scripts/09_analyze_scenarios.py
+  /opt/miniconda3/bin/python3 scripts/05_generate_map.py
+
+
+================================================================================
+5. STEP 06: BUILDING OPTIMIZATION INPUTS
+================================================================================
+
+Script: scripts/06_build_optimization_inputs.py
+Outputs:
+  - tech_master.csv (16 rows — one per technician)
+  - demand_appointments.csv (1,480 rows — one per appointment)
+  - candidate_bases.csv (88 rows — potential new-hire locations)
+  - skill_parse_ambiguous.csv (appointments with ambiguous skill parsing)
+  - optimization_input_summary.json
+
+5.1  TECHNICIAN TABLE (tech_master.csv)
+
+For each of the 16 technicians, Step 06 extracts:
+
+  tech_id:              Slugified canonical name (e.g., "ben_walker")
+  tech_name:            Canonical name (resolved via TECH_NAME_ALIASES)
+  employment_type:      "fte" or "contractor"
+  base_city/state:      Parsed from roster location string
+  base_airport_iata:    Nearest major airport (from 68-airport list)
+  skill_hps:            1 if HPS-certified, 0 otherwise
+  skill_ls:             1 if LearningSpace-certified, 0 otherwise
+  skill_patient:        1 if certified for patient sim equipment
+  availability_fte:     1.0 for full-time, 0.5 for contractors,
+                        0.25 for Tameka Gongs, 0.0 for James Sanchez
+  constraint_florida_only: 1 if tech only covers Florida (Curt Corder)
+  constraint_canada_wide:  1 if tech covers all of Canada (Hakim Mouazer)
+
+Name resolution uses config.TECH_NAME_ALIASES to map variant names:
+  "rob cohen" → "Robert Cohen"
+  "blad torres" → "Bladimir Torres"
+  "damion" → "Damion Lyn"
+  etc.
+
+Airport mapping uses TECH_LOCATION_AIRPORT_OVERRIDES for ambiguous cities:
+  "charlotte nc" → CLT
+  "houston tx" → IAH
+  "montreal qc" → YUL
+  etc.
+
+5.2  APPOINTMENT TABLE (demand_appointments.csv)
+
+For each of the 1,480 appointments, Step 06 extracts:
+
+  appointment_id:       Unique appointment number
+  duration_hours:       Calendar hours (Duration Hours, fallback Duration Days × 24)
+  Service Type:         PM, Repair, ISO, AVS ISO, AVS, or Other
+  city/state_norm:      Normalized city and 2-letter state abbreviation
+  country:              USA or Canada (inferred from state)
+  lat/lon:              Geocoded coordinates (from Step 02)
+  nearest_hub_airport:  Closest airport from the 68-airport list
+  skill_class:          Parsed from Description/Subject text fields
+  required_hps:         1 if appointment requires HPS certification
+  required_ls:          1 if appointment requires LS certification
+
+5.3  SKILL CLASSIFICATION
+
+Appointment skill requirements are parsed from the Description and Subject
+text fields using regex pattern matching:
+
+  HPS patterns: \bhps[0-9a-z]*\b, \bphps[0-9a-z]*\b, \bmeti[ _-]*hps\b
+  LS patterns:  learning\s*space, \bmlsp\b, \bls\b
+
+Classification logic:
+  - If HPS patterns match → skill_class = "hps" (or "hps_ls" if LS also matches)
+  - If LS patterns match → skill_class = "ls"
+  - Otherwise → skill_class = "regular"
+
+Current distribution:
+  - 115 HPS appointments (all served by 8 HPS-certified existing techs)
+  - LS appointments served by 6 LS-certified techs
+  - Remaining are "regular" — any tech can serve them
+
+5.4  CANDIDATE BASE CONSTRUCTION
+
+The candidate pool (88 locations) consists of:
+
+  68 major airports:    Defined in config.MAJOR_AIRPORTS (hardcoded list of
+                        US and Canadian airport codes with lat/lon)
+  20 top demand cities: Dynamically generated from the top 20 highest-demand
+                        cities in the appointment data, ranked by total
+                        demand_hours. Duplicates with major airport cities
+                        are removed.
+
+Each candidate has:
+  candidate_id:         "airport_CLT" or "demand_fort_smith_ar"
+  candidate_type:       "major_airport" or "demand_city"
+  airport_iata:         Nearest major airport code
+  city/state/country:   Location details
+  lat/lon:              Coordinates
+
+
+================================================================================
+6. STEP 07: TRAVEL COST MODEL (HYBRID ENGINE)
+================================================================================
+
+Script: scripts/07_build_travel_cost_model.py
+Model: scripts/travel_cost_modeling.py
+Outputs:
+  - travel_cost_matrix.csv (origin_airport × state_norm cost matrix)
+  - navan_route_stats.csv (per-route Navan statistics)
+  - navan_clean_flights_modeled.csv (filtered training flights)
+  - baseline_kpis.json (Navan spend breakdown)
+  - travel_model_metrics.json (model performance metrics)
+  - travel_model_feature_importance.csv
+  - travel_matrix_coverage_report.json
+  - bts_prior_coverage_report.json
+  - travel_matrix_origin_anomaly_report.json
+
+6.1  PURPOSE
+
+Build a travel cost matrix giving the expected cost of sending a technician
+from any origin airport to any destination state. This matrix is used by the
+MILP optimizer as the per-appointment travel cost coefficient.
+
+6.2  NAVAN DATA FILTERING
+
+From the "Clean Flights" sheet, the pipeline filters to:
+  (a) Non-management travelers (management identified from Tech Roster tab)
+  (b) Booking Status = TICKETED
+  (c) Non-empty origin and destination airports
+  (d) Positive USD Total Paid (> $0)
+
+This yields 372 usable training flights from a date range of 2025-07-09
+to 2026-03-13.
+
+6.3  GRADIENT-BOOSTED REGRESSION MODEL
+
+The hybrid engine trains a GradientBoostingRegressor (scikit-learn) with:
+  - 250 estimators, learning rate 0.05, max depth 3, subsample 0.9
+  - Target: log1p(USD Total Paid) — log-transform for right-skewed fares
+  - Features:
+    Categorical: origin, dest, destination_state_norm, short_or_long_haul,
+                 domestic_or_international, traveler_role_norm
+    Numeric:     lead_time_days, num_legs, flight_miles, start_month,
+                 start_dow, is_weekend_start
+
+  - Train/valid split: 80/20 chronological (by booking start date)
+  - Categorical features: one-hot encoded with unknown handling
+  - Numeric features: median-imputed
+
+6.4  MATRIX CONSTRUCTION (HYBRID BLENDING)
+
+For each (origin_airport, destination_state) cell, the matrix cost is
+computed by blending multiple estimation sources:
+
+  (a) For each appointment-hub airport within the destination state,
+      weighted by demand hours, compute the route cost using this
+      priority cascade:
+
+      Priority 1 — Empirical route blend:
+        If ≥ min_direct_route_n (5) Navan flights exist for this exact
+        (origin, destination_airport) pair:
+          w_empirical = n_direct / (n_direct + shrinkage_k)  [shrinkage_k=10]
+          route_cost = w_empirical × empirical_mean + (1-w_empirical) × model_cost
+          confidence = 0.55 + 0.04 × min(n_direct, 10)
+
+      Priority 2 — Model + heuristic blend:
+        If empirical data is insufficient but model prediction is finite:
+          model_mix_weight = f(in_training_space, origin_support, dest_support)
+          route_cost = model_mix_weight × model_cost + (1 - model_mix_weight) × heuristic_cost
+          Guardrails: clip to [0.35 × heuristic, 3.0 × heuristic] to prevent
+          near-zero predictions from sparse model regions
+
+      Priority 3 — BTS prior:
+        If confidence < 0.35 and destination is a US state with BTS data:
+          route_cost = BTS state-pair fare (from external CSV)
+
+      Priority 4 — Heuristic fallback:
+        Hierarchical estimate using: direct route mean → reverse route →
+        origin+destination blend → origin only → destination only → global mean
+
+  (b) The cell's expected_cost_usd is the demand-weighted average across
+      all hub airports in the state.
+
+6.5  HEURISTIC ESTIMATOR
+
+The heuristic estimator uses a cascade of aggregated Navan route statistics:
+
+  1. Direct route: mean cost of flights from origin to destination
+  2. Reverse route: if A→B doesn't exist, try B→A
+  3. Origin+destination blend: average of origin-mean and destination-mean
+  4. Origin only: mean cost from this origin across all destinations
+  5. Destination only: mean cost to this destination from all origins
+  6. Global fallback: mean cost across all 372 model flights
+
+6.6  BASELINE KPIS
+
+From the Navan "Report" tab, Step 07 extracts:
+  - Total ticketed spend (USD)
+  - Canceled/voided spend: $35,632.02 (carried as fixed overhead in all scenarios)
+  - Model ticketed spend (non-management): flight-cost training base
+
+
+================================================================================
+7. STEP 10: BTS-CALIBRATED COST CORRECTION
+================================================================================
+
+Script: scripts/10_correct_travel_costs.py
+Outputs:
+  - travel_cost_matrix_bts_corrected.csv
+  - cost_correction_log.csv
+
+7.1  PURPOSE
+
+The raw travel cost matrix from Step 07 can be biased for airports with
+sparse Navan flight data (57 of 68 airports had fewer than 10 flights; 27
+had zero). Step 10 recalibrates airport-level cost benchmarks using Bureau
+of Transportation Statistics (BTS) Q2 2025 average itinerary fares.
+
+7.2  BTS CORPORATE-ADJUSTED FARES
+
+BTS publishes average one-way itinerary fares for US domestic airports. These
+are adjusted for Elevate's corporate travel patterns:
+
+  Corporate-adjusted fare = (BTS itinerary fare / 2) × 1.22
+
+The 1.22× multiplier accounts for the corporate travel premium (last-minute
+bookings, flexibility requirements, preferred carriers).
+
+66 US airports have BTS benchmarks hardcoded in the script:
+  - Tier 1 (36 airports): verified BTS H1 2025 data
+  - Tier 2 (24+ airports): BTS-estimated midpoints
+
+6 Canadian airports use a cross-border multiplier:
+  BTS base × 1.22 × 2.0 (cross-border premium)
+
+National fallback for unlisted airports: $235 (= $386/2 × 1.22)
+
+7.3  CORRECTION ALGORITHM
+
+For each of the 68 origin airports:
+
+  (1) Look up the airport's Navan flight count and mean cost from the
+      travel cost audit report
+
+  (2) Look up the airport's BTS corporate-adjusted fare
+
+  (3) Compute the corrected benchmark using a density-dependent blend:
+        ≥ 20 Navan flights: 100% Navan mean (dense empirical data)
+        10–19 flights:      60% Navan + 40% BTS
+        5–9 flights:        40% Navan + 60% BTS
+        1–4 flights:        20% Navan + 80% BTS
+        0 flights:          100% BTS
+      Special: YUL with ≥10 flights → 60% Navan + 40% BTS (cross-border)
+
+  (4) Compute correction ratio = corrected_benchmark / matrix_airport_mean
+
+  (5) Multiply ALL routes from that airport by the correction ratio
+
+  (6) Apply per-route Navan overrides: for (origin, state) pairs with ≥5
+      actual Navan flights, replace with Navan mean cost directly
+
+  (7) Clip all costs to [$50, $2000] as a safety bound
+
+7.4  KEY CORRECTIONS APPLIED
+
+  MDW (Chicago Midway):  $471 → $199 (−57.7%)  — was model speculation
+  TPA (Tampa):           $418 → $563 (+34.5%)  — 6 TPA-based techs
+  IND (Indianapolis):    $267 → $225 (−15.9%)
+  BOI (Boise):           $322 → $220 (−31.5%)
+  YUL (Montreal):        $676 → $754 (+11.6%)  — 60/40 Navan/BTS blend
+
+The mean change across the matrix was −28.3%.
+
+
+================================================================================
+8. STEP 11: FULL COST TABLE (DRIVE/FLY MODEL)
+================================================================================
+
+Script: scripts/11_build_full_cost_table.py
+Output: full_cost_table.csv (8,008 rows)
+
+8.1  PURPOSE
+
+Step 07 and 10 produce a flight-cost-only matrix. Step 11 upgrades each
+(technician/candidate, demand_node) pair to a full trip cost by classifying
+each trip as drive or fly and adding hotel and rental car costs.
+
+8.2  COST TABLE DIMENSIONS
+
+  8,008 rows = (16 existing techs × 77 demand nodes)
+             + (88 candidate bases × 77 demand nodes)
+
+Each row contains:
+  tech_or_candidate_id: Identifier (tech slug or candidate slug)
+  node_id:              state_norm__skill_class (e.g., "OH__regular")
+  trip_mode:            "drive" or "fly"
+  median_dist_mi:       Median haversine distance to appointments in node
+  flight_cost_usd:      Flight cost from matrix (0 for drive trips)
+  mileage_cost_usd:     IRS mileage × 2 × median_dist (0 for fly trips)
+  rental_cost_usd:      Rental car cost ($235 for fly, $0 for drive)
+  hotel_cost_usd:       Hotel cost ($399 for all trips)
+  unit_cost_usd:        Total per-trip cost
+
+8.3  DRIVE/FLY CLASSIFICATION
+
+For each (entity, node) pair:
+  (a) Compute median haversine distance from entity's home base to all
+      appointments within the node
+  (b) If median distance < DRIVE_THRESHOLD_MILES (300 miles) → drive
+      If median distance ≥ 300 miles → fly
+  (c) Exception: Canadian techs (base_country ≠ USA) always fly
+
+8.4  COST FORMULAS
+
+  DRIVE trip:
+    mileage_cost = IRS_MILEAGE_RATE ($0.70/mi) × 2 × median_distance
+    hotel_cost   = HOTEL_AVG ($399)
+    unit_cost    = mileage_cost + hotel_cost
+
+  FLY trip:
+    flight_cost  = matrix cost from travel_cost_matrix_bts_corrected.csv
+    rental_cost  = RENTAL_CAR_AVG ($235)
+    hotel_cost   = HOTEL_AVG ($399)
+    unit_cost    = flight_cost + rental_cost + hotel_cost
+
+8.5  COST CONSTANTS (from Navan actuals)
+
+  IRS mileage rate:     $0.70/mile (2025 IRS standard)
+  Rental car average:   $235/trip (Navan average across 82 confirmed bookings)
+  Hotel average:        $399/trip (Navan average across 125 confirmed bookings,
+                        representing ~2.5 nights average stay)
+  Drive threshold:      300 miles great-circle (haversine)
+
+8.6  CURRENT SPLIT
+
+  Drive trips: 8.5% of the 8,008 rows
+  Fly trips:   91.5% of the 8,008 rows
+
+
+================================================================================
+9. STEP 08: MILP OPTIMIZATION (MATHEMATICAL FORMULATION)
+================================================================================
+
+Script: scripts/08_optimize_locations.py
+Solver: SciPy milp() using HiGHS backend
+Outputs:
+  - scenario_summary.csv
+  - scenario_assignments_existing.csv
+  - scenario_assignments_newhires.csv
+  - scenario_placements.csv
+  - scenario_tech_utilization.csv
+  - model_assumptions.json
+
+9.1  DEMAND NODES
+
+Appointments are aggregated into demand nodes by (state_norm, skill_class):
+  node_id = "{state_norm}__{skill_class}"
+
+  Example: "OH__regular" = all regular-skill appointments in Ohio
+           "CA__hps"     = all HPS-requiring appointments in California
+
+  Current count: 77 demand nodes across ~40 states and 3 skill classes.
+
+Each node has:
+  - appointment_count: number of appointments
+  - demand_hours: total calendar hours
+  - avg_hours_per_appointment: demand_hours / appointment_count
+
+9.2  DECISION VARIABLES
+
+For a scenario with N new hires:
+
+  x[t,n]:  Integer — appointments from existing tech t assigned to node n
+           Bounds: [0, appointment_count_n]
+           Created only for eligible (tech, node) pairs
+
+  z[c,n]:  Integer — appointments from candidate c assigned to node n
+           Bounds: [0, appointment_count_n] or [0, 0] if blocked
+           Created only when N > 0
+
+  y[c]:    Integer — hires allocated to candidate base c
+           Bounds: [0, min(N, max_hires_per_base)]
+           Created only when N > 0
+
+  u[n]:    Integer — unmet appointments at node n
+           Bounds: [0, appointment_count_n]
+
+9.3  OBJECTIVE FUNCTION
+
+Minimize:
+
+  Σ (cost_per_appointment[t,n] × x[t,n])    [existing tech travel cost]
++ Σ (cost_per_appointment[c,n] × z[c,n])    [new hire travel cost]
++ Σ (out_of_region_penalty × is_out_region × x[t,n])  [currently $0]
++ Σ (annual_hire_cost × y[c])               [$146,640 per hire]
++ Σ (unmet_penalty × u[n])                  [$5,000 per unmet appointment]
+
+Where cost_per_appointment comes from full_cost_table.csv (unit_cost_usd)
+when FULL_COST_MODEL is active, otherwise from the flight-cost matrix.
+
+9.4  CONSTRAINTS
+
+  (A) DEMAND BALANCE — every appointment must be covered or marked unmet:
+      For each node n:
+        Σ_t x[t,n] + Σ_c z[c,n] + u[n] = appointment_count[n]
+
+  (B) EXISTING TECH CAPACITY — each tech cannot exceed their capacity:
+      For each tech t:
+        Σ_n (avg_hours_per_appointment[n] × x[t,n]) ≤ capacity_hours[t]
+
+  (C) NEW HIRE CAPACITY — each candidate's assignments bounded by hired capacity:
+      For each candidate c:
+        Σ_n (avg_hours_per_appointment[n] × z[c,n]) ≤ y[c] × hours_per_unit
+
+  (D) TOTAL HIRES — sum of all hire allocations equals N:
+      Σ_c y[c] = N
+
+  (E) SKILL CONSTRAINTS — enforced via variable bounds:
+      - x[t,n] upper bound = 0 if tech t lacks required skill for node n
+      - z[c,n] upper bound = 0 if node n requires HPS (new hires are HPS-blocked)
+      - z[c,n] upper bound = 0 if node n is in Canada (new hires blocked)
+
+  (F) GEOGRAPHIC CONSTRAINTS — enforced via eligibility filtering:
+      - Florida-only techs: x[t,n] not created for n where state ≠ FL
+      - Canada-wide techs: x[t,n] not created for non-Canada nodes
+      - Non-Canada techs: x[t,n] not created for Canada nodes
+      - Texas-only contractors: x[t,n] not created for n where state ≠ TX
+
+  (G) HIRE CAP — each candidate can receive at most max_hires_per_base (1):
+      y[c] ≤ 1
+
+9.5  ELIGIBILITY FUNCTION
+
+tech_eligible_for_node(tech, node, contractor_scope):
+
+  Returns False if:
+    - Node requires HPS and tech lacks skill_hps
+    - Node requires LS and tech lacks skill_ls
+    - Tech lacks skill_patient
+    - Tech is Florida-only and node state ≠ FL
+    - Tech is contractor with Texas-only scope and node state ≠ TX
+    - Node is in Canada and tech is not Canada-wide
+    - Tech is Canada-wide and node is not in Canada
+    - Tech has no base airport
+
+9.6  SOLVER CONFIGURATION
+
+  - Solver: HiGHS (via SciPy milp())
+  - MIP relative gap target: 0.0 (prove global optimality)
+  - Time limit: 600 seconds per scenario
+  - All variables are integer (integrality = 1)
+
+9.7  POST-SOLVE PROCESSING
+
+After solving, the script:
+  (a) Extracts assignment values for all non-zero variables
+  (b) Computes per-tech utilization (assigned_hours / capacity_hours)
+  (c) Builds placement summary for each candidate with hires > 0
+  (d) Decomposes objective into: travel_cost, out_of_region_penalty,
+      hire_cost, unmet_penalty
+  (e) Adds fixed overhead: baseline_canceled_voided_usd ($35,632.02)
+  (f) Computes economic_total_with_overhead_usd = modeled_total + overhead
+
+
+================================================================================
+10. STEP 09: SCENARIO ANALYSIS AND RECOMMENDATIONS
+================================================================================
+
+Script: scripts/09_analyze_scenarios.py
+Outputs:
+  - scenario_summary_enhanced.csv (includes 21 revenue analysis columns)
+  - recommended_hire_locations.csv
+  - analysis_report.json (includes revenue_scenarios and per-scenario revenue_analysis)
+  - analysis_report.md (includes revenue summary table and caveats)
+
+10.1  SCENARIO COMPARISON
+
+For each scenario (N=0 through N=4), Step 09 computes:
+
+  savings_vs_n0_usd:            base_cost - scenario_cost
+  savings_vs_n0_pct:            savings / base_cost × 100
+  marginal_savings_from_prev:   cost(N-1) - cost(N)
+
+10.2  CAPACITY FREED ANALYSIS
+
+For each scenario, the pipeline measures how much work shifts off existing
+techs when new hires absorb demand:
+
+  hours_freed_existing_techs = baseline_existing_hours - existing_hours_at_N
+
+  Where:
+    baseline_existing_hours = sum of assigned_hours for all existing techs at N=0
+    existing_hours_at_N = sum of assigned_hours for all existing techs at N
+
+10.3  INSTALLATION ESTIMATES
+
+Two estimates are produced for each scenario:
+
+  (A) THEORETICAL MAXIMUM INSTALLATIONS:
+      theoretical_max = hours_freed / avg_calendar_hours_per_installation
+      Where avg_calendar_hours_per_installation = 77.94 hours
+
+      This assumes 100% of freed calendar time converts to installations
+      with no scheduling gaps, travel overhead, or downtime. It is an
+      upper bound, not a realistic forecast.
+
+  (B) REALISTIC INSTALLATIONS ENABLED:
+      freed_duration_days = hours_freed / 24.0
+      usable_days = freed_duration_days × UTILIZATION_FACTOR (0.75)
+      effective_days_per_install = avg_duration_days + TRAVEL_DAYS (1.0)
+      realistic_installations = usable_days / effective_days_per_install
+
+      Parameters:
+        avg_duration_days = 3.25 (mean Duration Days across all installation types)
+          - ISO: 68 appointments, avg 2.10 days
+          - AVS ISO: 310 appointments, avg 3.60 days
+          - AVS: 14 appointments, avg 1.09 days
+        TRAVEL_DAYS_PER_INSTALLATION = 1.0 day (travel to/from site)
+        FREED_CAPACITY_UTILIZATION_FACTOR = 0.75 (25% lost to scheduling gaps,
+          PTO, admin work, non-installation tasks)
+        effective_days_per_install = 3.25 + 1.0 = 4.25 days
+
+      The three deductions from theoretical to realistic:
+        1. Calendar → days: divide by 24 (Duration Days unit)
+        2. Utilization factor: multiply by 0.75
+        3. Travel overhead: add 1.0 day per installation to the denominator
+
+10.4  BEST SCENARIO SELECTION
+
+The best scenario is selected by:
+  (a) If any scenarios have solver_proven_optimal = True, consider only those
+  (b) Among proven-optimal scenarios, select the one with lowest
+      economic_total_with_overhead_usd
+
+  Current result: selection_mode = "proven_optimal_only"
+  All 5 scenarios are proven optimal; N=0 has the lowest cost.
+
+10.5  REVENUE-FROM-FREED-CAPACITY ANALYSIS
+
+Step 09 computes a three-scenario revenue analysis for each hiring level.
+This is a supplementary analysis layer — the MILP optimizer and N=0
+recommendation are unchanged. See Section 18 for full details.
+
+For each of the 3 revenue scenarios × 5 hiring scenarios, the pipeline
+computes:
+  - net_cost_increase:     cost(N) - cost(N=0) — how much more hiring costs
+  - installation_revenue:  realistic_installs × revenue_per_install
+  - service_contract_rev:  realistic_installs × $7,000/system/year
+  - total_revenue_enabled: installation_revenue + service_contract_revenue
+  - net_economic_value:    total_revenue_enabled - net_cost_increase
+  - roi_pct:               net_economic_value / net_cost_increase × 100
+  - break_even_installs:   net_cost_increase / (revenue + service_contract)
+
+Revenue scenarios (Year 1 MSRP gross per installation):
+  Conservative: $50,000  (small systems — Aria, Apollo)
+  Moderate:     $120,000 (mid-range — Lucina, Evo)
+  Aggressive:   $250,000 (large systems — HPS full suite)
+
+Annual service contract: $7,000/system (UIUC pricing, conservative
+fleet-weighted estimate skewed toward Peak-tier contracts).
+
+Config constants:
+  REVENUE_PER_INSTALLATION_CONSERVATIVE_USD = 50,000
+  REVENUE_PER_INSTALLATION_MODERATE_USD = 120,000
+  REVENUE_PER_INSTALLATION_AGGRESSIVE_USD = 250,000
+  AVG_ANNUAL_SERVICE_CONTRACT_USD = 7,000
+
+The unified break_even_installations column uses the moderate scenario.
+
+
+================================================================================
+11. STEP 05: INTERACTIVE MAP GENERATION
+================================================================================
+
+Script: scripts/05_generate_map.py
+Output: docs/index.html
+
+The interactive map (deployed to GitHub Pages) includes:
+  - Customer/appointment markers colored by Service Type
+  - Technician home base markers with popup roster details
+  - Territory boundaries (choropleth)
+  - Airport layer
+  - Scenario simulation panel (left sidebar)
+
+The simulation panel reads optimization outputs and shows for each N:
+  - Total Cost (economic_total_with_overhead_usd)
+  - Cost Change vs N=0
+  - Marginal Cost Change vs previous N
+  - Annual Hire Payroll
+  - Unmet Appointments (if any)
+  - Mean/Max existing-tech utilization
+  - Recommended base placements (shown on map)
+
+Technician markers are grouped by shared coordinates so all 16 roster
+members are visible via popup rosters at each base location.
+
+
+================================================================================
+12. TECHNICIAN ROSTER AND CONSTRAINTS
+================================================================================
+
+12.1  FULL ROSTER (16 technicians)
+
+  Name                  | Base    | FTE  | HPS | LS | Constraints
+  ----------------------|---------|------|-----|----|-----------------------
+  Ben Walker            | CO      | 1.00 | Yes | No | None
+  Bladimir Torres       | CA      | 1.00 | Yes | No | None
+  Clarence Bonner       | NC      | 1.00 | Yes | No | None
+  Curt Corder           | FL      | 1.00 | No  | No | Florida only
+  Damion Lyn            | MN      | 1.00 | Yes | No | None
+  Elier Martin          | FL      | 1.00 | Yes | No | None
+  Eric Olinger          | ID      | 1.00 | Yes | No | None
+  Hakim Mouazer         | Canada  | 1.00 | No  | No | Canada wide
+  Hector Arias          | NJ      | 1.00 | Yes | No | None
+  HTX Contractor Alex   | TX      | 0.50 | No  | No | Texas only
+  HTX Contractor Robert | TX      | 0.50 | No  | No | Texas only
+  James Sanchez         | —       | 0.00 | No  | No | Inactive
+  Josh Brown            | TN      | 1.00 | No  | No | None
+  Robert Cohen          | PA      | 1.00 | Yes | No | None
+  Scott Fogo            | WA      | 1.00 | No  | No | None
+  Tameka Gongs          | OH      | 0.25 | No  | No | Part-time
+
+  Total FTE: 13.25 (excluding James Sanchez at 0.0)
+  Active techs: 15
+
+12.2  CONSTRAINT DETAILS
+
+  (A) FLORIDA-ONLY (Curt Corder):
+      Can only serve FL nodes. Cannot be assigned outside Florida.
+      Constraint source: "only covers Florida" in roster comments.
+
+  (B) CANADA-WIDE (Hakim Mouazer):
+      Can only serve Canada nodes. Canada nodes can only be served by him.
+      New hires are blocked from Canada nodes.
+      Constraint source: "covers all of Canada" in roster comments.
+
+  (C) TEXAS-ONLY (HTX Contractors):
+      Both Alex and Robert are 0.5 FTE, Houston-based.
+      Can only serve TX nodes. Their assignments are constant across
+      all scenarios because no new hires compete for TX nodes.
+
+  (D) HPS SKILL GATE:
+      8 existing techs are HPS-certified. 115 HPS appointments can only be
+      served by HPS-certified techs. NEW HIRES ARE BLOCKED from HPS nodes
+      via hard variable bound (ub=0.0 in Step 08). This is a POLICY
+      ASSUMPTION — if new hires can be HPS-trained, the model underestimates
+      their value.
+
+  (E) LS SKILL GATE:
+      6 existing techs are LS-certified. LS appointments restricted to
+      LS-certified techs. New hires CAN serve LS nodes.
+
+  (F) INACTIVE TECH:
+      James Sanchez has availability_fte = 0.0, which gives zero capacity
+      and zero assignments in all scenarios.
+
+
+================================================================================
+13. CANDIDATE POOL CONSTRUCTION
+================================================================================
+
+88 candidate locations where new hires could be based:
+
+  68 MAJOR AIRPORTS (hardcoded in config.MAJOR_AIRPORTS):
+    Northeast:  BOS, JFK, LGA, EWR, PHL, PIT, BUF
+    Mid Atlantic: DCA, IAD, BWI
+    Southeast:  CLT, RDU, ATL, MCO, TPA, MIA, JAX
+    Midwest:    ORD, MDW, DTW, CLE, CMH, CVG, IND, MKE, MSP, STL, MCI,
+                ICT, OMA, DSM
+    South/Gulf: BNA, MEM, BHM, MSY, SHV, IAH, SAT, AUS, DFW, OKC, TUL, LIT
+    Plains:     DEN, ABQ, SLC, BIL, FAR, BIS, ONT
+    West Coast: PHX, TUS, LAS, LAX, SAN, SFO, SJC, SMF
+    Pacific NW: SEA, PDX, BOI, ANC
+    Canada:     YYZ, YUL, YYC, YEG, YVR, YQR
+
+  20 TOP DEMAND CITIES:
+    Dynamically generated from the 20 highest-demand cities in the
+    appointment data (by total duration_hours). Deduplicated against
+    major airport cities.
+
+Each candidate is assigned the nearest major airport for flight costing.
+
+The optimizer selects which of these 88 locations receive hires, subject
+to max_hires_per_base = 1 (only one hire per location) and the total
+hires = N constraint.
+
+
+================================================================================
+14. CAPACITY MODEL AND UTILIZATION
+================================================================================
+
+14.1  CAPACITY FORMULA
+
+Capacity is DEMAND-NORMALIZED, not calendar-based. There is no fixed
+"2,080 annual hours" assumption.
+
+  total_demand_hours = Σ all appointment duration_hours = 86,760 calendar hours
+  total_FTE = Σ all tech availability_fte = 13.25
+  target_utilization = 0.85 (CLI argument, not in config.py)
+
+  hours_per_unit = total_demand_hours / (total_FTE × target_utilization)
+                 = 86,760 / (13.25 × 0.85)
+                 = 7,703.44 calendar hours per 1.0 FTE
+
+Each tech's capacity:
+  capacity_hours = availability_fte × hours_per_unit
+
+  Example:
+    Ben Walker (1.0 FTE):    7,703.44 hours
+    HTX Robert (0.5 FTE):    3,851.72 hours
+    Tameka Gongs (0.25 FTE): 1,925.86 hours
+
+14.2  UTILIZATION
+
+Utilization = assigned_hours / capacity_hours
+
+At N=0:
+  Mean utilization: 85.7% (matches target_utilization, as expected)
+  Max utilization:  99.99% (Ben Walker — near ceiling)
+
+11 of 15 active techs are above 95% utilization at N=0, indicating the
+workforce is very tightly loaded.
+
+14.3  TARGET UTILIZATION AS HARD CEILING
+
+target_utilization = 0.85 is a HARD CEILING, not a soft target. It is
+implemented as a capacity constraint in the MILP: no tech can exceed 85%
+of their demand-normalized capacity. "99.99% utilization" means the tech
+is at 99.99% of their 85%-normalized ceiling — they are fully loaded
+under the capacity model.
+
+14.4  LABOR HOUR CONVERSION
+
+For external reporting context:
+  86,760 calendar hours ÷ 3 = 28,920 labor hours across the fleet
+  (Since Duration Hours = Duration Days × 24, and typical work = 8 hrs/day,
+   the ratio is 24/8 = 3:1 calendar-to-labor)
+
+  7,703.44 calendar hours per FTE ÷ 3 = 2,568 labor hours ≈ 1.24× standard year
+  The >1.0× factor exists because the fleet is slightly undersized for the
+  demand — demand-normalization distributes ALL demand across the fleet.
+
+
+================================================================================
+15. TRAVEL COST BREAKDOWN
+================================================================================
+
+15.1  N=0 BASELINE TRAVEL COST
+
+  Total travel cost:     $1,251,819.55
+  Fixed overhead:        $35,632.02 (canceled/voided Navan spend)
+  Economic total:        $1,287,451.57
+
+  Average cost per appointment: $845.82 (= $1,251,819.55 / 1,480)
+  Drive/fly split: 8.5% drive, 91.5% fly
+
+15.2  COST COMPOSITION PER TRIP
+
+  FLY TRIP (typical):
+    Flight: ~$300-500 (varies by route)
+    Hotel:  $399 (fixed)
+    Rental: $235 (fixed)
+    Total:  ~$934-$1,134
+
+  DRIVE TRIP (typical, 200-mile round trip):
+    Mileage: $0.70 × 200 × 2 = $280
+    Hotel:   $399 (fixed)
+    Total:   ~$679
+
+15.3  COST COMPARISON BY SCENARIO
+
+  N | Travel       | Payroll    | Overhead   | Total
+  --|-------------|------------|------------|-------------
+  0 | $1,251,820  | $0         | $35,632    | $1,287,452
+  1 | $1,164,361  | $146,640   | $35,632    | $1,346,633
+  2 | $1,095,732  | $293,280   | $35,632    | $1,424,644
+  3 | $1,036,814  | $439,920   | $35,632    | $1,512,366
+  4 | $989,421    | $586,560   | $35,632    | $1,611,613
+
+  Marginal travel savings diminish:
+    N=0→1: $87,459   N=1→2: $68,629   N=2→3: $58,918   N=3→4: $47,393
+
+  Each hire saves decreasing travel but always costs $146,640 in payroll.
+  Since the first hire only saves $87K in travel against $147K in payroll,
+  even the most favorable N=1 scenario is a net $59K annual cost increase.
+
+
+================================================================================
+16. SCENARIO RESULTS AND COST SUMMARY
+================================================================================
+
+16.1  SOLVER RESULTS
+
+All 5 scenarios:
+  - solver_proven_optimal = True
+  - MIP gap = 0.0 (zero — proven global optimum)
+  - 1,480 appointments served (zero unmet in every scenario)
+
+16.2  RECOMMENDED HIRE LOCATIONS
+
+  N=1: CLE (Cleveland, OH)
+       — Midwest demand cluster (OH, MI, WI, WV) is large and far from
+         existing bases
+
+  N=2: CLE + MKE (Milwaukee, WI)
+       — MKE consolidates Wisconsin demand; CLE handles Ohio/Michigan
+
+  N=3: BOS (Boston, MA) + CLE + ORD (Chicago, IL)
+       — BOS covers Northeast; ORD covers Chicago metro
+
+  N=4: BOS + CLE + ORD + Fort Smith, AR (→ LIT airport)
+       — Fort Smith is the first demand-city candidate selected
+
+16.3  NOTABLE ABSENT CITIES
+
+  Atlanta:  Not selected — TPA and CLT-based techs serve Southeast cheaply
+  Dallas:   Not selected — HTX contractors already cover Texas demand
+  Denver:   Not selected — Ben Walker (CO-based) covers Mountain West
+
+16.4  CLE PERSISTENCE
+
+Cleveland appears in every hiring scenario (N=1 through N=4) because the
+Midwest demand cluster is large and far from all existing tech bases.
+
+
+================================================================================
+17. INSTALLATION CAPACITY ESTIMATES
+================================================================================
+
+17.1  INSTALLATION TYPE BREAKDOWN
+
+  Type     | Count | Avg Duration Days | Avg Calendar Hours | Share
+  ---------|-------|-------------------|--------------------|---------
+  ISO      |  68   | 2.10 days         | 50.29 hours        | 17.35%
+  AVS ISO  | 310   | 3.60 days         | 86.34 hours        | 79.08%
+  AVS      |  14   | 1.09 days         | 26.14 hours        |  3.57%
+  ---------|-------|-------------------|--------------------|---------
+  All      | 392   | 3.25 days         | 77.94 hours        | 100%
+
+17.2  CAPACITY FREED BY SCENARIO
+
+  Scenario | Days Freed | Usable Days | Realistic  | Theoretical Max
+           |            | (×0.75)     | Installs   | Installs
+  ---------|------------|-------------|------------|------------------
+  N=0      | 0.0        | 0.0         | 0.0        | 0
+  N=1      | 320.9      | 240.7       | 56.7       | 99
+  N=2      | 641.9      | 481.4       | 113.3      | 198
+  N=3      | 962.7      | 722.0       | 170.0      | 296
+  N=4      | 1,283.4    | 962.6       | 226.6      | 395
+
+17.3  N=1 DETAILED EXAMPLE
+
+At N=1, the Cleveland hire absorbs 7,701 calendar hours from existing techs:
+  Ben Walker:   drops 7,702 → 4,166 (freed 3,537 hrs)
+  Scott Fogo:   drops 7,618 → 923 (freed 6,695 hrs)
+  Damion Lyn:   drops 7,700 → 7,658 (freed 43 hrs)
+  Elier Martin: INCREASES 5,078 → 7,642 (gained 2,564 hrs — rebalancing)
+
+Net freed: 7,701 calendar hours = 320.9 days
+
+After 75% utilization factor: 240.7 usable days
+At 4.25 effective days per installation: ~56.7 realistic installations
+
+The optimizer redistributes assignments GLOBALLY, not just from the nearest
+tech. This is why Elier Martin (Florida) gains work — the overall
+reassignment minimizes total travel cost.
+
+
+================================================================================
+18. REVENUE-FROM-FREED-CAPACITY ANALYSIS
+================================================================================
+
+18.1  PURPOSE AND FRAMING
+
+The MILP optimizer concludes N=0 is optimal because it only considers costs
+(travel + payroll). But hiring frees existing-tech capacity that enables
+additional installations — revenue-generating work.
+
+Shannon Drew (Elevate VP) directed: below 15% volume reduction, value should
+be framed as CAPACITY FOR REVENUE, not cost savings. This section quantifies
+what that capacity could generate.
+
+IMPORTANT: This analysis is purely supplementary. The MILP optimizer, N=0
+recommendation, travel cost model, and capacity model are not modified.
+
+18.2  REVENUE ASSUMPTIONS
+
+Three revenue scenarios are modeled, based on MSRP Year 1 gross revenue:
+
+  Scenario     | Per Install | Rationale
+  -------------|-------------|------------------------------------------
+  Conservative | $50,000     | Small systems (Aria, Apollo)
+  Moderate     | $120,000    | Mid-range systems (Lucina, Evo)
+  Aggressive   | $250,000    | Large systems (HPS full suite)
+
+Additionally, each installation is assumed to generate an annual recurring
+service contract:
+
+  Annual service contract: $7,000/system
+
+  Source: UIUC Service Contract pricing sheet
+    - Apex contracts: $7,000–$24,600/year
+    - Peak contracts: $2,000–$8,500/year
+    - $7,000 is a conservative fleet-weighted estimate skewed toward Peak-tier
+
+18.3  CALCULATION METHOD
+
+For each hiring scenario (N=0..4) and each revenue scenario:
+
+  (1) Net cost increase = economic_total(N) - economic_total(N=0)
+      At N=0, this is $0. For N>0, it is always positive (hiring costs more).
+
+  (2) Installation revenue = realistic_installations_enabled × revenue_per_install
+      Where realistic_installations comes from Section 17 (capacity freed model).
+
+  (3) Service contract revenue = realistic_installations_enabled × $7,000
+
+  (4) Total revenue enabled = installation_revenue + service_contract_revenue
+
+  (5) Net economic value = total_revenue_enabled - net_cost_increase
+      Positive values mean the revenue from freed capacity exceeds the
+      incremental cost of hiring.
+
+  (6) ROI = net_economic_value / net_cost_increase × 100 (where cost > 0)
+
+  (7) Break-even installations = net_cost_increase / (revenue + service_contract)
+      The number of installations needed to pay for the hire's cost.
+
+18.4  REVENUE SUMMARY TABLE
+
+  N | Installs | Net Cost   | Conservative | Moderate     | Aggressive    | BE (Mod)
+    |          | Increase   | Net Value    | Net Value    | Net Value     | Installs
+  --|----------|-----------|-------------|-------------|--------------|----------
+  0 |      0.0 |        $0 |          $0 |          $0 |           $0 |      0.0
+  1 |     56.7 |   $59,181 |  $3,170,383 |  $7,136,513 | $14,502,184  |      0.5
+  2 |    113.3 |  $137,192 |  $6,323,699 | $14,258,128 | $28,993,495  |      1.1
+  3 |    170.0 |  $224,914 |  $9,464,213 | $21,363,141 | $43,461,150  |      1.8
+  4 |    226.6 |  $324,162 | $12,593,155 | $28,456,526 | $57,917,072  |      2.6
+
+  Key metrics for N=1 (moderate):
+    Realistic installations enabled: 56.7
+    Installation revenue:  $6,799,081
+    Service contract revenue: $396,613
+    Total revenue enabled: $7,195,694
+    Net cost increase:     $59,181
+    Net economic value:    $7,136,513
+    ROI:                   12,059%
+    Break-even:            0.5 installations
+
+18.5  INTERPRETATION
+
+  (a) Even at the most conservative estimate ($50K/install), every hiring
+      scenario produces net positive economic value. N=1 conservative yields
+      $3.2M against only $59K incremental cost.
+
+  (b) Break-even is extremely low: under the moderate scenario, a single hire
+      pays for itself with just 0.5 additional installations (less than one
+      full installation).
+
+  (c) ROI is high across all scenarios (3,885% to 24,505%) because the
+      incremental hiring cost ($59K–$324K) is dwarfed by the revenue potential
+      of 57–227 installations.
+
+  (d) The cost-only optimizer says N=0 is cheapest. The revenue analysis says
+      hiring is overwhelmingly justified by the capacity it frees for revenue.
+      Both are correct — they answer different questions.
+
+18.6  WHAT THE REVENUE ANALYSIS DOES NOT SAY
+
+  (a) These figures represent CAPACITY ENABLED, not guaranteed bookings.
+      Actual revenue depends on the sales pipeline, market demand, production
+      schedules, and installation team availability.
+
+  (b) Revenue is MSRP-based GROSS revenue, not profit margin or P&L impact.
+      Actual margins vary by product line and are not modeled here.
+
+  (c) Service contract revenue assumes each new installation generates an
+      annual contract. Fleet mix may shift this up (Apex-tier) or down.
+
+  (d) Estimates are YEAR 1 ONLY. Multi-year NPV would require discount rate
+      assumptions and is outside the current model scope.
+
+  (e) The $7K service contract figure is a conservative estimate. Apex-tier
+      contracts can reach $24.6K/year, which would substantially increase
+      recurring revenue projections.
+
+  (f) The analysis does not account for installation team ramp-up time,
+      equipment lead times, or sales cycle duration between hiring a new
+      field tech and realizing installation revenue.
+
+18.7  CONFIG CONSTANTS
+
+  scripts/config.py:
+    REVENUE_PER_INSTALLATION_CONSERVATIVE_USD = 50,000
+    REVENUE_PER_INSTALLATION_MODERATE_USD = 120,000
+    REVENUE_PER_INSTALLATION_AGGRESSIVE_USD = 250,000
+    AVG_ANNUAL_SERVICE_CONTRACT_USD = 7,000
+
+  To change revenue assumptions, modify these constants in config.py and
+  re-run Step 09 only. No upstream steps are affected.
+
+18.8  OUTPUT LOCATIONS
+
+  CSV columns (21 new columns in scenario_summary_enhanced.csv):
+    For each revenue tier (conservative, moderate, aggressive):
+      net_cost_increase_{tier}_usd
+      installation_revenue_{tier}_usd
+      service_contract_revenue_{tier}_usd
+      total_revenue_enabled_{tier}_usd
+      net_economic_value_{tier}_usd
+      roi_{tier}_pct
+      break_even_installations_{tier}
+
+  JSON (analysis_report.json):
+    Top-level: revenue_scenarios, avg_annual_service_contract_usd
+    Per-scenario: revenue_analysis → {conservative, moderate, aggressive}
+
+  Markdown (analysis_report.md):
+    "Revenue-from-Freed-Capacity Analysis" section with:
+      - Framing note (Shannon Drew directive)
+      - Assumptions table
+      - Revenue summary table (15 rows: 5 scenarios × 3 tiers)
+      - Caveats section (5 items)
+
+  Console output:
+    Condensed revenue summary table printed after capacity table
+
+
+================================================================================
+19. MODEL LIMITATIONS AND BIAS ANALYSIS
+================================================================================
+
+19.1  ENUMERATED LIMITATIONS
+
+  # | Limitation                  | Description                           | Bias Direction
+  --|---------------------------|---------------------------------------|------------------
+  1 | No trip bundling           | Each of 1,480 appointments = separate | OVERESTIMATES
+    |                            | trip. Real techs bundle nearby visits. | travel cost
+  2 | No seasonal demand         | Treats all appointments equivalently  | NEUTRAL
+    |                            | regardless of time of year.            |
+  3 | No emergency dispatch      | Model has perfect foresight; real      | OVERESTIMATES
+    |                            | dispatch is reactive.                  | optimizer efficiency
+  4 | Calendar ≠ labor hours     | Duration Hours is 3× labor hours.     | NEUTRAL internally
+    |                            | Consistent internally but context      | Context needed
+    |                            | needed for external benchmarks.        | externally
+  5 | New hire HPS block         | New hires cannot serve 115 HPS appts. | UNDERESTIMATES
+    |                            | Policy constraint, not data-driven.    | value of hiring
+  6 | New hire Canada block      | New hires blocked from 4 Canada appts.| UNDERESTIMATES
+    |                            |                                       | (minor)
+  7 | No ramp-up/training        | New hires produce at full capacity    | OVERESTIMATES
+    |                            | immediately.                          | immediate value
+  8 | Flat hotel cost            | $399/trip regardless of duration.     | May UNDERESTIMATE
+    |                            | Multi-day appointments may cost more. | multi-day costs
+  9 | No demand growth           | Static snapshot of current demand.    | NEUTRAL for
+    |                            |                                       | current analysis
+  10| Theoretical capacity freed | Hours freed assumes 100% conversion.  | OVERESTIMATES
+    |                            | Doesn't account for gaps/travel.      | practical capacity
+  11| Same-city overlap          | Two appointments in same city on same  | OVERESTIMATES
+    |                            | day = two separate trips.              | travel cost
+  12| Great-circle vs road       | Drive/fly uses haversine, not road    | UNDERESTIMATES
+    |                            | distance. Road is 10-25% longer.      | some drive distances
+  13| Revenue = capacity, not    | Revenue analysis shows potential, not | OVERESTIMATES
+    | guaranteed                 | guaranteed bookings. Depends on sales | revenue certainty
+    |                            | pipeline and market demand.            |
+  14| Revenue is MSRP gross      | Not profit margin or P&L impact.      | OVERESTIMATES
+    |                            | Actual margins vary by product line.  | net benefit
+  15| Service contract assumed   | Each install → $7K/yr contract.       | May OVERESTIMATE
+    |                            | Not all installs generate contracts.  | recurring revenue
+  16| Year 1 only               | No multi-year NPV or discount rate.   | UNDERESTIMATES
+    |                            | Recurring service contracts compound. | long-term value
+  17| No ramp-up in revenue      | Revenue assumed immediate. Real sales | OVERESTIMATES
+    |                            | cycles and production lead times      | speed of return
+    |                            | delay revenue realization.            |
+
+19.2  NET BIAS ASSESSMENT
+
+COST MODEL BIASES:
+Biases #1, #3, #7, #10, and #11 push the model toward OVERESTIMATING the
+value of hiring (by inflating baseline costs or overstating benefits).
+
+Biases #5 and #6 push toward UNDERESTIMATING the value of hiring.
+
+The overestimation biases dominate in magnitude. This means the model's
+conclusion that N=0 is optimal is CONSERVATIVE — the true cost advantage
+of the current workforce is likely even stronger than modeled.
+
+REVENUE MODEL BIASES:
+Biases #13, #14, #15, and #17 push toward OVERESTIMATING the revenue value
+of hiring (by assuming immediate, full-margin, guaranteed revenue).
+
+Bias #16 pushes toward UNDERESTIMATING long-term value (by ignoring the
+compounding effect of recurring service contracts over multiple years).
+
+Net assessment: The revenue figures should be understood as an upper bound
+on Year 1 capacity potential. Actual realized revenue will be lower due to
+sales cycles, production schedules, and margin compression. However, the
+break-even thresholds are so low (0.5 installations under moderate scenario)
+that the economic case for hiring remains robust even with significant
+discounting of the revenue projections.
+
+
+================================================================================
+20. VERIFICATION AND AUDIT RESULTS
+================================================================================
+
+20.1  VERIFIED CROSS-CHECKS
+
+  Check                                                          | Result
+  ---------------------------------------------------------------|--------
+  All 5 scenarios solve to proven optimality (MIP gap = 0.0)     | Pass
+  All 1,480 appointments served in every scenario                | Pass
+  Duration Hours unit consistent (calendar hours) across all     | Pass
+  Travel cost sum matches per-assignment detail                  | Pass
+  Capacity formula produces correct hours_per_unit (7,703.44)    | Pass
+  Utilization = assigned_hours / capacity_hours                  | Pass
+  Hours freed scales linearly with hires (~7,701 per hire)       | Pass
+  Skill constraints (HPS/LS) correctly enforced                  | Pass
+  Canada-only rule (Hakim) correctly enforced                    | Pass
+  Florida-only rule (Curt Corder) correctly enforced             | Pass
+  Texas-only scope (HTX contractors) correctly enforced          | Pass
+  New hire HPS block (hard variable bound) correctly enforced    | Pass
+  Overhead ($35,632.02) fixed across all scenarios               | Pass
+  Burdened payroll scales correctly ($146,640 × N)               | Pass
+  JSON/markdown outputs use correct terminology                  | Pass
+
+20.2  LINEARITY VERIFICATION
+
+Hours freed scales nearly perfectly linearly with hires:
+
+  Scenario | Hours Freed | Expected (N × 7,703.44) | Deviation
+  ---------|-------------|-------------------------|---------
+  N=1      | 7,701.00    | 7,703.44                | −0.03%
+  N=2      | 15,406.21   | 15,406.88               | −0.004%
+  N=3      | 23,104.04   | 23,110.32               | −0.03%
+  N=4      | 30,801.76   | 30,813.76               | −0.04%
+
+The tiny deviations occur because new hires don't serve at exactly 100%
+of their normalized capacity.
+
+20.3  BEN WALKER SPOT-CHECK (N=0)
+
+  121 appointments assigned, 7,702.43 assigned hours
+  Capacity: 7,703.44 hours
+  Utilization: 99.99%
+  Node-level trace:
+    WI__regular: 26 appts × 61.88 avg hrs = 1,608.75 hrs ✓
+    CO__regular: 21 appts × 62.45 avg hrs = 1,311.55 hrs ✓
+
+20.4  TRUSTWORTHINESS STATEMENT
+
+This optimization model is suitable for inclusion in a senior design report
+with the following qualifications:
+
+  1. All solver results are proven optimal (HiGHS certified global optimality
+     with zero gap for every scenario).
+  2. The pipeline is internally consistent — units, constraints, and cost
+     accounting are correct throughout.
+  3. The conclusion that N=0 is lowest-cost is robust — the $59K+ marginal
+     cost increase per hire cannot be overcome by model bias corrections.
+  4. Hours freed and installation estimates should be presented as ranges
+     (realistic = primary metric, theoretical max = upper bound).
+  5. Calendar hours should be clearly labeled when presenting to audiences
+     familiar with labor-hour benchmarks (3:1 ratio).
+  6. The 17 limitations should be disclosed as caveats alongside any
+     quantitative claims.
+  7. Revenue analysis figures should be presented as capacity potential,
+     not guaranteed revenue. Break-even thresholds (< 1 installation under
+     moderate scenario) demonstrate the economic case is robust even with
+     significant discounting.
+  8. The revenue analysis does not change the MILP recommendation — it
+     provides a complementary economic lens for strategic decision-making.
+
+
+================================================================================
+21. GLOSSARY OF TERMS
+================================================================================
+
+  Appointment:          A scheduled field service visit (PM, Repair, or
+                        Installation) at a customer site.
+
+  AVS:                  Audiovisual System installation (simpler, ~1 day).
+
+  AVS ISO:              Audiovisual System Installation — the most common
+                        installation type (~3.6 days average).
+
+  Break-Even Installs:  Number of installations the freed capacity must
+                        generate to cover the incremental hiring cost.
+                        Computed per revenue scenario.
+
+  BTS:                  Bureau of Transportation Statistics — US government
+                        source for average domestic airfare data.
+
+  Calendar Hours:       Duration Hours = calendar window from scheduled start
+                        to scheduled end. Includes nights/weekends.
+                        Calendar Hours = Duration Days × 24.
+
+  Candidate Base:       One of 88 potential locations where a new hire could
+                        be stationed.
+
+  Demand Node:          An aggregation of appointments by (state, skill_class).
+                        E.g., "OH__regular" = all regular-skill appointments
+                        in Ohio.
+
+  Duration Days:        Calendar days from scheduled start to scheduled end.
+                        A 3-day appointment spans 3 calendar days.
+
+  Economic Total:       modeled_total_cost + baseline_canceled_voided_usd.
+                        The full cost shown in scenario comparisons.
+
+  FTE:                  Full-Time Equivalent. 1.0 = full-time employee.
+
+  Full Cost Model:      Trip cost model including flight + rental car + hotel
+                        (fly trips) or IRS mileage + hotel (drive trips).
+
+  Haversine:            Great-circle distance formula used for distance
+                        calculations. Approximate — does not follow roads.
+
+  HPS:                  High Performance Systems — specialty product line
+                        requiring specific technician certification.
+
+  Hours Freed:          Reduction in existing-tech assigned hours when new
+                        hires absorb some of the demand.
+
+  Hours Per Unit:       Demand-normalized capacity per 1.0 FTE tech.
+                        = total_demand_hours / (total_FTE × target_utilization)
+                        = 7,703.44 calendar hours in current configuration.
+
+  Hybrid Engine:        Travel cost estimation method combining gradient-
+                        boosted regression, empirical route data, BTS priors,
+                        and heuristic fallbacks.
+
+  ISO:                  Standard Installation (~2.1 days average).
+
+  Labor Hours:          Actual working hours. Approximately calendar_hours / 3
+                        (assumes 8 hrs/day in a 24-hr calendar day).
+
+  LS:                   Learning Space — specialty product requiring
+                        certification.
+
+  MILP:                 Mixed-Integer Linear Program — the mathematical
+                        optimization formulation solved by HiGHS.
+
+  MIP Gap:              Difference between best known solution and best
+                        possible solution (lower bound). Gap = 0.0 means
+                        proven global optimality.
+
+  MSRP:                 Manufacturer's Suggested Retail Price. Revenue
+                        scenarios use MSRP-based gross revenue per
+                        installation, not profit margin.
+
+  Navan:                Corporate travel management platform. Source of
+                        flight booking data for cost modeling.
+
+  Net Economic Value:   Total revenue enabled minus net cost increase.
+                        Positive = hiring generates more revenue than
+                        it costs. Computed per revenue scenario.
+
+  Node:                 See Demand Node.
+
+  Out-of-Region:        When a tech is assigned to a state other than their
+                        home state. Currently penalized at $0 (disabled).
+
+  Proven Optimal:       The solver has certified that no better solution
+                        exists. All 5 scenarios achieved this status.
+
+  Revenue Scenario:     One of three installation revenue tiers used in
+                        the revenue-from-freed-capacity analysis:
+                        Conservative ($50K), Moderate ($120K), Aggressive
+                        ($250K). MSRP-based Year 1 gross revenue.
+
+  Service Contract:     Annual recurring revenue per installed system.
+                        $7,000/year based on UIUC pricing (conservative
+                        fleet-weighted estimate).
+
+  Shrinkage:            Statistical technique for blending empirical route
+                        costs with model predictions. k=10 means 10 direct
+                        flights are needed before empirical data gets 50%
+                        weight.
+
+  Target Utilization:   0.85 (85%) — the capacity ceiling as a fraction of
+                        demand-normalized capacity. Hard constraint, not a
+                        soft target.
+
+  Theoretical Max:      Upper bound on installations assuming 100% conversion
+                        of freed calendar hours. Not a realistic forecast.
+
+  Unmet Penalty:        $5,000 per appointment left unserved. Designed to be
+                        high enough that the optimizer never leaves demand
+                        unmet (and it doesn't — zero unmet in all scenarios).
+
+
+================================================================================
+END OF DOCUMENT
+================================================================================
+
+This document was generated from the complete source code of the Elevate
+Healthcare optimization pipeline. All numbers, formulas, and constraint
+descriptions were verified against the codebase as of March 1, 2026.
+
+For the live interactive map: https://hockeysnipes8989-sudo.github.io/elevate-territory-map/
+For the source code: https://github.com/hockeysnipes8989-sudo/elevate-territory-map
