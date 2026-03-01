@@ -266,7 +266,8 @@ Where:
 - Each tech's capacity: `availability_fte × hours_per_unit`
 - `target_utilization` defaults to `0.85` (Step 08 CLI argument, not in config.py). This means the fleet targets 85% utilization at N=0, leaving 15% buffer for scheduling friction.
 - Techs with `availability_fte=0.0` (e.g., James Sanchez) get zero capacity and zero assignments.
-- Current computed values: total_FTE=13.25, total_demand=86,760 hrs, hours_per_unit=7,703.44
+- Damion Lyn and Elier Martin are phone techs (Clay's team) at `availability_fte=0.10` (~10% field time).
+- Current computed values: total_FTE=11.45, total_demand=86,760 hrs, hours_per_unit=8,914.46
 
 ### Revenue-from-Freed-Capacity Model (Step 09)
 
@@ -321,11 +322,11 @@ From current optimization artifacts (BTS-corrected matrix + full cost model + an
 - Data span: **2.0753 years** (Jan 2, 2024 → Jan 29, 2026, 758 days, 1,480 appointments)
 - Annualized appointment count: ~713/year
 - Scenario range: `N=0..4`
-- Selection mode: `proven_optimal_only` (all 5 scenarios solved to proven optimality)
-- Best scenario: `N=0`
-- **N=0 annualized travel cost: `$593,472` USD**
+- Selection mode: `proven_optimal_only` (N=1..4 solved to proven optimality; N=0 hit time limit with MIP gap 0.007% — effectively optimal)
+- Best scenario: `N=1` (N=0 can't serve all demand with reduced fleet)
+- **N=0 annualized travel cost: `$575,223` USD** (9 unmet appointments)
 - **N=0 annualized overhead: `$17,170` USD**
-- **N=0 annualized total: `$610,642` USD**
+- **N=0 annualized total: `$614,077` USD**
 - Burdened annual per-hire planning cost: `$146,640` USD (period-scaled to `$304,322` in MILP)
 - Full cost model constants: IRS $0.70/mi, rental $235/trip, hotel $159/night (duration-scaled), drive threshold 300 mi, day-trip ≤150 mi + ≤1 day
 - Full cost table: 8,008 rows (16 techs × 77 nodes + 88 candidates × 77 nodes)
@@ -333,44 +334,42 @@ From current optimization artifacts (BTS-corrected matrix + full cost model + an
 - Hotel nights distribution: 1 night (2.6%), 2 nights (44.2%), 3 nights (46.8%), 4 nights (6.5%). Mean hotel cost: $409/trip. No day trips (min node avg = 1.18 days > 1.0 threshold).
 - Navan flight date window used in Step 7: `2025-07-09` to `2026-03-13`
 - No scenario allocates more than one hire to a single base (`max_hires_per_base=1`).
-- All 1,480 appointments served across all scenarios (zero unmet).
-- Active techs at N=0: 15 (excludes James Sanchez (availability_fte=0.0, on phones temporarily)).
-- Mean utilization at N=0: 85.7%. Max: 99.99% (one tech near ceiling — workforce is tightly loaded).
+- N=0: 1,471 served, 9 unmet (fleet too tight at 11.45 FTE to cover all 1,480). N=1..4: all 1,480 served.
+- Active techs at N=0: 15 (excludes James Sanchez (availability_fte=0.0, on phones temporarily)). Damion Lyn and Elier Martin are phone techs at 0.10 FTE each. Total effective FTE: 11.45.
+- Mean utilization at N=0: 86.0%. Max: 100.00% (fleet is capacity-constrained — can't serve all demand without hiring).
 
 ### Scenario Cost Summary (Annualized)
 
-| N | Annual Travel | Annual Payroll | Annual Overhead | Annual Total |
-|---|--------------|----------------|-----------------|-------------|
-| 0 | $593,472 | $0 | $17,170 | **$610,642** |
-| 1 | $551,329 | $146,640 | $17,170 | $715,139 |
-| 2 | $518,260 | $293,280 | $17,170 | $828,710 |
-| 3 | $489,870 | $439,920 | $17,170 | $946,959 |
-| 4 | $467,033 | $586,560 | $17,170 | $1,070,763 |
+| N | Annual Travel | Annual Payroll | Annual Overhead | Annual Total | Served | Unmet |
+|---|--------------|----------------|-----------------|-------------|--------|-------|
+| 0 | $575,223 | $0 | $17,170 | **$614,077** | 1,471 | 9 |
+| 1 | $535,108 | $146,640 | $17,170 | $698,918 | 1,480 | 0 |
+| 2 | $500,695 | $293,280 | $17,170 | $811,145 | 1,480 | 0 |
+| 3 | $475,953 | $439,920 | $17,170 | $933,043 | 1,480 | 0 |
+| 4 | $456,432 | $586,560 | $17,170 | $1,060,161 | 1,480 | 0 |
 
-Marginal annual travel savings diminish: $42K (N=0→1), $33K (N=1→2), $28K (N=2→3), $23K (N=3→4).
+Marginal annual travel savings diminish: $40K (N=0→1), $34K (N=1→2), $25K (N=2→3), $20K (N=3→4).
 
 ### Revenue-from-Freed-Capacity Summary (Annualized)
 
 | N | Realistic Installs/yr | Net Cost Increase | Net Value (Conservative) | Net Value (Moderate) | Net Value (Aggressive) | Break-Even (Mod) |
 |---|----------------------:|------------------:|-------------------------:|---------------------:|-----------------------:|-----------------:|
 | 0 | 0.0 | $0 | $0 | $0 | $0 | 0.0 |
-| 1 | 27.3 | $104,497 | $234,043 | $848,329 | $2,759,441 | 3.0 |
-| 2 | 54.6 | $218,068 | $459,197 | $1,688,104 | $5,511,373 | 6.2 |
-| 3 | 81.9 | $336,318 | $679,348 | $2,522,289 | $8,255,883 | 9.6 |
-| 4 | 109.2 | $460,121 | $893,940 | $3,350,905 | $10,994,798 | 13.2 |
+| 1 | 28.4 | $84,841 | $267,832 | $907,762 | $2,898,656 | 2.4 |
+| 2 | 60.0 | $197,068 | $547,297 | $1,897,959 | $6,100,018 | 5.6 |
+| 3 | 91.6 | $318,966 | $817,239 | $2,878,902 | $9,292,963 | 9.1 |
+| 4 | 123.2 | $446,085 | $1,081,685 | $3,853,848 | $12,478,355 | 12.8 |
 
-Key takeaway: Even at conservative estimates, N=1 enables ~$234K in annual profit for ~$104K incremental cost (break-even at 8.4 installs conservative, 3.0 moderate). The cost-only optimizer says N=0 is cheapest, but the profit lens shows substantial economic upside from hiring.
-
-Note: Revenue figures are unchanged from previous run because capacity-freed hours (driven by MILP assignments) are stable. The ~$10K drop in total cost (from $620K to $611K) flows through travel cost, not capacity metrics.
+Key takeaway: With the corrected fleet (11.45 FTE), N=0 can't serve all 1,480 appointments (9 unmet). N=1 enables 28.4 installs/yr for only $85K incremental cost (break-even at 2.4 moderate installs, ROI 1,070%). The case for hiring is now even stronger — the fleet is capacity-constrained without new hires.
 
 ### Hiring Placements by Scenario
 
 | N | Recommended Bases |
 |---|-------------------|
 | 1 | CLE (Cleveland, OH) |
-| 2 | CLE, MKE (Milwaukee, WI) |
-| 3 | BOS (Boston, MA), ORD (Chicago, IL), CLE |
-| 4 | BOS, ORD, CLE, Fort Smith AR (→ LIT airport) |
+| 2 | ORD (Chicago, IL), CLE |
+| 3 | ORD, CLE, OKC (Oklahoma City, OK) |
+| 4 | ORD, CLE, BNA (Nashville, TN), Fort Smith AR (→ LIT airport) |
 
 - BTS-corrected matrix airport benchmarks (key sanity checks):
   - MDW: $471 → $199 (-57.7%) — now grounded in BTS data, not model speculation

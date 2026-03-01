@@ -210,6 +210,8 @@ def build_tech_master(
             availability = 0.25
         if canonical_name == "James Sanchez":
             availability = 0.0
+        if canonical_name in ("Damion Lyn", "Elier Martin"):
+            availability = 0.10
 
         note = row.get("Comments", "").strip()
         florida_only = int("only covers florida" in note.lower())
