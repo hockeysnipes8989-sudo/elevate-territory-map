@@ -1280,7 +1280,7 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names,
     <button id="sim-panel-toggle" title="Show/hide simulation panel">Simulation</button>
     <div id="sim-panel">
       <h3>Simulation Scenarios</h3>
-      <p id="sim-subtitle">Cost-first optimization with fixed current tech bases.</p>
+      <p id="sim-subtitle">Cost-first optimization — all figures annualized.</p>
       <div id="sim-buttons"></div>
       <div id="sim-kpis">
         <div class="sim-kpi kpi-clickable" data-kpi="total-cost"><div class="label">Total Cost</div><div class="value" id="kpi-total">-</div></div>

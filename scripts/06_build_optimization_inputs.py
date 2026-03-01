@@ -487,6 +487,17 @@ def main() -> None:
     demand = build_demand_appointments(appts_path, config.GEOCODED_APPTS_CSV, airports_df)
     candidates = build_candidate_bases(airports_df, demand, args.top_demand_cities)
 
+    # Compute data time span for annualization
+    sched_start_dt = pd.to_datetime(demand["scheduled_start"], errors="coerce").dropna()
+    date_min = sched_start_dt.min()
+    date_max = sched_start_dt.max()
+    data_span_days = (date_max - date_min).days
+    data_span_years = max(data_span_days / 365.25, 0.5)  # floor at 0.5 to avoid division issues
+
+    if data_span_years < 0.8:
+        print(f"  WARNING: Data span is only {data_span_years:.2f} years — check date range")
+    print(f"  Date range: {date_min.date()} to {date_max.date()} ({data_span_days} days, {data_span_years:.2f} years)")
+
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -515,6 +526,11 @@ def main() -> None:
             "hps_ls_required_appointments": int((demand["skill_class"] == "hps_ls").sum()),
         },
         "contractor_assignment_scope": args.contractor_assignment_scope,
+        "data_span_days": int(data_span_days),
+        "data_span_years": round(float(data_span_years), 4),
+        "date_range_start": str(date_min.date()),
+        "date_range_end": str(date_max.date()),
+        "annualized_appointment_count": round(len(demand) / data_span_years, 1),
     }
     with open(summary_out, "w") as f:
         json.dump(summary, f, indent=2)

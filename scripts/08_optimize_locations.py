@@ -682,6 +682,16 @@ def main() -> None:
 
     out_dir = Path(args.output_dir)
     inputs = load_inputs(out_dir)
+
+    input_summary_path = out_dir / "optimization_input_summary.json"
+    if input_summary_path.exists():
+        with open(input_summary_path) as f:
+            input_summary = json.load(f)
+        data_span_years = float(input_summary.get("data_span_years", 1.0))
+    else:
+        data_span_years = 1.0
+    print(f"  Data span: {data_span_years:.2f} years")
+
     tech = inputs["tech"].copy()
     demand = inputs["demand"].copy()
     candidates = inputs["candidates"].copy()
@@ -725,6 +735,12 @@ def main() -> None:
 
     canceled_voided_usd = float(baseline.get("canceled_voided_spend_usd_report", 0.0))
 
+    # Scale hire cost to match the data period.
+    # Travel costs cover the full data span (2.08 years of appointments).
+    # Hire cost must be scaled to match for like-for-like comparison in the MILP.
+    hire_cost_for_period = args.annual_hire_cost_usd * data_span_years
+    print(f"  Annual hire cost: ${args.annual_hire_cost_usd:,.0f} × {data_span_years:.2f} years = ${hire_cost_for_period:,.0f} for optimization period")
+
     for hire_count in range(args.min_new_hires, args.max_new_hires + 1):
         print(f"Solving scenario N={hire_count} new hires...")
 
@@ -753,7 +769,7 @@ def main() -> None:
                 target_utilization=args.target_utilization,
                 out_of_region_penalty=args.out_of_region_penalty,
                 unmet_penalty=args.unmet_penalty,
-                annual_hire_cost_usd=args.annual_hire_cost_usd,
+                annual_hire_cost_usd=hire_cost_for_period,
                 max_hires_per_base=args.max_hires_per_base,
                 time_limit_sec=args.time_limit_sec,
                 full_cost_lookup=full_cost_lookup,
@@ -812,6 +828,8 @@ def main() -> None:
         "unmet_penalty": args.unmet_penalty,
         "annual_hire_cost_usd": args.annual_hire_cost_usd,
         "max_hires_per_base": args.max_hires_per_base,
+        "data_span_years": data_span_years,
+        "hire_cost_for_optimization_period": hire_cost_for_period,
         "hire_cost_scope": "incremental_new_hires_only",
         "hire_cost_input_mode": "direct_fixed_value",
         "contractor_assignment_scope": contractor_scope,

@@ -47,6 +47,15 @@ def main() -> None:
     with open(assumptions_path, "r") as f:
         assumptions = json.load(f)
 
+    input_summary_path = Path(args.output_dir) / "optimization_input_summary.json"
+    if input_summary_path.exists():
+        with open(input_summary_path) as f:
+            input_summary = json.load(f)
+        data_span_years = float(input_summary.get("data_span_years", 1.0))
+    else:
+        data_span_years = 1.0
+    print(f"Data span: {data_span_years:.2f} years — all figures will be annualized")
+
     # --- Block A: Compute avg calendar hours per installation ---
     appts_path = Path(config.CLEAN_APPTS_CSV)
     installation_types = ["ISO", "AVS ISO", "AVS"]
@@ -80,6 +89,22 @@ def main() -> None:
         avg_duration_days_per_installation = float("nan")
         install_type_breakdown = {}
 
+    # --- Annualize from full-period to per-year ---
+    # Step 08 used period-scaled hire cost, and travel/overhead span the full period.
+    # Divide all cost columns by data_span_years to get annual equivalents.
+    period_cost_cols = [
+        "travel_cost_usd",
+        "out_of_region_penalty_usd",
+        "hire_cost_usd",
+        "unmet_penalty_usd",
+        "modeled_total_cost_usd",
+        "baseline_canceled_voided_usd",
+        "economic_total_with_overhead_usd",
+    ]
+    for col in period_cost_cols:
+        if col in summary.columns:
+            summary[col] = summary[col] / data_span_years
+
     base_row = summary.loc[summary["scenario_hires"] == 0]
     if base_row.empty:
         raise ValueError("Scenario summary must include N=0 baseline.")
@@ -108,6 +133,9 @@ def main() -> None:
         )
         hours_freed_list.append(baseline_existing_hours - existing_hours_at_n)
     summary["hours_freed_existing_techs"] = hours_freed_list
+
+    # Annualize capacity-freed metrics (computed from full-period assigned hours)
+    summary["hours_freed_existing_techs"] = summary["hours_freed_existing_techs"] / data_span_years
 
     summary["theoretical_max_installations"] = np.where(
         np.isnan(avg_calendar_hours_per_installation) | (avg_calendar_hours_per_installation == 0),
@@ -243,6 +271,8 @@ def main() -> None:
 
     full_cost_model_active = bool(assumptions.get("full_cost_model", False))
     report = {
+        "data_span_years": data_span_years,
+        "annualization_note": f"All figures annualized from {data_span_years:.2f}-year data period",
         "best_scenario_hires": best_hires,
         "selection_mode": selection_mode,
         "full_cost_model_active": full_cost_model_active,
@@ -333,6 +363,7 @@ def main() -> None:
         f"- Best scenario cost with overhead: **${best_row['economic_total_with_overhead_usd']:,.2f}**",
         f"- Savings vs N=0: **${report['best_savings_vs_n0_usd']:,.2f} ({report['best_savings_vs_n0_pct']:.2f}%)**",
         "- Cost totals include annual burdened payroll for incremental new hires.",
+        f"- Data period: **{data_span_years:.1f} years** — all figures are annualized to per-year equivalents",
         "",
         "## Utilization (Best Scenario)",
         f"- Mean existing-tech utilization: {util_metrics['mean_utilization']:.3f}",
@@ -457,6 +488,7 @@ def main() -> None:
     print(f"Saved: {recommended_out}")
     print(f"Saved: {report_out}")
     print(f"Saved: {markdown_out}")
+    print(f"\n  Annualized from {data_span_years:.2f}-year data period")
     print("\nTop-level report:")
     print(json.dumps(report, indent=2))
     print("Step 9 complete.")
