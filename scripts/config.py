@@ -120,6 +120,18 @@ REVENUE_PER_INSTALLATION_AGGRESSIVE_USD = 250_000     # Large systems (HPS full 
 # $7K is a conservative fleet-weighted estimate skewed toward Peak-tier.
 AVG_ANNUAL_SERVICE_CONTRACT_USD = 7_000
 
+# Estimated profit margin on installation sales.
+# Medical device industry typical gross margins: 50-65%, net margins: 15-25%.
+# Accounts for COGS (hardware, AV equipment, software), shipping,
+# sales commissions, warranty reserves, and overhead allocation.
+INSTALLATION_PROFIT_MARGIN_CONSERVATIVE = 0.15   # 15% net margin
+INSTALLATION_PROFIT_MARGIN_MODERATE = 0.25       # 25% net margin
+INSTALLATION_PROFIT_MARGIN_AGGRESSIVE = 0.40     # 40% gross margin territory
+
+# Service/software contracts have higher margins than hardware sales.
+# Medical device recurring revenue typically 60-80% margin.
+SERVICE_CONTRACT_PROFIT_MARGIN = 0.70
+
 # Realistic installation estimate parameters (Step 09 capacity-freed analysis).
 TRAVEL_DAYS_PER_INSTALLATION = 1.0            # Travel overhead per installation (days)
 FREED_CAPACITY_UTILIZATION_FACTOR = 0.75       # Fraction of freed days practically usable

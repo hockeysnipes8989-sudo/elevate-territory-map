@@ -129,34 +129,42 @@ def main() -> None:
         (summary["freed_duration_days"] * util_factor) / effective_days_per_install,
     )
 
-    # --- Block C: Revenue-from-freed-capacity analysis ---
+    # --- Block C: Revenue-from-freed-capacity analysis (profit-margin based) ---
     revenue_scenarios = {
-        "conservative": config.REVENUE_PER_INSTALLATION_CONSERVATIVE_USD,
-        "moderate": config.REVENUE_PER_INSTALLATION_MODERATE_USD,
-        "aggressive": config.REVENUE_PER_INSTALLATION_AGGRESSIVE_USD,
+        "conservative": (config.REVENUE_PER_INSTALLATION_CONSERVATIVE_USD,
+                         config.INSTALLATION_PROFIT_MARGIN_CONSERVATIVE),
+        "moderate": (config.REVENUE_PER_INSTALLATION_MODERATE_USD,
+                     config.INSTALLATION_PROFIT_MARGIN_MODERATE),
+        "aggressive": (config.REVENUE_PER_INSTALLATION_AGGRESSIVE_USD,
+                       config.INSTALLATION_PROFIT_MARGIN_AGGRESSIVE),
     }
+    svc_margin = config.SERVICE_CONTRACT_PROFIT_MARGIN
     service_contract_annual = config.AVG_ANNUAL_SERVICE_CONTRACT_USD
 
-    for label, rev_per_install in revenue_scenarios.items():
+    for label, (rev_per_install, margin) in revenue_scenarios.items():
         # Net cost increase vs N=0 (positive = costs more to hire)
         col_net_cost = f"net_cost_increase_{label}_usd"
         summary[col_net_cost] = summary["economic_total_with_overhead_usd"] - base_cost
 
-        # Installation revenue (realistic installs × revenue per install)
-        col_install_rev = f"installation_revenue_{label}_usd"
-        summary[col_install_rev] = summary["realistic_installations_enabled"] * rev_per_install
+        # Installation profit (realistic installs × revenue per install × margin)
+        col_install_profit = f"installation_profit_{label}_usd"
+        summary[col_install_profit] = (
+            summary["realistic_installations_enabled"] * rev_per_install * margin
+        )
 
-        # Service contract revenue (realistic installs × annual contract)
-        col_svc_rev = f"service_contract_revenue_{label}_usd"
-        summary[col_svc_rev] = summary["realistic_installations_enabled"] * service_contract_annual
+        # Service contract profit (realistic installs × annual contract × svc margin)
+        col_svc_profit = f"service_contract_profit_{label}_usd"
+        summary[col_svc_profit] = (
+            summary["realistic_installations_enabled"] * service_contract_annual * svc_margin
+        )
 
-        # Total revenue enabled
-        col_total_rev = f"total_revenue_enabled_{label}_usd"
-        summary[col_total_rev] = summary[col_install_rev] + summary[col_svc_rev]
+        # Total profit enabled
+        col_total_profit = f"total_profit_enabled_{label}_usd"
+        summary[col_total_profit] = summary[col_install_profit] + summary[col_svc_profit]
 
-        # Net economic value = total revenue - net cost increase
+        # Net economic value = total profit - net cost increase
         col_net_value = f"net_economic_value_{label}_usd"
-        summary[col_net_value] = summary[col_total_rev] - summary[col_net_cost]
+        summary[col_net_value] = summary[col_total_profit] - summary[col_net_cost]
 
         # ROI = net economic value / net cost increase (only where cost > 0)
         col_roi = f"roi_{label}_pct"
@@ -166,14 +174,19 @@ def main() -> None:
             np.nan,
         )
 
-        # Break-even installations for this revenue scenario
+        # Break-even installations for this scenario
         col_be = f"break_even_installations_{label}"
-        rev_plus_svc = rev_per_install + service_contract_annual
+        profit_per_install = rev_per_install * margin + service_contract_annual * svc_margin
         summary[col_be] = np.where(
-            summary[col_net_cost] > 0,
-            summary[col_net_cost] / rev_plus_svc,
+            (summary[col_net_cost] > 0) & (profit_per_install > 0),
+            summary[col_net_cost] / profit_per_install,
             0.0,
         )
+
+    # Gross revenue reference column (moderate scenario, for dashboard context)
+    summary["gross_revenue_moderate_usd"] = (
+        summary["realistic_installations_enabled"] * config.REVENUE_PER_INSTALLATION_MODERATE_USD
+    )
 
     # Keep a unified break_even column using the moderate scenario
     summary["break_even_installations"] = summary["break_even_installations_moderate"]
@@ -256,6 +269,10 @@ def main() -> None:
             "conservative_per_install_usd": config.REVENUE_PER_INSTALLATION_CONSERVATIVE_USD,
             "moderate_per_install_usd": config.REVENUE_PER_INSTALLATION_MODERATE_USD,
             "aggressive_per_install_usd": config.REVENUE_PER_INSTALLATION_AGGRESSIVE_USD,
+            "conservative_margin": config.INSTALLATION_PROFIT_MARGIN_CONSERVATIVE,
+            "moderate_margin": config.INSTALLATION_PROFIT_MARGIN_MODERATE,
+            "aggressive_margin": config.INSTALLATION_PROFIT_MARGIN_AGGRESSIVE,
+            "service_contract_margin": svc_margin,
         },
         "avg_annual_service_contract_usd": service_contract_annual,
         "capacity_freed_all_scenarios": [
@@ -274,9 +291,9 @@ def main() -> None:
                 else None,
                 "revenue_analysis": {
                     lbl: {
-                        "installation_revenue_usd": round(float(r[f"installation_revenue_{lbl}_usd"]), 2),
-                        "service_contract_revenue_usd": round(float(r[f"service_contract_revenue_{lbl}_usd"]), 2),
-                        "total_revenue_enabled_usd": round(float(r[f"total_revenue_enabled_{lbl}_usd"]), 2),
+                        "installation_profit_usd": round(float(r[f"installation_profit_{lbl}_usd"]), 2),
+                        "service_contract_profit_usd": round(float(r[f"service_contract_profit_{lbl}_usd"]), 2),
+                        "total_profit_enabled_usd": round(float(r[f"total_profit_enabled_{lbl}_usd"]), 2),
                         "net_cost_increase_usd": round(float(r[f"net_cost_increase_{lbl}_usd"]), 2),
                         "net_economic_value_usd": round(float(r[f"net_economic_value_{lbl}_usd"]), 2),
                         "roi_pct": round(float(r[f"roi_{lbl}_pct"]), 1)
@@ -386,37 +403,49 @@ def main() -> None:
     lines.append("> what freed technician time could enable, not guaranteed revenue.")
     lines.append("")
     lines.append("### Assumptions")
-    lines.append(f"- Conservative: ${config.REVENUE_PER_INSTALLATION_CONSERVATIVE_USD:,}/install (small systems)")
-    lines.append(f"- Moderate: ${config.REVENUE_PER_INSTALLATION_MODERATE_USD:,}/install (mid-range systems)")
-    lines.append(f"- Aggressive: ${config.REVENUE_PER_INSTALLATION_AGGRESSIVE_USD:,}/install (large/HPS systems)")
-    lines.append(f"- Annual service contract: ${service_contract_annual:,}/system")
-    lines.append("- Revenue is Year 1 MSRP gross, not profit margin")
+    lines.append(
+        f"- Conservative: ${config.REVENUE_PER_INSTALLATION_CONSERVATIVE_USD:,}/install "
+        f"× {config.INSTALLATION_PROFIT_MARGIN_CONSERVATIVE:.0%} margin "
+        f"= ${config.REVENUE_PER_INSTALLATION_CONSERVATIVE_USD * config.INSTALLATION_PROFIT_MARGIN_CONSERVATIVE:,.0f} profit/install (small systems)"
+    )
+    lines.append(
+        f"- Moderate: ${config.REVENUE_PER_INSTALLATION_MODERATE_USD:,}/install "
+        f"× {config.INSTALLATION_PROFIT_MARGIN_MODERATE:.0%} margin "
+        f"= ${config.REVENUE_PER_INSTALLATION_MODERATE_USD * config.INSTALLATION_PROFIT_MARGIN_MODERATE:,.0f} profit/install (mid-range systems)"
+    )
+    lines.append(
+        f"- Aggressive: ${config.REVENUE_PER_INSTALLATION_AGGRESSIVE_USD:,}/install "
+        f"× {config.INSTALLATION_PROFIT_MARGIN_AGGRESSIVE:.0%} margin "
+        f"= ${config.REVENUE_PER_INSTALLATION_AGGRESSIVE_USD * config.INSTALLATION_PROFIT_MARGIN_AGGRESSIVE:,.0f} profit/install (large/HPS systems)"
+    )
+    lines.append(f"- Annual service contract: ${service_contract_annual:,}/system × {svc_margin:.0%} margin = ${service_contract_annual * svc_margin:,.0f} profit/system")
+    lines.append("- Profit margins applied to MSRP revenue (industry-typical net margins for installations, higher margins for recurring service contracts)")
     lines.append("")
-    lines.append("### Revenue Summary by Scenario")
+    lines.append("### Profit Summary by Scenario")
     lines.append("")
-    lines.append("| Hires | Realistic Installs | Rev Scenario | Install Rev | Svc Contract Rev | Total Rev | Net Cost Increase | Net Economic Value | ROI | Break-Even Installs |")
-    lines.append("|------:|-------------------:|:-------------|------------:|-----------------:|----------:|------------------:|-------------------:|----:|--------------------:|")
+    lines.append("| Hires | Realistic Installs | Scenario | Install Profit | Svc Contract Profit | Total Profit | Net Cost Increase | Net Economic Value | ROI | Break-Even Installs |")
+    lines.append("|------:|-------------------:|:---------|---------------:|--------------------:|-------------:|------------------:|-------------------:|----:|--------------------:|")
     for _, r in summary.iterrows():
         n = int(r["scenario_hires"])
         ri = r["realistic_installations_enabled"]
         ri_str = f"{ri:,.1f}" if not np.isnan(ri) else "N/A"
         for lbl in ["conservative", "moderate", "aggressive"]:
-            ir = r[f"installation_revenue_{lbl}_usd"]
-            sr = r[f"service_contract_revenue_{lbl}_usd"]
-            tr = r[f"total_revenue_enabled_{lbl}_usd"]
+            ip = r[f"installation_profit_{lbl}_usd"]
+            sp = r[f"service_contract_profit_{lbl}_usd"]
+            tp = r[f"total_profit_enabled_{lbl}_usd"]
             nc = r[f"net_cost_increase_{lbl}_usd"]
             nv = r[f"net_economic_value_{lbl}_usd"]
             roi = r[f"roi_{lbl}_pct"]
             be = r[f"break_even_installations_{lbl}"]
             roi_str = f"{roi:,.0f}%" if not np.isnan(roi) else "N/A"
             lines.append(
-                f"| {n} | {ri_str} | {lbl} | ${ir:,.0f} | ${sr:,.0f} | ${tr:,.0f} | ${nc:,.0f} | ${nv:,.0f} | {roi_str} | {be:,.1f} |"
+                f"| {n} | {ri_str} | {lbl} | ${ip:,.0f} | ${sp:,.0f} | ${tp:,.0f} | ${nc:,.0f} | ${nv:,.0f} | {roi_str} | {be:,.1f} |"
             )
 
     lines.append("")
     lines.append("### Caveats")
     lines.append("1. Revenue figures represent **capacity enabled**, not guaranteed bookings — actual revenue depends on sales pipeline and market demand.")
-    lines.append("2. Revenue is **MSRP-based gross revenue**, not profit margin or P&L impact.")
+    lines.append("2. Profit margins are applied (15%/25%/40% on installations, 70% on service contracts) — actual margins vary by product line and deal structure.")
     lines.append("3. Service contract revenue assumes each new installation generates an annual contract.")
     lines.append("4. Estimates are **Year 1 only** — multi-year NPV would require discount rate assumptions.")
     lines.append("5. The MILP optimizer recommendation (N=0) is unchanged — this analysis is supplementary.")
@@ -451,13 +480,13 @@ def main() -> None:
         be_str = f"{be:,.1f}" if not np.isnan(be) else "N/A"
         print(f"  N={n:<7} {df:>11,.1f} {ud:>12,.1f} {ri_str:>10} {tm_str:>12} {be_str:>11}")
 
-    # --- Block F: Console revenue summary ---
-    print(f"\nRevenue-from-Freed-Capacity Analysis:")
-    print(f"  Revenue per install: Conservative=${config.REVENUE_PER_INSTALLATION_CONSERVATIVE_USD//1000:.0f}K | Moderate=${config.REVENUE_PER_INSTALLATION_MODERATE_USD//1000:.0f}K | Aggressive=${config.REVENUE_PER_INSTALLATION_AGGRESSIVE_USD//1000:.0f}K")
-    print(f"  Annual service contract: ${service_contract_annual:,}/system")
+    # --- Block F: Console profit summary ---
+    print(f"\nRevenue-from-Freed-Capacity Analysis (profit-margin based):")
+    print(f"  Conservative=${config.REVENUE_PER_INSTALLATION_CONSERVATIVE_USD//1000:.0f}K×{config.INSTALLATION_PROFIT_MARGIN_CONSERVATIVE:.0%} | Moderate=${config.REVENUE_PER_INSTALLATION_MODERATE_USD//1000:.0f}K×{config.INSTALLATION_PROFIT_MARGIN_MODERATE:.0%} | Aggressive=${config.REVENUE_PER_INSTALLATION_AGGRESSIVE_USD//1000:.0f}K×{config.INSTALLATION_PROFIT_MARGIN_AGGRESSIVE:.0%}")
+    print(f"  Service contract: ${service_contract_annual:,}/system × {svc_margin:.0%} margin")
     print()
     print(f"  {'Scenario':<10} {'Installs':>9} {'Net Cost Incr':>14}    {'Conservative':>14} {'Moderate':>14} {'Aggressive':>14}    {'BE (Mod)':>9}")
-    print(f"  {'':<10} {'':>9} {'':>14}    {'--- Net Economic Value ---':^44}    {'':>9}")
+    print(f"  {'':<10} {'':>9} {'':>14}    {'--- Net Profit Value ---':^44}    {'':>9}")
     print(f"  {'-'*10} {'-'*9} {'-'*14}    {'-'*14} {'-'*14} {'-'*14}    {'-'*9}")
     for _, r in summary.iterrows():
         n = int(r["scenario_hires"])

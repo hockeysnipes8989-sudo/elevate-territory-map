@@ -628,6 +628,10 @@ def load_simulation_data():
                     "lon": float(p.get("lon")),
                 }
             )
+        def safe_float(r, col, default=0):
+            v = r.get(col, default)
+            return default if pd.isna(v) else float(v)
+
         payload[str(scenario)] = {
             "scenario_hires": scenario,
             "kpis": {
@@ -643,6 +647,12 @@ def load_simulation_data():
                 "hire_cost_usd": float(row.get("hire_cost_usd", 0)),
                 "mean_existing_utilization": float(row.get("mean_existing_utilization", 0)),
                 "max_existing_utilization": float(row.get("max_existing_utilization", 0)),
+                "realistic_installations_enabled": safe_float(row, "realistic_installations_enabled"),
+                "total_profit_enabled_moderate_usd": safe_float(row, "total_profit_enabled_moderate_usd"),
+                "gross_revenue_moderate_usd": safe_float(row, "gross_revenue_moderate_usd"),
+                "net_economic_value_moderate_usd": safe_float(row, "net_economic_value_moderate_usd"),
+                "break_even_installations_moderate": safe_float(row, "break_even_installations_moderate"),
+                "roi_moderate_pct": safe_float(row, "roi_moderate_pct"),
             },
             "placements": placement_records,
         }
@@ -1242,6 +1252,25 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names,
         padding: 4px 10px;
         font-size: 12px;
       }
+      .kpi-clickable { cursor: pointer; transition: background 0.15s, border-color 0.15s; }
+      .kpi-clickable:hover { background: #eef1f5; border-color: #163b59; }
+      #kpi-modal-overlay {
+        display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+        background: rgba(0,0,0,0.35); z-index: 2000; justify-content: center; align-items: center;
+      }
+      #kpi-modal-overlay[style*="display: block"] { display: flex !important; }
+      #kpi-modal {
+        background: #fff; border-radius: 12px; padding: 20px 24px; max-width: 420px; width: 90%;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.25); position: relative; font-size: 13px; line-height: 1.5;
+      }
+      #kpi-modal-title { font-size: 15px; font-weight: 700; margin-bottom: 10px; color: #163b59; }
+      #kpi-modal-body { color: #333; }
+      #kpi-modal-body p { margin: 6px 0; }
+      #kpi-modal-close {
+        position: absolute; top: 10px; right: 14px; font-size: 20px; cursor: pointer;
+        color: #888; background: none; border: none; line-height: 1;
+      }
+      #kpi-modal-close:hover { color: #333; }
       @media (max-width: 900px) {
         #sim-panel { display: none; width: 280px; }
         #sim-panel.mobile-open { display: block; }
@@ -1254,19 +1283,37 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names,
       <p id="sim-subtitle">Cost-first optimization with fixed current tech bases.</p>
       <div id="sim-buttons"></div>
       <div id="sim-kpis">
-        <div class="sim-kpi"><div class="label">Total Cost</div><div class="value" id="kpi-total">-</div></div>
-        <div class="sim-kpi"><div class="label">Cost Change vs N=0</div><div class="value" id="kpi-savings">-</div></div>
-        <div class="sim-kpi"><div class="label">Marginal Cost Change</div><div class="value" id="kpi-marginal">-</div></div>
-        <div class="sim-kpi" id="kpi-unmet-card"><div class="label">Unmet Appointments</div><div class="value" id="kpi-unmet">-</div></div>
-        <div class="sim-kpi"><div class="label">Annual Hire Payroll</div><div class="value" id="kpi-hire-cost">-</div></div>
-        <div class="sim-kpi"><div class="label">Mean Utilization</div><div class="value" id="kpi-mean-util">-</div></div>
-        <div class="sim-kpi"><div class="label">Max Utilization</div><div class="value" id="kpi-max-util">-</div></div>
+        <div class="sim-kpi kpi-clickable" data-kpi="total-cost"><div class="label">Total Cost</div><div class="value" id="kpi-total">-</div></div>
+        <div class="sim-kpi kpi-clickable" data-kpi="cost-change"><div class="label">Cost Change vs N=0</div><div class="value" id="kpi-savings">-</div></div>
+        <div class="sim-kpi kpi-clickable" data-kpi="marginal-cost"><div class="label">Marginal Cost Change</div><div class="value" id="kpi-marginal">-</div></div>
+        <div class="sim-kpi kpi-clickable" data-kpi="unmet" id="kpi-unmet-card"><div class="label">Unmet Appointments</div><div class="value" id="kpi-unmet">-</div></div>
+        <div class="sim-kpi kpi-clickable" data-kpi="hire-payroll"><div class="label">Annual Hire Payroll</div><div class="value" id="kpi-hire-cost">-</div></div>
+        <div class="sim-kpi kpi-clickable" data-kpi="mean-util"><div class="label">Mean Utilization</div><div class="value" id="kpi-mean-util">-</div></div>
+        <div class="sim-kpi kpi-clickable" data-kpi="max-util"><div class="label">Max Utilization</div><div class="value" id="kpi-max-util">-</div></div>
+      </div>
+      <div style="border-top: 2px solid #163b59; margin: 10px 0 8px 0;"></div>
+      <div style="font-size: 12px; font-weight: 700; margin-bottom: 2px;">Freed Capacity &amp; Profit Potential</div>
+      <div style="font-size: 9px; color: #666; margin-bottom: 6px;">Moderate scenario: $120K/install, 25% margin</div>
+      <div id="sim-kpis-revenue" style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px;">
+        <div class="sim-kpi kpi-clickable" data-kpi="installs"><div class="label">Realistic Installations</div><div class="value" id="kpi-installs">-</div></div>
+        <div class="sim-kpi kpi-clickable" data-kpi="gross-rev"><div class="label">Gross Revenue Enabled</div><div class="value" id="kpi-gross-rev">-</div></div>
+        <div class="sim-kpi kpi-clickable" data-kpi="profit"><div class="label">Est. Profit Enabled</div><div class="value" id="kpi-profit">-</div></div>
+        <div class="sim-kpi kpi-clickable" data-kpi="net-value"><div class="label">Net Economic Value</div><div class="value" id="kpi-net-value">-</div></div>
+        <div class="sim-kpi kpi-clickable" data-kpi="break-even"><div class="label">Break-Even Installations</div><div class="value" id="kpi-break-even">-</div></div>
+        <div class="sim-kpi kpi-clickable" data-kpi="roi"><div class="label">ROI</div><div class="value" id="kpi-roi">-</div></div>
       </div>
       <div id="sim-recs-title">Recommended Bases</div>
       <div id="sim-recs">No recommendations.</div>
       <div id="sim-tech-legend-title" style="display:none;">Territory Assignments</div>
       <div id="sim-tech-legend" style="display:none;"></div>
-      <div id="sim-footnote">Shows N=0..4 scenario outputs from optimization pipeline.</div>
+      <div id="sim-footnote">Shows N=0..4 scenario outputs from optimization pipeline. Click any card for details.</div>
+    </div>
+    <div id="kpi-modal-overlay">
+      <div id="kpi-modal">
+        <button id="kpi-modal-close">&times;</button>
+        <div id="kpi-modal-title"></div>
+        <div id="kpi-modal-body"></div>
+      </div>
     </div>
     """
 
@@ -1328,6 +1375,21 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names,
         document.getElementById("kpi-hire-cost").textContent = money(k.hire_cost_usd);
         document.getElementById("kpi-mean-util").textContent = Number(k.mean_existing_utilization || 0).toFixed(3);
         document.getElementById("kpi-max-util").textContent = Number(k.max_existing_utilization || 0).toFixed(3);
+
+        // Revenue / profit KPIs
+        var installs = Number(k.realistic_installations_enabled || 0);
+        var hasInstalls = installs > 0;
+        document.getElementById("kpi-installs").textContent = hasInstalls ? installs.toFixed(1) : "\u2014";
+        document.getElementById("kpi-gross-rev").textContent = hasInstalls ? money(k.gross_revenue_moderate_usd) : "\u2014";
+        document.getElementById("kpi-profit").textContent = hasInstalls ? money(k.total_profit_enabled_moderate_usd) : "\u2014";
+        var netVal = Number(k.net_economic_value_moderate_usd || 0);
+        var netValEl = document.getElementById("kpi-net-value");
+        netValEl.textContent = hasInstalls ? money(netVal) : "\u2014";
+        netValEl.style.color = hasInstalls ? (netVal >= 0 ? "#1a7f37" : "#d1242f") : "";
+        var be = Number(k.break_even_installations_moderate || 0);
+        document.getElementById("kpi-break-even").textContent = hasInstalls ? be.toFixed(1) : "\u2014";
+        var roi = Number(k.roi_moderate_pct || 0);
+        document.getElementById("kpi-roi").textContent = (hasInstalls && roi) ? roi.toFixed(0) + "%" : "\u2014";
       }}
 
       function renderRecommendations(scenario) {{
@@ -1454,6 +1516,79 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names,
         wireMobileToggle();
         showScenario(defaultScenario);
       }}
+
+      var kpiExplanations = {{
+        "total-cost": {{
+          title: "Total Cost",
+          body: "<p><b>What:</b> The total annual economic cost for this hiring scenario, including travel costs for all technicians, new-hire payroll, and fixed canceled/voided overhead ($35,632).</p><p><b>Formula:</b> Travel Cost + Hire Payroll + Canceled/Voided Overhead</p><p><b>Interpretation:</b> Lower is better from a pure cost perspective. N=0 is the cheapest scenario because adding hires increases payroll faster than it reduces travel costs.</p>"
+        }},
+        "cost-change": {{
+          title: "Cost Change vs N=0",
+          body: "<p><b>What:</b> How much more (or less) this scenario costs compared to the N=0 baseline with no new hires.</p><p><b>Formula:</b> Total Cost(N=0) - Total Cost(this scenario)</p><p><b>Interpretation:</b> Negative values mean this scenario costs more than N=0. The optimizer minimizes cost, so all hiring scenarios show increased cost vs baseline.</p>"
+        }},
+        "marginal-cost": {{
+          title: "Marginal Cost Change",
+          body: "<p><b>What:</b> The incremental cost change from adding one more hire compared to the previous scenario (N-1).</p><p><b>Formula:</b> Total Cost(N-1) - Total Cost(N)</p><p><b>Interpretation:</b> Shows diminishing returns on travel savings. Each additional hire saves less on travel while adding a fixed $146,640 in payroll.</p>"
+        }},
+        "unmet": {{
+          title: "Unmet Appointments",
+          body: "<p><b>What:</b> Number of service appointments that could not be assigned to any technician in the optimal solution.</p><p><b>Formula:</b> Count of demand appointments with no feasible assignment</p><p><b>Interpretation:</b> Zero means all 1,480 appointments are served. Non-zero would indicate capacity or skill constraints preventing full coverage.</p>"
+        }},
+        "hire-payroll": {{
+          title: "Annual Hire Payroll",
+          body: "<p><b>What:</b> Total burdened annual cost for all new hires in this scenario.</p><p><b>Formula:</b> N new hires &times; $146,640/hire (burdened company planning cost)</p><p><b>Interpretation:</b> This is the fully-loaded cost including salary, benefits, equipment, and overhead \u2014 not take-home pay. It's the incremental payroll cost of expanding the workforce.</p>"
+        }},
+        "mean-util": {{
+          title: "Mean Utilization (Existing Techs)",
+          body: "<p><b>What:</b> Average utilization rate across all existing technicians with non-zero capacity.</p><p><b>Formula:</b> Mean of (assigned hours / capacity hours) for each existing tech</p><p><b>Interpretation:</b> Target is 0.850 (85%). At N=0 it's ~0.857 \u2014 the workforce is tightly loaded. Adding hires reduces existing-tech utilization by offloading appointments, freeing capacity for installations.</p>"
+        }},
+        "max-util": {{
+          title: "Max Utilization (Existing Techs)",
+          body: "<p><b>What:</b> The highest utilization rate among all existing technicians.</p><p><b>Formula:</b> Max of (assigned hours / capacity hours) across existing techs</p><p><b>Interpretation:</b> Values near 1.000 indicate at least one tech is at full capacity with no scheduling buffer. At N=0, max util is 0.9999 \u2014 one tech is essentially maxed out.</p>"
+        }},
+        "installs": {{
+          title: "Realistic Installations Enabled",
+          body: "<p><b>What:</b> Estimated number of new installations that freed existing-tech time could support.</p><p><b>Formula:</b> (Freed duration days &times; 75% utilization factor) &divide; (3.25 avg install days + 1.0 travel day)</p><p><b>Interpretation:</b> This accounts for scheduling gaps, PTO, and travel overhead. It's what freed capacity <i>could enable</i>, not guaranteed bookings. N=0 shows 0 because no capacity is freed without hiring.</p>"
+        }},
+        "gross-rev": {{
+          title: "Gross Revenue Enabled",
+          body: "<p><b>What:</b> Total MSRP gross revenue if all realistic installations were completed (moderate scenario: $120K/install).</p><p><b>Formula:</b> Realistic installations &times; $120,000 per install</p><p><b>Interpretation:</b> This is top-line revenue before any costs or margins. Shown for reference only \u2014 the profit figure below is more meaningful for business decisions.</p>"
+        }},
+        "profit": {{
+          title: "Estimated Profit Enabled",
+          body: "<p><b>What:</b> Estimated profit from installations and service contracts, with industry-typical margins applied.</p><p><b>Formula:</b> (Installs &times; $120K &times; 25% install margin) + (Installs &times; $7K &times; 70% service margin)</p><p><b>Interpretation:</b> Uses moderate scenario assumptions. Installation margin (25%) covers COGS, shipping, commissions, and warranty. Service contract margin (70%) reflects higher-margin recurring revenue.</p>"
+        }},
+        "net-value": {{
+          title: "Net Economic Value",
+          body: "<p><b>What:</b> Profit enabled minus the net cost increase of hiring. The bottom-line value of this scenario.</p><p><b>Formula:</b> Total Profit Enabled - Net Cost Increase vs N=0</p><p><b>Interpretation:</b> <span style='color:#1a7f37'>Green = positive</span> means the profit from freed capacity exceeds the cost of hiring. This is the key metric for justifying new hires from a revenue perspective.</p>"
+        }},
+        "break-even": {{
+          title: "Break-Even Installations",
+          body: "<p><b>What:</b> Minimum installations needed to recoup the net cost increase of hiring.</p><p><b>Formula:</b> Net Cost Increase &divide; ($120K &times; 25% + $7K &times; 70% = $34,900 profit per install)</p><p><b>Interpretation:</b> A low break-even (e.g., 1.7) means only ~2 installations are needed to justify the hire. Compare to realistic installations enabled (~56.7 for N=1) to assess feasibility.</p>"
+        }},
+        "roi": {{
+          title: "ROI (Return on Investment)",
+          body: "<p><b>What:</b> Net economic value as a percentage of net cost increase.</p><p><b>Formula:</b> (Net Economic Value &divide; Net Cost Increase) &times; 100%</p><p><b>Interpretation:</b> A 3,000%+ ROI means each dollar of incremental hiring cost could generate ~$30 in profit from freed capacity. High ROI reflects the low marginal cost of hiring relative to the high value of installation capacity.</p>"
+        }}
+      }};
+
+      document.addEventListener("click", function(e) {{
+        var card = e.target.closest(".kpi-clickable");
+        if (card) {{
+          var kpiKey = card.getAttribute("data-kpi");
+          var info = kpiExplanations[kpiKey];
+          if (info) {{
+            document.getElementById("kpi-modal-title").textContent = info.title;
+            document.getElementById("kpi-modal-body").innerHTML = info.body;
+            document.getElementById("kpi-modal-overlay").style.display = "block";
+          }}
+          return;
+        }}
+        var overlay = document.getElementById("kpi-modal-overlay");
+        if (e.target === overlay || e.target.id === "kpi-modal-close") {{
+          overlay.style.display = "none";
+        }}
+      }});
 
       initWhenReady(80);
     }})();
