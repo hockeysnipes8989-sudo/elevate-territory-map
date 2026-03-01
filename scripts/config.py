@@ -113,6 +113,10 @@ DRIVE_THRESHOLD_MILES = 300.0         # Great-circle miles; ≈ 5 hours driving
 # Set to a dollar amount to enable break-even analysis; None disables it.
 DEFAULT_AVG_REVENUE_PER_INSTALLATION_USD = None
 
+# Realistic installation estimate parameters (Step 09 capacity-freed analysis).
+TRAVEL_DAYS_PER_INSTALLATION = 1.0            # Travel overhead per installation (days)
+FREED_CAPACITY_UTILIZATION_FACTOR = 0.75       # Fraction of freed days practically usable
+
 # ---------------------------------------------------------------------------
 # Colors
 # ---------------------------------------------------------------------------

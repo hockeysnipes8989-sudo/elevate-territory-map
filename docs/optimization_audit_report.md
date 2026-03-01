@@ -164,19 +164,45 @@ Skill constraints ARE implemented:
 
 ---
 
-## 5. Hours Freed Sanity Check
+## 5. Capacity Freed and Installation Estimates
 
 ### Linearity Verification
 
-| Scenario | Existing Assigned Hrs | Hours Freed vs N=0 | Expected (N × 7,703.44) | Match |
-|----------|--------------------|-------------------|------------------------|-------|
-| N=0 | 86,760.00 | 0.00 | 0.00 | Yes |
-| N=1 | 79,059.00 | 7,701.00 | 7,703.44 | ~Yes (rounding) |
-| N=2 | 71,353.79 | 15,406.21 | 15,406.88 | ~Yes |
-| N=3 | 63,655.96 | 23,104.04 | 23,110.32 | ~Yes |
-| N=4 | 55,958.24 | 30,801.76 | 30,813.76 | ~Yes |
+| Scenario | Existing Assigned Hrs | Hours Freed vs N=0 | Days Freed | Expected (N × 7,703.44) | Match |
+|----------|--------------------|-------------------|-----------|------------------------|-------|
+| N=0 | 86,760.00 | 0.00 | 0.0 | 0.00 | Yes |
+| N=1 | 79,059.00 | 7,701.00 | 320.9 | 7,703.44 | ~Yes (rounding) |
+| N=2 | 71,353.79 | 15,406.21 | 641.9 | 15,406.88 | ~Yes |
+| N=3 | 63,655.96 | 23,104.04 | 962.7 | 23,110.32 | ~Yes |
+| N=4 | 55,958.24 | 30,801.76 | 1,283.4 | 30,813.76 | ~Yes |
 
 Hours freed are nearly perfectly linear: each new hire absorbs approximately 1 × `hours_per_unit` (7,703.44) of demand from existing techs. The slight deviations are because new hires don't serve at exactly 100% capacity.
+
+### Realistic Installation Estimate
+
+The pipeline applies three deductions to convert freed calendar hours into a realistic installation count:
+
+1. **Calendar → days:** `freed_duration_days = hours_freed / 24` (calendar hours include nights/weekends; dividing by 24 yields Duration Days, the same unit as appointment durations)
+2. **Travel overhead:** each installation requires an additional 1.0 day for travel to/from the site
+3. **Utilization factor (75%):** accounts for scheduling gaps, PTO, admin time, and non-installation work that consumes freed capacity
+
+Formula: `realistic_installations = (freed_days × 0.75) / (avg_duration_days + travel_days)`
+
+Parameters (from appointment data):
+- Avg Duration Days per installation: **3.25** (ISO: 68 appts @ 2.10 days, AVS ISO: 310 appts @ 3.60 days, AVS: 14 appts @ 1.09 days)
+- Travel overhead: **1.0 day** per installation
+- Effective days per installation: **4.25** (3.25 + 1.0)
+- Utilization factor: **75%**
+
+| Scenario | Days Freed | Usable Days (×0.75) | Realistic Installs | Theoretical Max |
+|----------|----------:|-----------:|-------------------:|----------------:|
+| N=0 | 0.0 | 0.0 | 0.0 | 0 |
+| N=1 | 320.9 | 240.7 | 56.6 | 99 |
+| N=2 | 641.9 | 481.5 | 113.3 | 198 |
+| N=3 | 962.7 | 722.0 | 169.9 | 296 |
+| N=4 | 1,283.4 | 962.6 | 226.5 | 395 |
+
+**Theoretical Max** retains the previous metric (hours freed ÷ avg calendar hours per installation) for reference — it assumes 100% of freed calendar time converts to installations with no scheduling gaps, travel, or overhead.
 
 ### N=1 Deep Dive (Cleveland)
 
@@ -187,13 +213,16 @@ At N=1, the Cleveland hire absorbs demand from:
 - **Damion Lyn:** drops from 7,700.38 → 7,657.53 (freed 42.85 hrs)
 - **Elier Martin:** INCREASES from 5,077.81 → 7,641.83 (gained 2,564.02 hrs — absorbs work shifted by the rebalancing)
 
-Net freed from existing techs: 7,701.00 hrs. The optimizer redistributes assignments globally, not just from the nearest tech.
+Net freed from existing techs: 7,701.00 calendar hours = **320.9 days**.
+
+After applying the 75% utilization factor: **240.7 usable days**.
+
+At 4.25 effective days per installation (3.25 duration + 1.0 travel): **~56.6 realistic installations** — compared to the theoretical max of 99 installations (which assumed 100% conversion of calendar hours).
 
 ### Conversion to Labor Terms
 
 - 7,701 calendar hours freed ÷ 3 = 2,567 labor hours ≈ 1.24 FTE at 2,080 hrs/yr
 - This is consistent with adding 1 person: they work slightly more than a standard year because the fleet is capacity-constrained.
-- **99 potential installations** at 77.94 calendar hrs/install — this is a theoretical maximum assuming 100% of freed time goes to installations with no scheduling gaps.
 
 ---
 

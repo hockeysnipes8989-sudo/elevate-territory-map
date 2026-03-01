@@ -60,6 +60,7 @@ def main() -> None:
         install_rows["calendar_hours"] = install_hours
         if len(install_rows) > 0:
             avg_calendar_hours_per_installation = float(install_rows["calendar_hours"].mean())
+            avg_duration_days_per_installation = float(install_rows["Duration Days"].mean())
             install_type_breakdown = {}
             for stype in installation_types:
                 sub = install_rows[install_rows["Service Type"] == stype]
@@ -67,13 +68,16 @@ def main() -> None:
                     install_type_breakdown[stype] = {
                         "count": int(len(sub)),
                         "avg_calendar_hours": round(float(sub["calendar_hours"].mean()), 2),
+                        "avg_duration_days": round(float(sub["Duration Days"].mean()), 2),
                         "share": round(len(sub) / len(install_rows), 4),
                     }
         else:
             avg_calendar_hours_per_installation = float("nan")
+            avg_duration_days_per_installation = float("nan")
             install_type_breakdown = {}
     else:
         avg_calendar_hours_per_installation = float("nan")
+        avg_duration_days_per_installation = float("nan")
         install_type_breakdown = {}
 
     base_row = summary.loc[summary["scenario_hires"] == 0]
@@ -105,10 +109,24 @@ def main() -> None:
         hours_freed_list.append(baseline_existing_hours - existing_hours_at_n)
     summary["hours_freed_existing_techs"] = hours_freed_list
 
-    summary["potential_installations_enabled"] = np.where(
+    summary["theoretical_max_installations"] = np.where(
         np.isnan(avg_calendar_hours_per_installation) | (avg_calendar_hours_per_installation == 0),
         np.nan,
         summary["hours_freed_existing_techs"] / avg_calendar_hours_per_installation,
+    )
+
+    # Realistic installation estimate: convert freed calendar hours → days,
+    # apply utilization factor, divide by (avg duration days + travel overhead).
+    summary["freed_duration_days"] = summary["hours_freed_existing_techs"] / 24.0
+
+    travel_days = config.TRAVEL_DAYS_PER_INSTALLATION
+    util_factor = config.FREED_CAPACITY_UTILIZATION_FACTOR
+    effective_days_per_install = avg_duration_days_per_installation + travel_days
+
+    summary["realistic_installations_enabled"] = np.where(
+        np.isnan(avg_duration_days_per_installation) | (effective_days_per_install == 0),
+        np.nan,
+        (summary["freed_duration_days"] * util_factor) / effective_days_per_install,
     )
 
     rev_per_install = config.DEFAULT_AVG_REVENUE_PER_INSTALLATION_USD
@@ -189,14 +207,23 @@ def main() -> None:
         "avg_calendar_hours_per_installation": round(avg_calendar_hours_per_installation, 2)
         if not np.isnan(avg_calendar_hours_per_installation)
         else None,
+        "avg_duration_days_per_installation": round(avg_duration_days_per_installation, 2)
+        if not np.isnan(avg_duration_days_per_installation)
+        else None,
+        "travel_days_per_installation": travel_days,
+        "freed_capacity_utilization_factor": util_factor,
         "installation_type_breakdown": install_type_breakdown,
         "avg_revenue_per_installation_usd": rev_per_install,
         "capacity_freed_all_scenarios": [
             {
                 "scenario_hires": int(r["scenario_hires"]),
                 "hours_freed_existing_techs": round(float(r["hours_freed_existing_techs"]), 2),
-                "potential_installations_enabled": round(float(r["potential_installations_enabled"]), 1)
-                if not np.isnan(r["potential_installations_enabled"])
+                "freed_duration_days": round(float(r["freed_duration_days"]), 2),
+                "theoretical_max_installations": round(float(r["theoretical_max_installations"]), 1)
+                if not np.isnan(r["theoretical_max_installations"])
+                else None,
+                "realistic_installations_enabled": round(float(r["realistic_installations_enabled"]), 1)
+                if not np.isnan(r["realistic_installations_enabled"])
                 else None,
                 "break_even_installations": round(float(r["break_even_installations"]), 1)
                 if not np.isnan(r["break_even_installations"])
@@ -255,30 +282,46 @@ def main() -> None:
     lines.append("")
     lines.append("## Capacity Freed by Hiring Scenario")
     lines.append("")
-    if not np.isnan(avg_calendar_hours_per_installation):
+    if not np.isnan(avg_duration_days_per_installation):
         type_counts = ", ".join(
             f"{k}: {v['count']}" for k, v in install_type_breakdown.items()
         )
         lines.append(
-            f"- Avg calendar hours per installation: **{avg_calendar_hours_per_installation:.1f}** ({type_counts})"
+            f"- Avg duration days per installation: **{avg_duration_days_per_installation:.2f}** ({type_counts})"
+        )
+        lines.append(
+            f"- Travel overhead per installation: **{travel_days:.1f} day**"
+        )
+        lines.append(
+            f"- Practical utilization factor: **{util_factor:.0%}** (accounts for scheduling gaps, PTO, non-installation work)"
+        )
+        lines.append(
+            f"- Effective days per installation: **{effective_days_per_install:.2f}** ({avg_duration_days_per_installation:.2f} + {travel_days:.1f} travel)"
         )
     else:
-        lines.append("- Avg calendar hours per installation: **N/A** (no installation data found)")
+        lines.append("- Avg duration days per installation: **N/A** (no installation data found)")
+    if not np.isnan(avg_calendar_hours_per_installation):
+        lines.append(
+            f"- Avg calendar hours per installation: **{avg_calendar_hours_per_installation:.1f}** (theoretical max reference)"
+        )
     if rev_per_install is not None:
         lines.append(f"- Avg revenue per installation: **${rev_per_install:,.0f}**")
     else:
         lines.append("- Avg revenue per installation: **not configured** (set DEFAULT_AVG_REVENUE_PER_INSTALLATION_USD in config.py)")
     lines.append("")
-    lines.append("| Scenario | Hours Freed | Potential Installs | Break-Even Installs |")
-    lines.append("|----------|------------:|-------------------:|--------------------:|")
+    lines.append("| Scenario | Days Freed | Usable Days | Realistic Installs | Theoretical Max | Break-Even |")
+    lines.append("|----------|----------:|-----------:|-------------------:|----------------:|----------:|")
     for _, r in summary.iterrows():
         n = int(r["scenario_hires"])
-        hf = r["hours_freed_existing_techs"]
-        pi = r["potential_installations_enabled"]
+        df = r["freed_duration_days"]
+        ud = df * util_factor
+        ri = r["realistic_installations_enabled"]
+        tm = r["theoretical_max_installations"]
         be = r["break_even_installations"]
-        pi_str = f"{pi:,.0f}" if not np.isnan(pi) else "N/A"
+        ri_str = f"{ri:,.1f}" if not np.isnan(ri) else "N/A"
+        tm_str = f"{tm:,.0f}" if not np.isnan(tm) else "N/A"
         be_str = f"{be:,.1f}" if not np.isnan(be) else "N/A"
-        lines.append(f"| N={n} | {hf:,.0f} | {pi_str} | {be_str} |")
+        lines.append(f"| N={n} | {df:,.1f} | {ud:,.1f} | {ri_str} | {tm_str} | {be_str} |")
 
     with open(markdown_out, "w") as f:
         f.write("\n".join(lines))
@@ -293,17 +336,22 @@ def main() -> None:
 
     # --- Block E: Console capacity summary ---
     print("\nCapacity Freed by Hiring Scenario:")
-    print(f"  Avg calendar hours per installation: {avg_calendar_hours_per_installation:.1f}")
-    print(f"  {'Scenario':<10} {'Hours Freed':>12} {'Potential Installs':>19} {'Break-Even':>12}")
-    print(f"  {'-'*10} {'-'*12} {'-'*19} {'-'*12}")
+    print(f"  Avg duration days per installation: {avg_duration_days_per_installation:.2f}")
+    print(f"  Travel overhead: {travel_days:.1f} day | Utilization factor: {util_factor:.0%}")
+    print(f"  Effective days per installation: {effective_days_per_install:.2f}")
+    print(f"  {'Scenario':<10} {'Days Freed':>11} {'Usable Days':>12} {'Realistic':>10} {'Theoretical':>12} {'Break-Even':>11}")
+    print(f"  {'-'*10} {'-'*11} {'-'*12} {'-'*10} {'-'*12} {'-'*11}")
     for _, r in summary.iterrows():
         n = int(r["scenario_hires"])
-        hf = r["hours_freed_existing_techs"]
-        pi = r["potential_installations_enabled"]
+        df = r["freed_duration_days"]
+        ud = df * util_factor
+        ri = r["realistic_installations_enabled"]
+        tm = r["theoretical_max_installations"]
         be = r["break_even_installations"]
-        pi_str = f"{pi:,.0f}" if not np.isnan(pi) else "N/A"
+        ri_str = f"{ri:,.1f}" if not np.isnan(ri) else "N/A"
+        tm_str = f"{tm:,.0f}" if not np.isnan(tm) else "N/A"
         be_str = f"{be:,.1f}" if not np.isnan(be) else "N/A"
-        print(f"  N={n:<7} {hf:>12,.0f} {pi_str:>19} {be_str:>12}")
+        print(f"  N={n:<7} {df:>11,.1f} {ud:>12,.1f} {ri_str:>10} {tm_str:>12} {be_str:>11}")
 
 
 if __name__ == "__main__":
