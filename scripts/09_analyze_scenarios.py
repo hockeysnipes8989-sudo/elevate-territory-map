@@ -47,6 +47,35 @@ def main() -> None:
     with open(assumptions_path, "r") as f:
         assumptions = json.load(f)
 
+    # --- Block A: Compute avg calendar hours per installation ---
+    appts_path = Path(config.CLEAN_APPTS_CSV)
+    installation_types = ["ISO", "AVS ISO", "AVS"]
+    if appts_path.exists():
+        appts_df = pd.read_csv(appts_path)
+        install_rows = appts_df[appts_df["Service Type"].isin(installation_types)].copy()
+        # Use Duration Hours (calendar hours) to match the MILP's assigned_hours unit.
+        # Fallback to Duration Days * 24 if Duration Hours is missing (same as Step 06).
+        install_hours = pd.to_numeric(install_rows["Duration Hours"], errors="coerce")
+        install_hours = install_hours.fillna(install_rows["Duration Days"] * 24)
+        install_rows["calendar_hours"] = install_hours
+        if len(install_rows) > 0:
+            avg_calendar_hours_per_installation = float(install_rows["calendar_hours"].mean())
+            install_type_breakdown = {}
+            for stype in installation_types:
+                sub = install_rows[install_rows["Service Type"] == stype]
+                if len(sub) > 0:
+                    install_type_breakdown[stype] = {
+                        "count": int(len(sub)),
+                        "avg_calendar_hours": round(float(sub["calendar_hours"].mean()), 2),
+                        "share": round(len(sub) / len(install_rows), 4),
+                    }
+        else:
+            avg_calendar_hours_per_installation = float("nan")
+            install_type_breakdown = {}
+    else:
+        avg_calendar_hours_per_installation = float("nan")
+        install_type_breakdown = {}
+
     base_row = summary.loc[summary["scenario_hires"] == 0]
     if base_row.empty:
         raise ValueError("Scenario summary must include N=0 baseline.")
@@ -62,6 +91,35 @@ def main() -> None:
         1
     ) - summary["economic_total_with_overhead_usd"]
     summary["marginal_savings_from_prev_usd"] = summary["marginal_savings_from_prev_usd"].fillna(0.0)
+
+    # --- Block B: Capacity freed columns ---
+    baseline_existing_hours = float(
+        util.loc[util["scenario_hires"] == 0, "assigned_hours"].sum()
+    )
+    hours_freed_list = []
+    for _, row in summary.iterrows():
+        n = int(row["scenario_hires"])
+        existing_hours_at_n = float(
+            util.loc[util["scenario_hires"] == n, "assigned_hours"].sum()
+        )
+        hours_freed_list.append(baseline_existing_hours - existing_hours_at_n)
+    summary["hours_freed_existing_techs"] = hours_freed_list
+
+    summary["potential_installations_enabled"] = np.where(
+        np.isnan(avg_calendar_hours_per_installation) | (avg_calendar_hours_per_installation == 0),
+        np.nan,
+        summary["hours_freed_existing_techs"] / avg_calendar_hours_per_installation,
+    )
+
+    rev_per_install = config.DEFAULT_AVG_REVENUE_PER_INSTALLATION_USD
+    if rev_per_install is not None and rev_per_install > 0:
+        summary["break_even_installations"] = np.where(
+            summary["savings_vs_n0_usd"] >= 0,
+            0.0,
+            (-summary["savings_vs_n0_usd"]) / rev_per_install,
+        )
+    else:
+        summary["break_even_installations"] = np.nan
 
     if "solver_proven_optimal" in summary.columns:
         # Use pd.to_numeric to handle string "0"/"1" values correctly before bool conversion.
@@ -128,6 +186,24 @@ def main() -> None:
         else 0.0,
         "utilization_metrics_best_scenario": util_metrics,
         "assumptions": assumptions,
+        "avg_calendar_hours_per_installation": round(avg_calendar_hours_per_installation, 2)
+        if not np.isnan(avg_calendar_hours_per_installation)
+        else None,
+        "installation_type_breakdown": install_type_breakdown,
+        "avg_revenue_per_installation_usd": rev_per_install,
+        "capacity_freed_all_scenarios": [
+            {
+                "scenario_hires": int(r["scenario_hires"]),
+                "hours_freed_existing_techs": round(float(r["hours_freed_existing_techs"]), 2),
+                "potential_installations_enabled": round(float(r["potential_installations_enabled"]), 1)
+                if not np.isnan(r["potential_installations_enabled"])
+                else None,
+                "break_even_installations": round(float(r["break_even_installations"]), 1)
+                if not np.isnan(r["break_even_installations"])
+                else None,
+            }
+            for _, r in summary.iterrows()
+        ],
     }
 
     summary_out = out_dir / "scenario_summary_enhanced.csv"
@@ -175,6 +251,35 @@ def main() -> None:
                 f"share={row['share_of_total_newhire_hours']:.2%}"
             )
 
+    # --- Block D: Capacity Freed markdown section ---
+    lines.append("")
+    lines.append("## Capacity Freed by Hiring Scenario")
+    lines.append("")
+    if not np.isnan(avg_calendar_hours_per_installation):
+        type_counts = ", ".join(
+            f"{k}: {v['count']}" for k, v in install_type_breakdown.items()
+        )
+        lines.append(
+            f"- Avg calendar hours per installation: **{avg_calendar_hours_per_installation:.1f}** ({type_counts})"
+        )
+    else:
+        lines.append("- Avg calendar hours per installation: **N/A** (no installation data found)")
+    if rev_per_install is not None:
+        lines.append(f"- Avg revenue per installation: **${rev_per_install:,.0f}**")
+    else:
+        lines.append("- Avg revenue per installation: **not configured** (set DEFAULT_AVG_REVENUE_PER_INSTALLATION_USD in config.py)")
+    lines.append("")
+    lines.append("| Scenario | Hours Freed | Potential Installs | Break-Even Installs |")
+    lines.append("|----------|------------:|-------------------:|--------------------:|")
+    for _, r in summary.iterrows():
+        n = int(r["scenario_hires"])
+        hf = r["hours_freed_existing_techs"]
+        pi = r["potential_installations_enabled"]
+        be = r["break_even_installations"]
+        pi_str = f"{pi:,.0f}" if not np.isnan(pi) else "N/A"
+        be_str = f"{be:,.1f}" if not np.isnan(be) else "N/A"
+        lines.append(f"| N={n} | {hf:,.0f} | {pi_str} | {be_str} |")
+
     with open(markdown_out, "w") as f:
         f.write("\n".join(lines))
 
@@ -185,6 +290,20 @@ def main() -> None:
     print("\nTop-level report:")
     print(json.dumps(report, indent=2))
     print("Step 9 complete.")
+
+    # --- Block E: Console capacity summary ---
+    print("\nCapacity Freed by Hiring Scenario:")
+    print(f"  Avg calendar hours per installation: {avg_calendar_hours_per_installation:.1f}")
+    print(f"  {'Scenario':<10} {'Hours Freed':>12} {'Potential Installs':>19} {'Break-Even':>12}")
+    print(f"  {'-'*10} {'-'*12} {'-'*19} {'-'*12}")
+    for _, r in summary.iterrows():
+        n = int(r["scenario_hires"])
+        hf = r["hours_freed_existing_techs"]
+        pi = r["potential_installations_enabled"]
+        be = r["break_even_installations"]
+        pi_str = f"{pi:,.0f}" if not np.isnan(pi) else "N/A"
+        be_str = f"{be:,.1f}" if not np.isnan(be) else "N/A"
+        print(f"  N={n:<7} {hf:>12,.0f} {pi_str:>19} {be_str:>12}")
 
 
 if __name__ == "__main__":

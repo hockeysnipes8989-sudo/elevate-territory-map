@@ -109,6 +109,10 @@ RENTAL_CAR_AVG_USD = 235.0            # Navan average across 82 confirmed bookin
 HOTEL_AVG_USD = 399.0                 # Navan average across 125 confirmed bookings (2.5 nights)
 DRIVE_THRESHOLD_MILES = 300.0         # Great-circle miles; ≈ 5 hours driving
 
+# Revenue per installation — used for break-even calculation in Step 09.
+# Set to a dollar amount to enable break-even analysis; None disables it.
+DEFAULT_AVG_REVENUE_PER_INSTALLATION_USD = None
+
 # ---------------------------------------------------------------------------
 # Colors
 # ---------------------------------------------------------------------------
