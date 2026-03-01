@@ -9,8 +9,9 @@ Drive/fly classification:
   - Distance >= DRIVE_THRESHOLD_MILES → fly
   - Canadian techs (base_country != USA) always fly regardless of distance
 
-Drive cost:  IRS_MILEAGE_RATE * 2 * median_dist + HOTEL_AVG
-Fly cost:    flight_cost(matrix) + RENTAL_CAR_AVG + HOTEL_AVG
+Drive cost:  IRS_MILEAGE_RATE * 2 * median_dist + hotel_nights * HOTEL_NIGHTLY_RATE
+             (day-trips: short drive + short appt → $0 hotel)
+Fly cost:    flight_cost(matrix) + RENTAL_CAR_AVG + hotel_nights * HOTEL_NIGHTLY_RATE
 """
 
 from __future__ import annotations
@@ -110,6 +111,7 @@ def compute_entity_node_costs(
     flight_exact: dict[tuple[str, str], float],
     flight_origin_avg: dict[str, float],
     flight_global_avg: float,
+    node_avg_days: dict[str, float] | None = None,
 ) -> list[dict]:
     """Compute full per-trip cost for all (entity, node) pairs.
 
@@ -117,6 +119,7 @@ def compute_entity_node_costs(
         entities: list of dicts with keys: id, lat, lon, airport, is_canadian
         demand: normalized demand_appointments DataFrame with node_id column
         flight_exact/origin_avg/global_avg: flight cost lookup maps
+        node_avg_days: node_id → average appointment duration in days (for hotel scaling)
 
     Returns:
         list of cost row dicts
@@ -171,12 +174,22 @@ def compute_entity_node_costs(
             else:
                 trip_mode = "fly"
 
+            # Duration-scaled hotel cost
+            avg_days = node_avg_days.get(node_id, config.HOTEL_AVG_NIGHTS) if node_avg_days else config.HOTEL_AVG_NIGHTS
+            hotel_nights = max(1, round(avg_days))
+
             # Compute cost components
             if trip_mode == "drive":
                 mileage_cost = config.IRS_MILEAGE_RATE_USD_PER_MI * 2.0 * median_dist
                 flight_cost = 0.0
                 rental_cost = 0.0
-                hotel_cost = config.HOTEL_AVG_USD
+                # Day-trip logic: short drive + short appointment = no hotel
+                if (median_dist <= config.DAY_TRIP_MAX_DISTANCE_MILES
+                        and avg_days <= config.DAY_TRIP_MAX_DURATION_DAYS):
+                    hotel_nights = 0
+                    hotel_cost = 0.0
+                else:
+                    hotel_cost = hotel_nights * config.HOTEL_NIGHTLY_RATE_USD
                 unit_cost = mileage_cost + hotel_cost
             else:
                 flight_cost = get_flight_cost(
@@ -184,7 +197,7 @@ def compute_entity_node_costs(
                 )
                 mileage_cost = 0.0
                 rental_cost = config.RENTAL_CAR_AVG_USD
-                hotel_cost = config.HOTEL_AVG_USD
+                hotel_cost = hotel_nights * config.HOTEL_NIGHTLY_RATE_USD
                 unit_cost = flight_cost + rental_cost + hotel_cost
 
             rows.append(
@@ -197,6 +210,7 @@ def compute_entity_node_costs(
                     "mileage_cost_usd": round(mileage_cost, 2),
                     "rental_cost_usd": round(rental_cost, 2),
                     "hotel_cost_usd": round(hotel_cost, 2),
+                    "hotel_nights": hotel_nights,
                     "unit_cost_usd": round(unit_cost, 2),
                 }
             )
@@ -237,6 +251,15 @@ def main() -> None:
     n_nodes = demand_prepared["node_id"].nunique()
     n_appts = len(demand_prepared)
     print(f"  Demand: {n_appts} appointments across {n_nodes} nodes.")
+
+    # Compute node-level average duration for duration-scaled hotel costs
+    demand_prepared["duration_hours"] = pd.to_numeric(
+        demand_prepared["duration_hours"], errors="coerce"
+    ).fillna(24.0 * config.HOTEL_AVG_NIGHTS)  # fallback: avg Navan stay
+    node_avg_duration = demand_prepared.groupby("node_id")["duration_hours"].mean()
+    # Convert hours to days: duration_hours uses calendar hours (24h = 1 day)
+    node_avg_days: dict[str, float] = (node_avg_duration / 24.0).to_dict()
+    print(f"  Node avg duration range: {min(node_avg_days.values()):.2f} – {max(node_avg_days.values()):.2f} days")
 
     # Build entity list for existing techs
     tech_entities: list[dict] = []
@@ -290,12 +313,14 @@ def main() -> None:
 
     print(f"Processing {len(tech_entities)} techs × {n_nodes} nodes...")
     tech_rows = compute_entity_node_costs(
-        tech_entities, demand_prepared, flight_exact, flight_origin_avg, flight_global_avg
+        tech_entities, demand_prepared, flight_exact, flight_origin_avg, flight_global_avg,
+        node_avg_days=node_avg_days,
     )
 
     print(f"Processing {len(candidate_entities)} candidates × {n_nodes} nodes...")
     candidate_rows = compute_entity_node_costs(
-        candidate_entities, demand_prepared, flight_exact, flight_origin_avg, flight_global_avg
+        candidate_entities, demand_prepared, flight_exact, flight_origin_avg, flight_global_avg,
+        node_avg_days=node_avg_days,
     )
 
     all_rows = tech_rows + candidate_rows
@@ -321,12 +346,25 @@ def main() -> None:
             print(f"  Drive mean: ${out_df.loc[drive_mask, 'unit_cost_usd'].mean():,.2f}")
         if fly_mask.any():
             print(f"  Fly mean:   ${out_df.loc[fly_mask, 'unit_cost_usd'].mean():,.2f}")
+        print(f"  Hotel nightly rate: ${config.HOTEL_NIGHTLY_RATE_USD:.2f}")
+        print(f"  Mean hotel nights: {out_df['hotel_nights'].mean():.1f}")
+        print(f"  Mean hotel cost: ${out_df['hotel_cost_usd'].mean():,.2f}")
+        if (out_df['hotel_nights'] == 0).any():
+            n_day_trips = (out_df['hotel_nights'] == 0).sum()
+            print(f"  Day trips (no hotel): {n_day_trips} ({n_day_trips/len(out_df)*100:.1f}%)")
+        # Hotel nights distribution
+        nights_dist = out_df['hotel_nights'].value_counts().sort_index()
+        print("  Hotel nights distribution:")
+        for nights_val, cnt in nights_dist.items():
+            print(f"    {int(nights_val)} nights: {cnt} ({cnt/len(out_df)*100:.1f}%)")
         print(
             f"\n  Cost constants used:\n"
-            f"    IRS mileage rate: ${config.IRS_MILEAGE_RATE_USD_PER_MI:.2f}/mi\n"
-            f"    Rental car avg:   ${config.RENTAL_CAR_AVG_USD:.2f}/trip\n"
-            f"    Hotel avg:        ${config.HOTEL_AVG_USD:.2f}/trip\n"
-            f"    Drive threshold:  {config.DRIVE_THRESHOLD_MILES:.0f} miles"
+            f"    IRS mileage rate:     ${config.IRS_MILEAGE_RATE_USD_PER_MI:.2f}/mi\n"
+            f"    Rental car avg:       ${config.RENTAL_CAR_AVG_USD:.2f}/trip\n"
+            f"    Hotel nightly rate:   ${config.HOTEL_NIGHTLY_RATE_USD:.2f}/night\n"
+            f"    Day-trip max dist:    {config.DAY_TRIP_MAX_DISTANCE_MILES:.0f} miles\n"
+            f"    Day-trip max duration:{config.DAY_TRIP_MAX_DURATION_DAYS:.1f} days\n"
+            f"    Drive threshold:      {config.DRIVE_THRESHOLD_MILES:.0f} miles"
         )
     else:
         print(f"\nSaved: {out_path} (empty — no valid (entity, node) pairs found)")

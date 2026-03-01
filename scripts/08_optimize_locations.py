@@ -837,7 +837,11 @@ def main() -> None:
         "full_cost_model_constants": {
             "irs_mileage_rate_usd_per_mi": config.IRS_MILEAGE_RATE_USD_PER_MI,
             "rental_car_avg_usd": config.RENTAL_CAR_AVG_USD,
-            "hotel_avg_usd": config.HOTEL_AVG_USD,
+            "hotel_nightly_rate_usd": config.HOTEL_NIGHTLY_RATE_USD,
+            "hotel_avg_nights": config.HOTEL_AVG_NIGHTS,
+            "hotel_avg_usd_legacy": config.HOTEL_AVG_USD,
+            "day_trip_max_distance_miles": config.DAY_TRIP_MAX_DISTANCE_MILES,
+            "day_trip_max_duration_days": config.DAY_TRIP_MAX_DURATION_DAYS,
             "drive_threshold_miles": config.DRIVE_THRESHOLD_MILES,
         },
         "hps_timeline_assumption": {

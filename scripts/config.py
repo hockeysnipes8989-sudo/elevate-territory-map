@@ -106,7 +106,15 @@ BTS_CORRECTED_MATRIX = True   # Set True to use BTS-calibrated matrix in optimiz
 FULL_COST_MODEL = True
 IRS_MILEAGE_RATE_USD_PER_MI = 0.70   # 2025 IRS standard mileage rate
 RENTAL_CAR_AVG_USD = 235.0            # Navan average across 82 confirmed bookings
-HOTEL_AVG_USD = 399.0                 # Navan average across 125 confirmed bookings (2.5 nights)
+HOTEL_NIGHTLY_RATE_USD = 159.0        # Navan average nightly rate (rounded from $158.76, 125 bookings)
+HOTEL_AVG_NIGHTS = 2.5                # Navan average stay length (for fallback calculations)
+
+# Day-trip thresholds: short drive + short appointment = tech drives home, no hotel.
+DAY_TRIP_MAX_DISTANCE_MILES = 150.0   # One-way haversine miles
+DAY_TRIP_MAX_DURATION_DAYS = 1.0      # Appointments ≤ 1 calendar day eligible
+
+# Legacy reference (deprecated — use HOTEL_NIGHTLY_RATE_USD × nights instead)
+HOTEL_AVG_USD = round(HOTEL_NIGHTLY_RATE_USD * HOTEL_AVG_NIGHTS)  # $398 ≈ $399
 DRIVE_THRESHOLD_MILES = 300.0         # Great-circle miles; ≈ 5 hours driving
 
 # Revenue-from-freed-capacity analysis (Step 09).

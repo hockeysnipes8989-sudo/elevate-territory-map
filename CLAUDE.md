@@ -19,7 +19,7 @@ This file is the canonical context handoff for future chats.
 - **Annualization is active.** The appointment dataset spans 2.08 years (Jan 2, 2024 → Jan 29, 2026, 758 days). Step 06 computes `data_span_years` (2.0753). Step 08 scales hire cost to match the data period. Step 09 divides all period costs and freed hours by `data_span_years` so every output figure is an annual equivalent. All figures labeled in the map and reports are annualized.
 - Hybrid travel-cost engine is implemented and active in Step 7.
 - **BTS-calibrated cost matrix is active** (Step 10). The optimizer reads `travel_cost_matrix_bts_corrected.csv` when `config.BTS_CORRECTED_MATRIX = True`. Original matrix is preserved as `travel_cost_matrix.csv`.
-- **Full cost model is active** (Step 11). `config.FULL_COST_MODEL = True`. Each trip now includes hotel ($399) and rental car ($235) for fly trips, or IRS mileage ($0.70/mi × round-trip) + hotel ($399) for drive trips (<300 miles). Step 11 pre-computes a per-(tech/candidate, node) cost table (`full_cost_table.csv`) used by the optimizer.
+- **Full cost model is active** (Step 11). `config.FULL_COST_MODEL = True`. Hotel cost is **duration-scaled**: `HOTEL_NIGHTLY_RATE_USD` ($159) × hotel nights (derived from per-node avg appointment duration). Day-trip logic zeros out hotel for short drive trips (≤150 mi + ≤1 day avg). Each fly trip also includes rental car ($235). Drive trips use IRS mileage ($0.70/mi × round-trip) + duration-scaled hotel. Drive/fly classified by 300-mile haversine threshold. Step 11 pre-computes a per-(tech/candidate, node) cost table (`full_cost_table.csv`) used by the optimizer.
 - Burdened new-hire payroll is modeled in Step 8 (`146,640` USD per incremental hire per year).
 - Default out-of-region penalty is disabled (`0` USD).
 - Hakim-only Canada servicing rule is implemented (Canada is restricted to Canada-wide specialist techs).
@@ -103,7 +103,7 @@ Typical UI-only changes require Step 5 only.
 1. `06_build_optimization_inputs.py` — also computes `data_span_years` for annualization
 2. `07_build_travel_cost_model.py --engine hybrid --min-direct-route-n 5 --shrinkage-k 10`
 3. `10_correct_travel_costs.py` — BTS calibration; produces `travel_cost_matrix_bts_corrected.csv`
-4. `11_build_full_cost_table.py` — pre-computes `full_cost_table.csv` (drive/fly + rental + hotel). Re-run when `demand_appointments.csv`, `tech_master.csv`, or cost matrix changes.
+4. `11_build_full_cost_table.py` — pre-computes `full_cost_table.csv` (drive/fly + rental + duration-scaled hotel). Computes per-node avg appointment duration from `demand_appointments.csv` and maps to hotel nights. Re-run when `demand_appointments.csv`, `tech_master.csv`, or cost matrix changes.
 5. `08_optimize_locations.py --min-new-hires 0 --max-new-hires 4 --max-hires-per-base 1 --time-limit-sec 600` — reads `data_span_years`, scales hire cost to match data period
 6. `09_analyze_scenarios.py` — reads `data_span_years`, annualizes all period costs and freed hours
 7. `05_generate_map.py` to refresh scenario panel in map output.
@@ -323,13 +323,14 @@ From current optimization artifacts (BTS-corrected matrix + full cost model + an
 - Scenario range: `N=0..4`
 - Selection mode: `proven_optimal_only` (all 5 scenarios solved to proven optimality)
 - Best scenario: `N=0`
-- **N=0 annualized travel cost: `$603,199` USD**
+- **N=0 annualized travel cost: `$593,472` USD**
 - **N=0 annualized overhead: `$17,170` USD**
-- **N=0 annualized total: `$620,369` USD**
+- **N=0 annualized total: `$610,642` USD**
 - Burdened annual per-hire planning cost: `$146,640` USD (period-scaled to `$304,322` in MILP)
-- Full cost model constants: IRS $0.70/mi, rental $235/trip, hotel $399/trip, drive threshold 300 mi
+- Full cost model constants: IRS $0.70/mi, rental $235/trip, hotel $159/night (duration-scaled), drive threshold 300 mi, day-trip ≤150 mi + ≤1 day
 - Full cost table: 8,008 rows (16 techs × 77 nodes + 88 candidates × 77 nodes)
 - Drive/fly split in cost table: 8.5% drive, 91.5% fly
+- Hotel nights distribution: 1 night (2.6%), 2 nights (44.2%), 3 nights (46.8%), 4 nights (6.5%). Mean hotel cost: $409/trip. No day trips (min node avg = 1.18 days > 1.0 threshold).
 - Navan flight date window used in Step 7: `2025-07-09` to `2026-03-13`
 - No scenario allocates more than one hire to a single base (`max_hires_per_base=1`).
 - All 1,480 appointments served across all scenarios (zero unmet).
@@ -340,11 +341,11 @@ From current optimization artifacts (BTS-corrected matrix + full cost model + an
 
 | N | Annual Travel | Annual Payroll | Annual Overhead | Annual Total |
 |---|--------------|----------------|-----------------|-------------|
-| 0 | $603,199 | $0 | $17,170 | **$620,369** |
-| 1 | $561,056 | $146,640 | $17,170 | $724,866 |
-| 2 | $527,987 | $293,280 | $17,170 | $838,437 |
-| 3 | $499,597 | $439,920 | $17,170 | $956,687 |
-| 4 | $476,761 | $586,560 | $17,170 | $1,080,490 |
+| 0 | $593,472 | $0 | $17,170 | **$610,642** |
+| 1 | $551,329 | $146,640 | $17,170 | $715,139 |
+| 2 | $518,260 | $293,280 | $17,170 | $828,710 |
+| 3 | $489,870 | $439,920 | $17,170 | $946,959 |
+| 4 | $467,033 | $586,560 | $17,170 | $1,070,763 |
 
 Marginal annual travel savings diminish: $42K (N=0→1), $33K (N=1→2), $28K (N=2→3), $23K (N=3→4).
 
@@ -359,6 +360,8 @@ Marginal annual travel savings diminish: $42K (N=0→1), $33K (N=1→2), $28K (N
 | 4 | 109.2 | $460,121 | $893,940 | $3,350,905 | $10,994,798 | 13.2 |
 
 Key takeaway: Even at conservative estimates, N=1 enables ~$234K in annual profit for ~$104K incremental cost (break-even at 8.4 installs conservative, 3.0 moderate). The cost-only optimizer says N=0 is cheapest, but the profit lens shows substantial economic upside from hiring.
+
+Note: Revenue figures are unchanged from previous run because capacity-freed hours (driven by MILP assignments) are stable. The ~$10K drop in total cost (from $620K to $611K) flows through travel cost, not capacity metrics.
 
 ### Hiring Placements by Scenario
 
@@ -402,11 +405,11 @@ Key takeaway: Even at conservative estimates, N=1 enables ~$234K in annual profi
 3. BTS fares embedded in Step 10 are Q2 2025 data. Tier 2 airports (~24 of 68) use estimated midpoints rather than directly verified BTS figures. Re-run Step 10 if fare data is refreshed.
 
 ### Cost Model Simplifications
-4. Hotel cost is flat $399/trip regardless of appointment duration (based on Navan 2.5-night average). Multi-day appointments may cost more.
+4. Hotel cost is **duration-scaled** using per-node average appointment duration (not per-appointment). Nodes with mixed short/long appointments get a blended average. The nightly rate ($159) and day-trip thresholds are Navan-derived constants. Day-trip logic (≤150 mi + ≤1 day avg → $0 hotel) currently triggers on zero nodes because the minimum node avg is 1.18 days.
 5. Same-city trip bundling is not modeled — each of 1,480 appointments is treated as a separate trip. In practice, techs bundle nearby appointments.
 6. Great-circle distance (not road distance) for drive/fly classification. Road distance is typically 10–25% longer, meaning some trips classified as "drive" might actually exceed 300 road-miles.
 7. Canceled/voided overhead ($35,632 full-period / $17,170 annualized) is fixed across all scenarios, not re-estimated per hiring level.
-8. Full cost model hotel/rental constants ($399, $235) are 2025 Navan actuals. Re-update in `config.py` if Navan benchmarks change meaningfully.
+8. Full cost model hotel nightly rate ($159) and rental car ($235) are 2025 Navan actuals. Re-update in `config.py` if Navan benchmarks change meaningfully.
 
 ### Model Assumptions
 9. **No seasonality** — the model treats all appointments as equivalent regardless of when they occur during the year.
@@ -453,7 +456,7 @@ State these immediately to avoid context drift:
 
 1. Hybrid travel-cost engine is already implemented and in use.
 2. **Annualization is active.** Data spans 2.08 years (1,480 appts). All output figures are annualized. Step 06 computes `data_span_years` (2.0753). Step 08 scales hire cost for MILP period. Step 09 divides all costs/hours by `data_span_years`.
-3. **Full cost model is active** (Step 11): hotel + rental on all fly trips; IRS mileage + hotel on drive trips; drive/fly classified by 300-mile haversine threshold.
+3. **Full cost model is active** (Step 11): duration-scaled hotel ($159/night × node-avg nights) + rental on fly trips; IRS mileage + duration-scaled hotel on drive trips; day-trip logic (≤150 mi + ≤1 day → $0 hotel); drive/fly classified by 300-mile haversine threshold.
 4. **BTS-calibrated cost matrix is active** (Step 10): 68 airports, 1.22× corporate premium, 2.0× Canadian cross-border multiplier.
 5. Burdened hire cost is `$146,640`/year per incremental hire ($304,322 in MILP period).
 6. Out-of-region penalty default is `0`.
@@ -463,6 +466,6 @@ State these immediately to avoid context drift:
 10. Capacity model is demand-normalized with `target_utilization=0.85`.
 11. Scenario panel `Total Cost` shows annualized `economic_total_with_overhead_usd`.
 12. Technician map points are grouped by base; roster details are in marker popup.
-13. N=0 annualized total: `$620,369`. Best scenario is N=0 — all hiring scenarios cost more.
+13. N=0 annualized total: `$610,642`. Best scenario is N=0 — all hiring scenarios cost more.
 14. **Revenue-from-freed-capacity analysis is active** in Step 09: 3 profit tiers + $7K service contracts. N=1 moderate net value: ~$848K/year. Break-even: 3.0 installs. This is supplementary — MILP recommendation unchanged.
 15. Pipeline order: 06 → 07 → 10 → 11 → 08 → 09 → 05.
