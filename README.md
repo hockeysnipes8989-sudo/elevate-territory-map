@@ -8,10 +8,11 @@ Interactive US/Canada map and optimization model for service coverage, travel co
 ## What This Includes
 
 1. Map layers for active-contract assets, appointments, technicians, territories, and airports.
-2. Optimization scenario panel on the map for `N=0..4` new hires.
-3. End-to-end MILP pipeline for travel + hiring economics.
+2. Optimization scenario panel on the map for `N=0..4` new hires (all figures annualized).
+3. End-to-end MILP pipeline for travel + hiring economics with automatic annualization.
 4. Hybrid travel-cost engine built from Navan flight data.
 5. BTS-calibrated cost matrix (Step 10) replacing speculative airport benchmarks with government fare data + 1.22× corporate premium.
+6. Revenue-from-freed-capacity analysis with three profit-margin tiers.
 
 ## Install
 
@@ -64,22 +65,33 @@ Default external workbook paths are in `scripts/config.py` (overridable via env 
 - `EXTERNAL_TECH_ROSTER_XLSX`
 - `EXTERNAL_NAVAN_XLSX`
 
+## Annualization
+
+The appointment dataset spans **2.08 years** (Jan 2, 2024 → Jan 29, 2026, 758 days, 1,480 appointments). The pipeline automatically detects this and annualizes all output figures:
+
+- **Step 06** computes `data_span_years` (2.0753) from the appointment date range and writes it to `optimization_input_summary.json`.
+- **Step 08** reads `data_span_years` and scales hire cost to match the data period ($146,640/yr × 2.0753 = $304,322) so the MILP compares travel and hire costs over the same time span.
+- **Step 09** divides all period-total costs (travel, hire, overhead) and freed capacity hours by `data_span_years` to produce annual equivalents. All figures in reports and the map are per-year.
+
+This means the MILP solution quality is fully preserved (same solver, same appointments, same optimality) while reported numbers accurately represent one year of operations.
+
 ## Current Model Rules (Important)
 
-- Annual burdened planning cost per incremental new hire: `146,640` USD.
-- Unmet demand penalty: `5,000` USD per appointment (`DEFAULT_UNMET_PENALTY_USD`).
-- Out-of-region soft penalty default: `0.0` USD (disabled by default).
+- Annual burdened planning cost per incremental new hire: `$146,640` (scaled to `$304,322` in MILP to match 2.08-year data period).
+- Unmet demand penalty: `$5,000` per appointment (`DEFAULT_UNMET_PENALTY_USD`).
+- Out-of-region soft penalty default: `$0.0` (disabled by default).
 - Canada coverage rule:
   - Techs flagged `constraint_canada_wide=1` (Hakim policy) are Canada-only.
   - Canada demand nodes can only be assigned to those Canada-wide techs.
   - New hires are blocked from Canada demand in current model.
 - Canceled/voided travel handling:
   - Not optimized per scenario.
-  - Added as a fixed baseline constant from Navan `Report` tab to every scenario.
+  - Added as a fixed baseline constant from Navan `Report` tab to every scenario ($35,632 full-period / $17,170 annualized).
 - Contractor scope defaults to `texas_only` unless explicitly overridden.
 - New-hire concentration cap defaults to `1` per base (`--max-hires-per-base 1`).
 - Current verified technician roster is 16 total (including both HTX contractors).
 - Technician markers are grouped by shared base location (popup lists all names at that base).
+- **New hires cannot serve HPS nodes** — policy constraint (hard variable bound in MILP). 115 HPS appointments served by existing certified techs.
 
 ## Travel Cost Engine (Steps 7 + 10)
 
@@ -113,40 +125,57 @@ Legacy mode remains available: `--engine heuristic`.
 
 ## Scenario Cost Formula
 
-Step 8 computes:
+Step 8 computes (over the full 2.08-year data period):
 
 - `modeled_total_cost_usd = travel_cost_usd + out_of_region_penalty_usd + hire_cost_usd + unmet_penalty_usd`
 - `economic_total_with_overhead_usd = modeled_total_cost_usd + baseline_canceled_voided_usd`
 
 Where:
 
-- `hire_cost_usd = (number of incremental new hires) * 146,640`
-- `baseline_canceled_voided_usd` is fixed from Navan baseline data
+- `hire_cost_usd = (number of incremental new hires) × $304,322` (annual $146,640 × 2.0753 years)
+- `baseline_canceled_voided_usd` is fixed from Navan baseline data ($35,632 full-period)
 
-## Latest Baseline Snapshot (Current Repo Outputs)
+Step 9 then divides all costs by `data_span_years` (2.0753) to produce annual equivalents shown in reports and the map.
 
-From the latest committed optimization artifacts (BTS-corrected matrix + full cost model active):
+## Latest Baseline Snapshot (Annualized — Current Repo Outputs)
 
-- Navan canceled/voided baseline constant: `35,632.02` USD
+From the latest committed optimization artifacts (BTS-corrected matrix + full cost model + annualization active):
+
+- Data span: **2.0753 years** (Jan 2, 2024 → Jan 29, 2026, 758 days)
+- Annualized appointment count: ~713/year (1,480 total)
 - Scenario window: `N=0..4`
 - Best scenario: `N=0`
-- N=0 total with overhead: `1,287,451.57` USD *(includes hotel $399 + rental $235 per fly trip)*
-- N=0 travel cost: `1,251,819.55` USD
+- N=0 annualized total: **$620,369** (travel $603,199 + overhead $17,170)
 - Hard cap result: no scenario allocates more than 1 hire to the same base
 - All 5 scenarios solved to proven optimality (MIP gap = 0.0)
 - All 1,480 appointments served across all scenarios (zero unmet)
 - Active techs at N=0: 15 (one tech has `availability_fte=0.0`)
 - Target utilization: 85% (demand-normalized capacity model)
+- Mean utilization at N=0: 85.7%. Max: 99.99%.
 
-### Scenario Results
+### Scenario Results (Annualized)
 
-| N | Travel | Payroll | Overhead | Total |
-|---|--------|---------|----------|-------|
-| 0 | $1,251,819.55 | $0 | $35,632.02 | **$1,287,451.57** |
-| 1 | $1,164,360.50 | $146,640 | $35,632.02 | $1,346,632.52 |
-| 2 | $1,095,731.96 | $293,280 | $35,632.02 | $1,424,643.98 |
-| 3 | $1,036,813.64 | $439,920 | $35,632.02 | $1,512,365.66 |
-| 4 | $989,421.17 | $586,560 | $35,632.02 | $1,611,613.19 |
+| N | Annual Travel | Annual Payroll | Annual Overhead | Annual Total |
+|---|--------------|----------------|-----------------|-------------|
+| 0 | $603,199 | $0 | $17,170 | **$620,369** |
+| 1 | $561,056 | $146,640 | $17,170 | $724,866 |
+| 2 | $527,987 | $293,280 | $17,170 | $838,437 |
+| 3 | $499,597 | $439,920 | $17,170 | $956,687 |
+| 4 | $476,761 | $586,560 | $17,170 | $1,080,490 |
+
+All scenarios cost more than N=0. Marginal annual travel savings diminish with each additional hire.
+
+### Revenue-from-Freed-Capacity (Annualized Profit Analysis)
+
+| N | Installs/yr | Net Cost Increase | Net Value (Conservative) | Net Value (Moderate) | Net Value (Aggressive) | Break-Even (Mod) |
+|---|------------:|------------------:|-------------------------:|---------------------:|-----------------------:|-----------------:|
+| 0 | 0.0 | $0 | $0 | $0 | $0 | 0.0 |
+| 1 | 27.3 | $104,497 | $234,043 | $848,329 | $2,759,441 | 3.0 |
+| 2 | 54.6 | $218,068 | $459,197 | $1,688,104 | $5,511,373 | 6.2 |
+| 3 | 81.9 | $336,318 | $679,348 | $2,522,289 | $8,255,883 | 9.6 |
+| 4 | 109.2 | $460,121 | $893,940 | $3,350,905 | $10,994,798 | 13.2 |
+
+Revenue assumptions: Conservative $50K×15%, Moderate $120K×25%, Aggressive $250K×40% margin per install + $7K×70% annual service contract per system. Profit margins applied — figures represent P&L impact, not gross MSRP.
 
 ### Hiring Recommendations by Scenario
 
@@ -154,10 +183,8 @@ From the latest committed optimization artifacts (BTS-corrected matrix + full co
 |---|-------------------|
 | 1 | CLE (Cleveland, OH) |
 | 2 | CLE, MKE (Milwaukee, WI) |
-| 3 | BOS (Boston, MA), CLE, ORD (Chicago, IL) |
-| 4 | BOS, CLE, ORD, Fort Smith AR (→ LIT airport) |
-
-All scenarios cost more than N=0. Marginal travel savings diminish with each additional hire.
+| 3 | BOS (Boston, MA), ORD (Chicago, IL), CLE |
+| 4 | BOS, ORD, CLE, Fort Smith AR (→ LIT airport) |
 
 ## Key Caveats
 
@@ -167,9 +194,13 @@ All scenarios cost more than N=0. Marginal travel savings diminish with each add
 - New hires cannot serve HPS nodes (policy constraint). 115 HPS appointments are served by existing certified techs.
 - SHV and ICT travel costs use proxy airports (LIT and TUL respectively), not direct BTS-calibrated values.
 - BTS fares are Q2 2025 data. Tier-2 airports (~24 of 68) use estimated midpoints.
+- Annualization assumes uniform distribution of costs across the 2.08-year data period.
+- Revenue figures represent capacity enabled, not guaranteed bookings. Profit margins (15%/25%/40%) are industry-typical estimates.
 
 ## Key Output Files
 
+- `data/processed/optimization/optimization_input_summary.json` — includes `data_span_years`
+- `data/processed/optimization/model_assumptions.json` — includes `data_span_years`, `hire_cost_for_optimization_period`
 - `data/processed/optimization/tech_master.csv`
 - `data/processed/optimization/demand_appointments.csv`
 - `data/processed/optimization/candidate_bases.csv`
@@ -177,16 +208,15 @@ All scenarios cost more than N=0. Marginal travel savings diminish with each add
 - `data/processed/optimization/travel_cost_matrix_bts_corrected.csv` — BTS-calibrated matrix (active)
 - `data/processed/optimization/full_cost_table.csv` — per-(tech/candidate, node) drive/fly cost table (8,008 rows)
 - `data/processed/optimization/cost_correction_log.csv` — per-airport BTS correction audit trail
-- `data/processed/optimization/scenario_summary.csv`
-- `data/processed/optimization/scenario_summary_enhanced.csv`
+- `data/processed/optimization/scenario_summary.csv` — raw MILP output (full-period costs)
+- `data/processed/optimization/scenario_summary_enhanced.csv` — annualized with revenue analysis
 - `data/processed/optimization/scenario_placements.csv`
 - `data/processed/optimization/scenario_assignments_existing.csv`
 - `data/processed/optimization/scenario_assignments_newhires.csv`
 - `data/processed/optimization/scenario_tech_utilization.csv`
 - `data/processed/optimization/recommended_hire_locations.csv`
 - `data/processed/optimization/analysis_report.json`
-- `data/processed/optimization/model_assumptions.json`
-- `data/processed/optimization/travel_matrix_origin_anomaly_report.json`
+- `data/processed/optimization/analysis_report.md`
 - `docs/index.html`
 
 ## Deeper Documentation

@@ -16,16 +16,17 @@ This file is the canonical context handoff for future chats.
 
 ## Current High-Level State
 
+- **Annualization is active.** The appointment dataset spans 2.08 years (Jan 2, 2024 → Jan 29, 2026, 758 days). Step 06 computes `data_span_years` (2.0753). Step 08 scales hire cost to match the data period. Step 09 divides all period costs and freed hours by `data_span_years` so every output figure is an annual equivalent. All figures labeled in the map and reports are annualized.
 - Hybrid travel-cost engine is implemented and active in Step 7.
 - **BTS-calibrated cost matrix is active** (Step 10). The optimizer reads `travel_cost_matrix_bts_corrected.csv` when `config.BTS_CORRECTED_MATRIX = True`. Original matrix is preserved as `travel_cost_matrix.csv`.
 - **Full cost model is active** (Step 11). `config.FULL_COST_MODEL = True`. Each trip now includes hotel ($399) and rental car ($235) for fly trips, or IRS mileage ($0.70/mi × round-trip) + hotel ($399) for drive trips (<300 miles). Step 11 pre-computes a per-(tech/candidate, node) cost table (`full_cost_table.csv`) used by the optimizer.
-- Burdened new-hire payroll is modeled in Step 8 (`146,640` USD per incremental hire).
+- Burdened new-hire payroll is modeled in Step 8 (`146,640` USD per incremental hire per year).
 - Default out-of-region penalty is disabled (`0` USD).
 - Hakim-only Canada servicing rule is implemented (Canada is restricted to Canada-wide specialist techs).
 - Simulation panel reads optimization outputs and shows scenario KPIs for `N=0..4`.
 - Technician markers are grouped by shared coordinates so all 16 roster members are visible via popup rosters.
 - New-hire allocation is hard-capped at 1 hire per base by default.
-- **Revenue-from-freed-capacity analysis is active** (Step 09). Three MSRP-based revenue scenarios ($50K/$120K/$250K per install) + $7K annual service contracts quantify the net economic value of freed technician capacity. This is supplementary analysis — the MILP optimizer and N=0 recommendation are unchanged.
+- **Revenue-from-freed-capacity analysis is active** (Step 09). Three profit-margin-based revenue scenarios ($50K/$120K/$250K per install at 15%/25%/40% margins) + $7K annual service contracts (70% margin) quantify the net economic value of freed technician capacity. This is supplementary analysis — the MILP optimizer and N=0 recommendation are unchanged.
 
 ## Repository Structure (Important Paths)
 
@@ -99,12 +100,12 @@ Typical UI-only changes require Step 5 only.
 
 ### Steps 6-11 (Optimization)
 
-1. `06_build_optimization_inputs.py`
+1. `06_build_optimization_inputs.py` — also computes `data_span_years` for annualization
 2. `07_build_travel_cost_model.py --engine hybrid --min-direct-route-n 5 --shrinkage-k 10`
 3. `10_correct_travel_costs.py` — BTS calibration; produces `travel_cost_matrix_bts_corrected.csv`
 4. `11_build_full_cost_table.py` — pre-computes `full_cost_table.csv` (drive/fly + rental + hotel). Re-run when `demand_appointments.csv`, `tech_master.csv`, or cost matrix changes.
-5. `08_optimize_locations.py --min-new-hires 0 --max-new-hires 4 --max-hires-per-base 1 --time-limit-sec 600`
-6. `09_analyze_scenarios.py`
+5. `08_optimize_locations.py --min-new-hires 0 --max-new-hires 4 --max-hires-per-base 1 --time-limit-sec 600` — reads `data_span_years`, scales hire cost to match data period
+6. `09_analyze_scenarios.py` — reads `data_span_years`, annualizes all period costs and freed hours
 7. `05_generate_map.py` to refresh scenario panel in map output.
 
 Step 10 only needs to re-run when the raw travel cost matrix (`travel_cost_matrix.csv`) changes. Toggle `config.BTS_CORRECTED_MATRIX` to switch which matrix the optimizer uses without re-running Step 10.
@@ -117,11 +118,13 @@ Step 10 only needs to re-run when the raw travel cost matrix (`travel_cost_matri
   - `tech_master.csv`
   - `demand_appointments.csv`
   - `candidate_bases.csv`
+  - `optimization_input_summary.json` (includes `data_span_years`, `data_span_days`, date range)
 - Skills are parsed from appointment text and roster columns.
 - Special technician constraints are derived from roster comments:
   - `constraint_florida_only`
   - `constraint_canada_wide`
 - Candidate bases combine major airports plus top demand-city candidates.
+- **Data span computation:** `data_span_years = max(date_span_days / 365.25, 0.5)`. Currently 2.0753 years (Jan 2, 2024 → Jan 29, 2026, 758 days).
 
 ### Step 7: Travel Cost Matrix (Hybrid Engine)
 
@@ -176,6 +179,8 @@ Decision variables:
 - integer hire allocations by candidate base
 - unmet demand assignments
 
+**Annualization in the MILP:** Travel costs in the MILP cover the full data period (all 1,480 appointments across 2.08 years). To make hire cost commensurable, Step 08 reads `data_span_years` and passes `hire_cost_for_period = annual_hire_cost × data_span_years` ($304,322) to the solver. This ensures the MILP compares like-for-like costs over the same time period. The annualization back to per-year happens in Step 09.
+
 Objective (modeled):
 
 - minimize travel cost + out-of-region penalties + hire payroll + unmet penalties
@@ -195,23 +200,33 @@ Where:
 
 ### Step 9: Analysis
 
+- **Annualizes all period costs:** divides `travel_cost_usd`, `hire_cost_usd`, `baseline_canceled_voided_usd`, `modeled_total_cost_usd`, `economic_total_with_overhead_usd`, and other period-total columns by `data_span_years`. Also annualizes `hours_freed_existing_techs`.
 - Computes savings vs `N=0`.
 - Computes marginal savings from previous `N`.
-- **Capacity-freed analysis:** converts freed existing-tech hours → realistic installation estimates using avg duration days (3.25), travel overhead (1.0 day), and 75% utilization factor.
-- **Revenue-from-freed-capacity analysis:** for each hiring scenario, computes net economic value across 3 revenue tiers (conservative/moderate/aggressive) plus annual service contract revenue. Includes ROI and break-even installations per tier.
+- **Capacity-freed analysis:** converts freed existing-tech hours → realistic installation estimates using avg duration days (3.25), travel overhead (1.0 day), and 75% utilization factor. Hours are annualized before conversion.
+- **Revenue-from-freed-capacity analysis:** for each hiring scenario, computes net economic value across 3 profit-margin tiers (conservative/moderate/aggressive) plus annual service contract revenue. Includes ROI and break-even installations per tier.
 - Picks best scenario using proven-optimal solutions first (`selection_mode = proven_optimal_only`).
 - Writes:
-  - `scenario_summary_enhanced.csv` (includes 21 revenue columns: 7 metrics × 3 tiers)
+  - `scenario_summary_enhanced.csv` (all figures annualized; includes 21 revenue columns: 7 metrics × 3 tiers)
   - `recommended_hire_locations.csv`
-  - `analysis_report.json` (includes `revenue_scenarios`, `avg_annual_service_contract_usd`, per-scenario `revenue_analysis`)
-  - `analysis_report.md` (includes revenue summary table and caveats)
+  - `analysis_report.json` (includes `data_span_years`, `annualization_note`, `revenue_scenarios`, per-scenario `revenue_analysis`)
+  - `analysis_report.md` (includes annualization note, revenue summary table, and caveats)
 
 ## Business Rules and Assumptions (Current)
+
+### Annualization
+
+- The appointment dataset spans **2.08 years** (758 days, Jan 2 2024 → Jan 29 2026, 1,480 appointments).
+- `data_span_years` = 2.0753, computed in Step 06, stored in `optimization_input_summary.json`.
+- The MILP solves over the full data period (all 1,480 appointments). Hire cost is scaled to match: `$146,640 × 2.0753 = $304,322`.
+- Step 09 divides all period-total costs and freed hours by `data_span_years` before analysis.
+- The annualization preserves MILP solution quality (no re-solving needed) and makes hire cost cancel out correctly: `$304,322 / 2.0753 = $146,640`.
+- Per-appointment metrics (avg hours/install, utilization ratios, revenue per install) are NOT annualized — they are time-period agnostic.
 
 ### Payroll Burden
 
 - `DEFAULT_ANNUAL_HIRE_COST_USD = 146640.0`
-- Interpretation: burdened company planning cost per incremental new hire (not take-home pay).
+- Interpretation: burdened company planning cost per incremental new hire per year (not take-home pay).
 - Applied only to new hires in each scenario.
 
 ### Out-of-Region Friction
@@ -226,8 +241,9 @@ Where:
 
 ### Canceled/Voided Handling
 
-- Fixed baseline constant from Navan `Report` tab.
+- Fixed baseline constant from Navan `Report` tab ($35,632.02 for the full 2.08-year period).
 - It is not scaled by hires and not re-estimated per scenario.
+- Annualized to ~$17,170/year in Step 09 output.
 - Intent: preserve known historical overhead as a static add-on to scenario totals.
 
 ### Canada Coverage Rule (Hakim Policy)
@@ -255,16 +271,16 @@ Where:
 ### Revenue-from-Freed-Capacity Model (Step 09)
 
 - **Framing:** Below 15% volume reduction (Shannon Drew directive), the value of hiring should be understood as capacity for revenue, not cost savings.
-- Three MSRP-based revenue scenarios (Year 1 gross per installation):
-  - Conservative: `$50,000` (small systems — Aria, Apollo)
-  - Moderate: `$120,000` (mid-range — Lucina, Evo)
-  - Aggressive: `$250,000` (large systems — HPS full suite)
-- Annual recurring service contract: `$7,000/system` (UIUC pricing, conservative fleet-weighted estimate skewed toward Peak-tier).
+- Three profit-margin-based revenue scenarios (per installation):
+  - Conservative: `$50,000` × 15% margin = $7,500 profit (small systems — Aria, Apollo)
+  - Moderate: `$120,000` × 25% margin = $30,000 profit (mid-range — Lucina, Evo)
+  - Aggressive: `$250,000` × 40% margin = $100,000 profit (large systems — HPS full suite)
+- Annual recurring service contract: `$7,000/system` × 70% margin = $4,900 profit.
 - Revenue figures are **capacity enabled, not guaranteed** — actual revenue depends on sales pipeline and market demand.
-- Revenue is MSRP-based gross, not profit margin or P&L impact.
-- Estimates are Year 1 only — no multi-year NPV.
+- Profit margins are applied (not raw MSRP) — the analysis shows actual P&L impact.
+- Estimates are per year (annualized) — no multi-year NPV.
 - The MILP optimizer recommendation (N=0) is unchanged; revenue analysis is purely supplementary.
-- Config constants: `REVENUE_PER_INSTALLATION_CONSERVATIVE_USD`, `REVENUE_PER_INSTALLATION_MODERATE_USD`, `REVENUE_PER_INSTALLATION_AGGRESSIVE_USD`, `AVG_ANNUAL_SERVICE_CONTRACT_USD`.
+- Config constants: `REVENUE_PER_INSTALLATION_CONSERVATIVE_USD`, `REVENUE_PER_INSTALLATION_MODERATE_USD`, `REVENUE_PER_INSTALLATION_AGGRESSIVE_USD`, `AVG_ANNUAL_SERVICE_CONTRACT_USD`, `INSTALLATION_PROFIT_MARGIN_*`, `SERVICE_CONTRACT_PROFIT_MARGIN`.
 
 ### Capacity-Freed Model Parameters (Step 09)
 
@@ -273,6 +289,7 @@ Where:
 - Avg duration days per installation: `3.25` (computed from appointment data: ISO 2.1d, AVS ISO 3.6d, AVS 1.1d).
 - Effective days per installation: `4.25` (3.25 duration + 1.0 travel).
 - Realistic installations = (freed days × 0.75) / 4.25.
+- All freed-hours metrics are annualized (divided by `data_span_years`) before conversion.
 
 ### Contractor Scope
 
@@ -287,7 +304,7 @@ Where:
 
 Simulation panel (left side) reads scenario files and shows:
 
-- `Total Cost`: `economic_total_with_overhead_usd`
+- `Total Cost`: `economic_total_with_overhead_usd` (annualized)
 - `Cost Change vs N=0`
 - `Marginal Cost Change` vs previous hire count
 - `Unmet Appointments` (rendered only if any scenario has unmet > 0)
@@ -295,19 +312,21 @@ Simulation panel (left side) reads scenario files and shows:
 - Mean/max existing-tech utilization
 - Recommended base placements
 
-This means `Total Cost` already includes fixed canceled/voided baseline overhead.
+All figures in the simulation panel are annualized. The subtitle reads "Cost-first optimization — all figures annualized."
 
 ## Latest Validated Run Snapshot
 
-From current optimization artifacts (BTS-corrected matrix + full cost model active):
+From current optimization artifacts (BTS-corrected matrix + full cost model + annualization active):
 
+- Data span: **2.0753 years** (Jan 2, 2024 → Jan 29, 2026, 758 days, 1,480 appointments)
+- Annualized appointment count: ~713/year
 - Scenario range: `N=0..4`
-- Selection mode: `proven_optimal_only` (all 5 scenarios solved to proven optimality — faster convergence under full cost model)
+- Selection mode: `proven_optimal_only` (all 5 scenarios solved to proven optimality)
 - Best scenario: `N=0`
-- **N=0 travel cost: `1,251,819.55` USD** *(was `664,776.16` flight-only — +88.3% from adding rental + hotel)*
-- **N=0 total with overhead: `1,287,451.57` USD** *(was `700,408.18` flight-only — +83.8%)*
-- Baseline canceled/voided constant: `35,632.02` USD
-- Burdened annual per-hire planning cost: `146,640.00` USD
+- **N=0 annualized travel cost: `$603,199` USD**
+- **N=0 annualized overhead: `$17,170` USD**
+- **N=0 annualized total: `$620,369` USD**
+- Burdened annual per-hire planning cost: `$146,640` USD (period-scaled to `$304,322` in MILP)
 - Full cost model constants: IRS $0.70/mi, rental $235/trip, hotel $399/trip, drive threshold 300 mi
 - Full cost table: 8,008 rows (16 techs × 77 nodes + 88 candidates × 77 nodes)
 - Drive/fly split in cost table: 8.5% drive, 91.5% fly
@@ -317,29 +336,29 @@ From current optimization artifacts (BTS-corrected matrix + full cost model acti
 - Active techs at N=0: 15 (excludes James Sanchez / Rondero, `availability_fte=0.0`).
 - Mean utilization at N=0: 85.7%. Max: 99.99% (one tech near ceiling — workforce is tightly loaded).
 
-### Scenario Cost Summary
+### Scenario Cost Summary (Annualized)
 
-| N | Travel | Payroll | Overhead | Total |
-|---|--------|---------|----------|-------|
-| 0 | $1,251,819.55 | $0 | $35,632.02 | $1,287,451.57 |
-| 1 | $1,164,360.50 | $146,640 | $35,632.02 | $1,346,632.52 |
-| 2 | $1,095,731.96 | $293,280 | $35,632.02 | $1,424,643.98 |
-| 3 | $1,036,813.64 | $439,920 | $35,632.02 | $1,512,365.66 |
-| 4 | $989,421.17 | $586,560 | $35,632.02 | $1,611,613.19 |
+| N | Annual Travel | Annual Payroll | Annual Overhead | Annual Total |
+|---|--------------|----------------|-----------------|-------------|
+| 0 | $603,199 | $0 | $17,170 | **$620,369** |
+| 1 | $561,056 | $146,640 | $17,170 | $724,866 |
+| 2 | $527,987 | $293,280 | $17,170 | $838,437 |
+| 3 | $499,597 | $439,920 | $17,170 | $956,687 |
+| 4 | $476,761 | $586,560 | $17,170 | $1,080,490 |
 
-Marginal travel savings diminish: $87K (N=0→1), $69K (N=1→2), $59K (N=2→3), $47K (N=3→4).
+Marginal annual travel savings diminish: $42K (N=0→1), $33K (N=1→2), $28K (N=2→3), $23K (N=3→4).
 
-### Revenue-from-Freed-Capacity Summary
+### Revenue-from-Freed-Capacity Summary (Annualized)
 
-| N | Realistic Installs | Net Cost Increase | Net Value (Conservative) | Net Value (Moderate) | Net Value (Aggressive) | Break-Even (Mod) |
-|---|-------------------:|------------------:|-------------------------:|---------------------:|-----------------------:|-----------------:|
+| N | Realistic Installs/yr | Net Cost Increase | Net Value (Conservative) | Net Value (Moderate) | Net Value (Aggressive) | Break-Even (Mod) |
+|---|----------------------:|------------------:|-------------------------:|---------------------:|-----------------------:|-----------------:|
 | 0 | 0.0 | $0 | $0 | $0 | $0 | 0.0 |
-| 1 | 56.7 | $59,181 | $3,170,383 | $7,136,513 | $14,502,184 | 0.5 |
-| 2 | 113.3 | $137,192 | $6,323,699 | $14,258,128 | $28,993,495 | 1.1 |
-| 3 | 170.0 | $224,914 | $9,464,213 | $21,363,141 | $43,461,150 | 1.8 |
-| 4 | 226.6 | $324,162 | $12,593,155 | $28,456,526 | $57,917,072 | 2.6 |
+| 1 | 27.3 | $104,497 | $234,043 | $848,329 | $2,759,441 | 3.0 |
+| 2 | 54.6 | $218,068 | $459,197 | $1,688,104 | $5,511,373 | 6.2 |
+| 3 | 81.9 | $336,318 | $679,348 | $2,522,289 | $8,255,883 | 9.6 |
+| 4 | 109.2 | $460,121 | $893,940 | $3,350,905 | $10,994,798 | 13.2 |
 
-Key takeaway: Even at conservative estimates, N=1 enables ~$3.2M in revenue capacity for only ~$59K incremental cost (break-even at 1.0 install under conservative, 0.5 under moderate). The cost-only optimizer says N=0 is cheapest, but the revenue lens shows substantial economic upside from hiring.
+Key takeaway: Even at conservative estimates, N=1 enables ~$234K in annual profit for ~$104K incremental cost (break-even at 8.4 installs conservative, 3.0 moderate). The cost-only optimizer says N=0 is cheapest, but the profit lens shows substantial economic upside from hiring.
 
 ### Hiring Placements by Scenario
 
@@ -347,8 +366,8 @@ Key takeaway: Even at conservative estimates, N=1 enables ~$3.2M in revenue capa
 |---|-------------------|
 | 1 | CLE (Cleveland, OH) |
 | 2 | CLE, MKE (Milwaukee, WI) |
-| 3 | BOS (Boston, MA), CLE, ORD (Chicago, IL) |
-| 4 | BOS, CLE, ORD, Fort Smith AR (→ LIT airport) |
+| 3 | BOS (Boston, MA), ORD (Chicago, IL), CLE |
+| 4 | BOS, ORD, CLE, Fort Smith AR (→ LIT airport) |
 
 - BTS-corrected matrix airport benchmarks (key sanity checks):
   - MDW: $471 → $199 (-57.7%) — now grounded in BTS data, not model speculation
@@ -359,6 +378,8 @@ Key takeaway: Even at conservative estimates, N=1 enables ~$3.2M in revenue capa
 
 ## Important File Outputs to Check First
 
+- `data/processed/optimization/optimization_input_summary.json` (includes `data_span_years`)
+- `data/processed/optimization/model_assumptions.json` (includes `data_span_years`, `hire_cost_for_optimization_period`)
 - `data/processed/optimization/travel_model_metrics.json`
 - `data/processed/optimization/travel_matrix_coverage_report.json`
 - `data/processed/optimization/travel_matrix_origin_anomaly_report.json`
@@ -371,7 +392,6 @@ Key takeaway: Even at conservative estimates, N=1 enables ~$3.2M in revenue capa
 - `data/processed/optimization/scenario_tech_utilization.csv`
 - `data/processed/optimization/full_cost_table.csv`
 - `data/processed/optimization/analysis_report.json`
-- `data/processed/optimization/model_assumptions.json`
 - `docs/index.html`
 
 ## Known Limitations and Caveats
@@ -385,7 +405,7 @@ Key takeaway: Even at conservative estimates, N=1 enables ~$3.2M in revenue capa
 4. Hotel cost is flat $399/trip regardless of appointment duration (based on Navan 2.5-night average). Multi-day appointments may cost more.
 5. Same-city trip bundling is not modeled — each of 1,480 appointments is treated as a separate trip. In practice, techs bundle nearby appointments.
 6. Great-circle distance (not road distance) for drive/fly classification. Road distance is typically 10–25% longer, meaning some trips classified as "drive" might actually exceed 300 road-miles.
-7. Canceled/voided overhead ($35,632) is fixed across all scenarios, not re-estimated per hiring level.
+7. Canceled/voided overhead ($35,632 full-period / $17,170 annualized) is fixed across all scenarios, not re-estimated per hiring level.
 8. Full cost model hotel/rental constants ($399, $235) are 2025 Navan actuals. Re-update in `config.py` if Navan benchmarks change meaningfully.
 
 ### Model Assumptions
@@ -393,21 +413,22 @@ Key takeaway: Even at conservative estimates, N=1 enables ~$3.2M in revenue capa
 10. **New hires cannot serve HPS nodes** — this is a policy assumption. If new hires can be HPS-trained, the model underestimates their value.
 11. Capacity model is demand-normalized (not calendar-based). See "Capacity Model" section above.
 12. BTS prior is optional and currently inactive if the prior CSV is missing.
+13. **Annualization assumes uniform distribution** — dividing by `data_span_years` assumes costs are evenly distributed across the 2.08-year period. If demand or travel patterns shifted significantly within the period, annualized figures may not perfectly represent a single future year.
 
 ### Proxy and Approximation Notes
-13. **SHV and ICT travel costs are proxy-based, not BTS-calibrated.** Their matrix rows were generated from LIT (for SHV) and TUL (for ICT) as proxies. SHV mean cost ($476) and ICT mean cost ($370) are reasonable for regional airports but are not BTS-grounded.
-14. **Fort Smith AR maps to LIT (Little Rock, ~157 mi).** No closer airport is in the 68-airport list. Fort Smith has a small regional airport (FSM) not in our candidate pool.
-15. YUL (Montreal-Trudeau) raw hybrid model estimated ~$676 vs observed ~$959 (29% underestimate). The BTS correction blends 60% Navan actual ($959) + 40% BTS cross-border ($447) → $754. The remaining ~$205 gap vs observed reflects that cross-border fares vary by specific routing.
+14. **SHV and ICT travel costs are proxy-based, not BTS-calibrated.** Their matrix rows were generated from LIT (for SHV) and TUL (for ICT) as proxies. SHV mean cost ($476) and ICT mean cost ($370) are reasonable for regional airports but are not BTS-grounded.
+15. **Fort Smith AR maps to LIT (Little Rock, ~157 mi).** No closer airport is in the 68-airport list. Fort Smith has a small regional airport (FSM) not in our candidate pool.
+16. YUL (Montreal-Trudeau) raw hybrid model estimated ~$676 vs observed ~$959 (29% underestimate). The BTS correction blends 60% Navan actual ($959) + 40% BTS cross-border ($447) → $754. The remaining ~$205 gap vs observed reflects that cross-border fares vary by specific routing.
 
 ### Revenue Model Caveats
-16. Revenue figures represent **capacity enabled**, not guaranteed bookings — actual revenue depends on sales pipeline and market demand.
-17. Revenue is **MSRP-based gross revenue**, not profit margin or P&L impact. Actual margins vary by product line.
-18. Service contract revenue assumes each new installation generates an annual $7K contract. Fleet mix may shift this up (Apex-tier) or down (Peak-tier).
-19. Estimates are **Year 1 only** — multi-year NPV would require discount rate assumptions.
-20. Revenue analysis is supplementary — the MILP optimizer recommendation (N=0) is unchanged and based purely on cost minimization.
+17. Revenue figures represent **capacity enabled**, not guaranteed bookings — actual revenue depends on sales pipeline and market demand.
+18. Profit margins are applied (15%/25%/40% on installations, 70% on service contracts) — actual margins vary by product line and deal structure.
+19. Service contract revenue assumes each new installation generates an annual $7K contract. Fleet mix may shift this up (Apex-tier) or down (Peak-tier).
+20. Estimates are **annualized from the 2.08-year data period** — actual future-year results depend on demand trends.
+21. Revenue analysis is supplementary — the MILP optimizer recommendation (N=0) is unchanged and based purely on cost minimization.
 
 ### Solver
-21. All 5 scenarios solve to proven optimality (MIP gap = 0.0). Max existing-tech utilization is 99.99% at N=0, indicating the workforce is very tightly loaded.
+22. All 5 scenarios solve to proven optimality (MIP gap = 0.0). Max existing-tech utilization is 99.99% at N=0, indicating the workforce is very tightly loaded.
 
 ## Recommended Defaults for Re-Runs
 
@@ -431,16 +452,17 @@ To revert to the flight-cost-only model, set `FULL_COST_MODEL = False` in `scrip
 State these immediately to avoid context drift:
 
 1. Hybrid travel-cost engine is already implemented and in use.
-2. **Full cost model is active** (Step 11): hotel + rental on all fly trips; IRS mileage + hotel on drive trips; drive/fly classified by 300-mile haversine threshold.
-3. **BTS-calibrated cost matrix is active** (Step 10): 68 airports, 1.22× corporate premium, 2.0× Canadian cross-border multiplier.
-4. Burdened hire cost is `146,640` per incremental hire.
-5. Out-of-region penalty default is `0`.
-6. Canceled/voided cost is fixed baseline overhead (`$35,632`), not scenario-variable.
-7. Hakim-only Canada rule is active. New hires blocked from Canada nodes.
-8. **New hires cannot serve HPS nodes** (policy constraint, hard variable bound).
-9. Capacity model is demand-normalized with `target_utilization=0.85`.
-10. Scenario panel `Total Cost` includes canceled/voided overhead.
-11. Technician map points are grouped by base; roster details are in marker popup.
-12. N=0 total: `$1,287,451.57`. Best scenario is N=0 — all hiring scenarios cost more.
-13. **Revenue-from-freed-capacity analysis is active** in Step 09: 3 revenue tiers ($50K/$120K/$250K) + $7K service contracts. N=1 moderate net value: ~$7.1M. This is supplementary — MILP recommendation unchanged.
-14. Pipeline order: 06 → 07 → 10 → 11 → 08 → 09 → 05.
+2. **Annualization is active.** Data spans 2.08 years (1,480 appts). All output figures are annualized. Step 06 computes `data_span_years` (2.0753). Step 08 scales hire cost for MILP period. Step 09 divides all costs/hours by `data_span_years`.
+3. **Full cost model is active** (Step 11): hotel + rental on all fly trips; IRS mileage + hotel on drive trips; drive/fly classified by 300-mile haversine threshold.
+4. **BTS-calibrated cost matrix is active** (Step 10): 68 airports, 1.22× corporate premium, 2.0× Canadian cross-border multiplier.
+5. Burdened hire cost is `$146,640`/year per incremental hire ($304,322 in MILP period).
+6. Out-of-region penalty default is `0`.
+7. Canceled/voided cost is fixed baseline overhead (`$35,632` full-period / `$17,170` annualized), not scenario-variable.
+8. Hakim-only Canada rule is active. New hires blocked from Canada nodes.
+9. **New hires cannot serve HPS nodes** (policy constraint, hard variable bound).
+10. Capacity model is demand-normalized with `target_utilization=0.85`.
+11. Scenario panel `Total Cost` shows annualized `economic_total_with_overhead_usd`.
+12. Technician map points are grouped by base; roster details are in marker popup.
+13. N=0 annualized total: `$620,369`. Best scenario is N=0 — all hiring scenarios cost more.
+14. **Revenue-from-freed-capacity analysis is active** in Step 09: 3 profit tiers + $7K service contracts. N=1 moderate net value: ~$848K/year. Break-even: 3.0 installs. This is supplementary — MILP recommendation unchanged.
+15. Pipeline order: 06 → 07 → 10 → 11 → 08 → 09 → 05.
