@@ -98,12 +98,43 @@ TECH_NAME_ALIASES = {
 # Optimization cost defaults
 DEFAULT_UNMET_PENALTY_USD = 5000.0
 
-# Travel cost matrix selection
-BTS_CORRECTED_MATRIX = True   # Set True to use BTS-calibrated matrix in optimizer
+# ---------------------------------------------------------------------------
+# BTS Q2 2025 average domestic itinerary fares (raw, per round-trip).
+# Source: Bureau of Transportation Statistics, Table 1 — Average Domestic
+# Itinerary Fares By Origin Airport.
+# 58 airports have real Q2 2025 data; 5 (ANC, BIL, BIS, FAR, SHV) use the
+# $386 national fallback (not tracked by BTS or stale data).
+# Multiply by CORPORATE_TRAVEL_PREMIUM at runtime for final flight cost.
+# ---------------------------------------------------------------------------
+BTS_RAW_ITINERARY_FARES = {
+    "ABQ": 412.80, "ANC": 386.00, "ATL": 418.60, "AUS": 393.72,
+    "BHM": 489.07, "BIL": 386.00, "BIS": 386.00, "BNA": 363.95,
+    "BOI": 391.38, "BOS": 377.15, "BUF": 331.26, "BWI": 364.51,
+    "CLE": 370.08, "CLT": 439.81, "CMH": 393.45, "CVG": 364.95,
+    "DCA": 374.49, "DEN": 363.47, "DFW": 418.34, "DSM": 380.88,
+    "DTW": 419.50, "EWR": 427.44, "FAR": 386.00, "IAD": 462.97,
+    "IAH": 422.67, "ICT": 430.40, "IND": 378.72, "JAX": 410.39,
+    "JFK": 431.52, "LAS": 284.74, "LAX": 413.68, "LGA": 358.83,
+    "LIT": 457.83, "MCI": 423.86, "MCO": 284.54, "MDW": 310.93,
+    "MEM": 402.24, "MIA": 346.50, "MKE": 414.72, "MSP": 401.09,
+    "MSY": 333.69, "OKC": 447.30, "OMA": 434.91, "ONT": 375.80,
+    "ORD": 371.91, "PDX": 383.85, "PHL": 417.63, "PHX": 378.81,
+    "PIT": 367.10, "RDU": 355.40, "SAN": 375.91, "SAT": 407.61,
+    "SEA": 400.25, "SFO": 445.13, "SHV": 386.00, "SJC": 341.37,
+    "SLC": 450.03, "SMF": 395.67, "STL": 412.71, "TPA": 331.55,
+    "TUL": 435.94, "TUS": 434.60,
+}
+BTS_NATIONAL_FALLBACK = 386.00       # Q2 2025 US domestic average itinerary fare
+CORPORATE_TRAVEL_PREMIUM = 1.6       # Navan median $633 / BTS avg $386
+
+# Canceled/voided booking overhead. Set to $0 because Navan export covers only
+# ~2 of 16 technicians — the observed $35,632 is not representative of the full
+# fleet. This is a fixed cost that does not vary by scenario and does not affect
+# the relative comparison between hiring levels.
+BASELINE_CANCELED_VOIDED_USD = 0.0
 
 # Full cost model: drive/fly classification with rental car and hotel costs.
 # Requires full_cost_table.csv produced by scripts/11_build_full_cost_table.py.
-# Set False to revert to flight-cost-only model (original behavior).
 FULL_COST_MODEL = True
 IRS_MILEAGE_RATE_USD_PER_MI = 0.70   # 2025 IRS standard mileage rate
 RENTAL_CAR_AVG_USD = 235.0            # Navan average across 82 confirmed bookings

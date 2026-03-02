@@ -17,9 +17,8 @@ This file is the canonical context handoff for future chats.
 ## Current High-Level State
 
 - **Annualization is active.** The appointment dataset spans 2.08 years (Jan 2, 2024 → Jan 29, 2026, 758 days). Step 06 computes `data_span_years` (2.0753). Step 08 scales hire cost to match the data period. Step 09 divides all period costs and freed hours by `data_span_years` so every output figure is an annual equivalent. All figures labeled in the map and reports are annualized.
-- Hybrid travel-cost engine is implemented and active in Step 7.
-- **BTS-calibrated cost matrix is active** (Step 10). The optimizer reads `travel_cost_matrix_bts_corrected.csv` when `config.BTS_CORRECTED_MATRIX = True`. Original matrix is preserved as `travel_cost_matrix.csv`.
-- **Full cost model is active** (Step 11). `config.FULL_COST_MODEL = True`. Hotel cost is **duration-scaled**: `HOTEL_NIGHTLY_RATE_USD` ($159) × hotel nights (derived from per-node avg appointment duration). Day-trip logic zeros out hotel for short drive trips (≤150 mi + ≤1 day avg). Each fly trip also includes rental car ($235). Drive trips use IRS mileage ($0.70/mi × round-trip) + duration-scaled hotel. Drive/fly classified by 300-mile haversine threshold. Step 11 pre-computes a per-(tech/candidate, node) cost table (`full_cost_table.csv`) used by the optimizer.
+- **BTS Q2 2025 lookup table with 1.6x corporate premium** is active. Flight cost = `BTS_RAW_ITINERARY_FARES[origin_airport] × 1.6`. Origin-only — no destination dependency. 63 US airports with direct BTS fares; national fallback ($386) for unlisted airports. Steps 07 and 10 (ML model + BTS correction) are deprecated and removed from the pipeline.
+- **Full cost model is active** (Step 11). Hotel cost is **duration-scaled**: `HOTEL_NIGHTLY_RATE_USD` ($159) × hotel nights (derived from per-node avg appointment duration). Day-trip logic zeros out hotel for short drive trips (≤150 mi + ≤1 day avg). Each fly trip also includes rental car ($235). Drive trips use IRS mileage ($0.70/mi × round-trip) + duration-scaled hotel. Drive/fly classified by 300-mile haversine threshold. Step 11 pre-computes a per-(tech/candidate, node) cost table (`full_cost_table.csv`) used by the optimizer.
 - Burdened new-hire payroll is modeled in Step 8 (`146,640` USD per incremental hire per year).
 - Default out-of-region penalty is disabled (`0` USD).
 - Canada is excluded from optimization scope. Hakim Mouazer (Montreal) has availability_fte=0.0 (visible on map only).
@@ -39,12 +38,12 @@ elevate-territory-map/
     04_build_territories.py
     05_generate_map.py
     06_build_optimization_inputs.py
-    07_build_travel_cost_model.py
+    07_build_travel_cost_model.py    # DEPRECATED — left on disk, not in pipeline
     08_optimize_locations.py
     09_analyze_scenarios.py
-    10_correct_travel_costs.py
-    11_build_full_cost_table.py        # per-(tech/candidate, node) drive/fly cost table
-    travel_cost_modeling.py
+    10_correct_travel_costs.py       # DEPRECATED — left on disk, not in pipeline
+    11_build_full_cost_table.py      # per-(tech/candidate, node) drive/fly cost table
+    travel_cost_modeling.py          # DEPRECATED — left on disk, not in pipeline
     optimization_utils.py
     config.py
   data/
@@ -60,7 +59,7 @@ elevate-territory-map/
 
 ## Environment and Runtime
 
-- Python dependencies are in `requirements.txt` (includes `scikit-learn` for hybrid model).
+- Python dependencies are in `requirements.txt`.
 - In this workstation, prefer:
   - `/opt/miniconda3/bin/python3`
 - Reason: avoids mixed interpreter issues (system Python may miss `openpyxl`/`sklearn`).
@@ -100,15 +99,13 @@ Typical UI-only changes require Step 5 only.
 
 ### Steps 6-11 (Optimization)
 
-1. `06_build_optimization_inputs.py` — also computes `data_span_years` for annualization
-2. `07_build_travel_cost_model.py --engine hybrid --min-direct-route-n 5 --shrinkage-k 10`
-3. `10_correct_travel_costs.py` — BTS calibration; produces `travel_cost_matrix_bts_corrected.csv`
-4. `11_build_full_cost_table.py` — pre-computes `full_cost_table.csv` (drive/fly + rental + duration-scaled hotel). Computes per-node avg appointment duration from `demand_appointments.csv` and maps to hotel nights. Re-run when `demand_appointments.csv`, `tech_master.csv`, or cost matrix changes.
-5. `08_optimize_locations.py --min-new-hires 0 --max-new-hires 4 --max-hires-per-base 1 --time-limit-sec 600` — reads `data_span_years`, scales hire cost to match data period
-6. `09_analyze_scenarios.py` — reads `data_span_years`, annualizes all period costs and freed hours
-7. `05_generate_map.py` to refresh scenario panel in map output.
+Pipeline order: **06 → 11 → 08 → 09 → 05** (Steps 07 and 10 are deprecated).
 
-Step 10 only needs to re-run when the raw travel cost matrix (`travel_cost_matrix.csv`) changes. Toggle `config.BTS_CORRECTED_MATRIX` to switch which matrix the optimizer uses without re-running Step 10.
+1. `06_build_optimization_inputs.py` — also computes `data_span_years` for annualization
+2. `11_build_full_cost_table.py` — pre-computes `full_cost_table.csv` using BTS Q2 2025 fares × 1.6 corporate premium for flight costs, plus drive/fly classification, rental car, and duration-scaled hotel. Re-run when `demand_appointments.csv`, `tech_master.csv`, or BTS fare data changes.
+3. `08_optimize_locations.py --min-new-hires 0 --max-new-hires 4 --max-hires-per-base 1 --time-limit-sec 600` — reads `data_span_years`, scales hire cost to match data period
+4. `09_analyze_scenarios.py` — reads `data_span_years`, annualizes all period costs and freed hours
+5. `05_generate_map.py` to refresh scenario panel in map output.
 
 ## Optimization Model: Exact Logic
 
@@ -125,47 +122,24 @@ Step 10 only needs to re-run when the raw travel cost matrix (`travel_cost_matri
 - Candidate bases combine major airports plus top demand-city candidates.
 - **Data span computation:** `data_span_years = max(date_span_days / 365.25, 0.5)`. Currently 2.0753 years (Jan 2, 2024 → Jan 29, 2026, 758 days).
 
-### Step 7: Travel Cost Matrix (Hybrid Engine)
+### Step 7: DEPRECATED (Travel Cost Matrix)
 
-Inputs:
+Step 7 (`07_build_travel_cost_model.py`) is deprecated and no longer part of the pipeline. The ML-based flight cost engine (GradientBoostingRegressor trained on Navan flights) has been replaced by a direct BTS Q2 2025 fare lookup table in `config.py`. The script file remains on disk for historical reference.
 
-- Navan `Clean Flights` tab (flight-level rows).
-- Navan `Report` tab (for baseline ticketed/canceled/voided totals).
+### Step 10: DEPRECATED (BTS Correction Layer)
 
-Training rows for the model are filtered to:
+Step 10 (`10_correct_travel_costs.py`) is deprecated and no longer part of the pipeline. The BTS correction layer that post-processed the ML model output is no longer needed — flight costs now come directly from BTS data via `config.BTS_RAW_ITINERARY_FARES`. The script file remains on disk for historical reference.
 
-- non-management travelers
-- `Booking Status == TICKETED`
-- valid origin/destination
-- positive numeric paid amount (`USD Total Paid > 0`)
+### Step 11: Full Cost Table (BTS Lookup)
 
-Hybrid route cost logic:
+Flight cost = `BTS_RAW_ITINERARY_FARES[origin_airport] × CORPORATE_TRAVEL_PREMIUM (1.6)`. Origin-only — cost does not vary by destination. 63 US airports have direct BTS fares; airports not in the table fall back to `BTS_NATIONAL_FALLBACK` ($386).
 
-1. Compute model prediction for `(origin_airport, destination_airport, destination_state)`.
-2. If direct empirical route support is strong:
-   - blend empirical and model cost using shrinkage:
-   - `w_empirical = n_direct / (n_direct + shrinkage_k)`
-3. For sparse/non-direct routes:
-   - blend model and heuristic costs using support-based model weight.
-   - apply heuristic-relative guardrails to prevent implausible near-zero route costs.
-4. If confidence is low on US route and BTS prior is available:
-   - apply BTS state-pair prior.
-5. If cost is still invalid:
-   - fallback to heuristic estimator.
+The 1.6× corporate premium is calibrated from Navan median actual cost ($633) divided by BTS average domestic fare ($386).
 
-Outputs:
-
-- `travel_cost_matrix.csv`
-- `baseline_kpis.json`
-- `travel_model_metrics.json`
-- `travel_model_feature_importance.csv`
-- `travel_matrix_coverage_report.json`
-- `bts_prior_coverage_report.json`
-- `travel_matrix_origin_anomaly_report.json`
-
-Current note:
-
-- BTS prior file is optional. If missing, model runs without it.
+Full trip cost per (tech/candidate, node) pair:
+- **Fly** (≥300 mi): flight cost + rental car ($235) + duration-scaled hotel ($159/night)
+- **Drive** (<300 mi): IRS mileage ($0.70/mi × round-trip) + duration-scaled hotel ($159/night)
+- **Day-trip exception**: ≤150 mi + ≤1 day avg → $0 hotel
 
 ### Step 8: MILP Scenarios
 
@@ -195,7 +169,7 @@ Then economic total shown to users:
 
 Where:
 
-- `baseline_canceled_voided_usd` comes from Navan baseline report and is fixed across all scenarios.
+- `baseline_canceled_voided_usd` = `config.BASELINE_CANCELED_VOIDED_USD` ($0.00). Set to zero because the Navan export covers only ~2 of 16 technicians, making the canceled/voided overhead unrepresentative. Fixed cost, does not affect relative scenario comparison.
 
 ### Step 9: Analysis
 
@@ -240,10 +214,10 @@ Where:
 
 ### Canceled/Voided Handling
 
-- Fixed baseline constant from Navan `Report` tab ($35,632.02 for the full 2.08-year period).
-- It is not scaled by hires and not re-estimated per scenario.
-- Annualized to ~$17,170/year in Step 09 output.
-- Intent: preserve known historical overhead as a static add-on to scenario totals.
+- `BASELINE_CANCELED_VOIDED_USD = 0.0` in `config.py`.
+- Set to zero because the Navan export covers only ~2 of 16 technicians, making the canceled/voided overhead unrepresentative of the full fleet.
+- This is a fixed cost that does not vary by scenario and does not affect the relative comparison between hiring levels.
+- Previously $35,632 (full-period) from Navan Report tab, now excluded.
 
 ### Skill Constraints (HPS / LS)
 
@@ -310,74 +284,65 @@ All figures in the simulation panel are annualized. The subtitle reads "Cost-fir
 
 ## Latest Validated Run Snapshot
 
-From current optimization artifacts (BTS-corrected matrix + full cost model + annualization active):
+From current optimization artifacts (BTS Q2 2025 lookup + full cost model + annualization active):
 
-- Data span: **2.0753 years** (Jan 2, 2024 → Jan 29, 2026, 758 days, 1,480 appointments)
-- Annualized appointment count: ~713/year
+- Data span: **2.0753 years** (Jan 2, 2024 → Jan 29, 2026, 758 days, 1,471 US appointments)
+- Annualized appointment count: ~709/year
 - Scenario range: `N=0..4`
-- Selection mode: `proven_optimal_only` (N=1..4 solved to proven optimality; N=0 hit time limit with MIP gap 0.007% — effectively optimal)
-- Best scenario: `N=1` (N=0 can't serve all demand with reduced fleet)
-- **N=0 annualized travel cost: `$575,223` USD** (9 unmet appointments)
-- **N=0 annualized overhead: `$17,170` USD**
-- **N=0 annualized total: `$614,077` USD**
+- Selection mode: `proven_optimal_only` (N=1..4 solved to proven optimality; N=0 hit time limit with MIP gap 0.003% — effectively optimal)
+- Best scenario: `N=0` (cost-minimizing — all 1,471 appointments served, 0 unmet)
+- **N=0 annualized travel cost: `$589,884` USD** (0 unmet appointments)
+- **N=0 annualized overhead: `$0` USD** (canceled/voided excluded)
+- **N=0 annualized total: `$589,884` USD**
 - Burdened annual per-hire planning cost: `$146,640` USD (period-scaled to `$304,322` in MILP)
 - Full cost model constants: IRS $0.70/mi, rental $235/trip, hotel $159/night (duration-scaled), drive threshold 300 mi, day-trip ≤150 mi + ≤1 day
-- Full cost table: 8,008 rows (16 techs × 77 nodes + 88 candidates × 77 nodes)
-- Drive/fly split in cost table: 8.5% drive, 91.5% fly
-- Hotel nights distribution: 1 night (2.6%), 2 nights (44.2%), 3 nights (46.8%), 4 nights (6.5%). Mean hotel cost: $409/trip. No day trips (min node avg = 1.18 days > 1.0 threshold).
-- Navan flight date window used in Step 7: `2025-07-09` to `2026-03-13`
+- Flight cost: BTS Q2 2025 × 1.6 corporate premium. Mean flight cost $633, range $455–$783.
+- Full cost table: 7,372 rows (15 techs × 76 nodes + 82 candidates × 76 nodes). Hakim Mouazer (no lat/lon) excluded.
+- Drive/fly split in cost table: 9.0% drive, 91.0% fly
+- Hotel nights distribution: 1 night (2.6%), 2 nights (44.7%), 3 nights (47.4%), 4 nights (5.3%). Mean hotel cost: $406/trip. No day trips.
 - No scenario allocates more than one hire to a single base (`max_hires_per_base=1`).
-- N=0: 1,471 served, 9 unmet (fleet too tight at 11.45 FTE to cover all 1,480). N=1..4: all 1,480 served.
-- Active techs at N=0: 15 (excludes James Sanchez (availability_fte=0.0, on phones temporarily)). Damion Lyn and Elier Martin are phone techs at 0.10 FTE each. Total effective FTE: 11.45.
-- Mean utilization at N=0: 86.0%. Max: 100.00% (fleet is capacity-constrained — can't serve all demand without hiring).
+- N=0: 1,471 served, 0 unmet. N=1..4: all 1,471 served, 0 unmet.
+- Active techs at N=0: 15 (excludes James Sanchez (availability_fte=0.0)). Damion Lyn and Elier Martin at 0.10 FTE each. Total effective FTE: 11.45.
+- Mean utilization at N=0: 86.4%. Max: 100.00%.
 
 ### Scenario Cost Summary (Annualized)
 
 | N | Annual Travel | Annual Payroll | Annual Overhead | Annual Total | Served | Unmet |
 |---|--------------|----------------|-----------------|-------------|--------|-------|
-| 0 | $575,223 | $0 | $17,170 | **$614,077** | 1,471 | 9 |
-| 1 | $535,108 | $146,640 | $17,170 | $698,918 | 1,480 | 0 |
-| 2 | $500,695 | $293,280 | $17,170 | $811,145 | 1,480 | 0 |
-| 3 | $475,953 | $439,920 | $17,170 | $933,043 | 1,480 | 0 |
-| 4 | $456,432 | $586,560 | $17,170 | $1,060,161 | 1,480 | 0 |
+| 0 | $589,884 | $0 | $0 | **$589,884** | 1,471 | 0 |
+| 1 | $538,477 | $146,640 | $0 | $685,117 | 1,471 | 0 |
+| 2 | $509,146 | $293,280 | $0 | $802,426 | 1,471 | 0 |
+| 3 | $485,168 | $439,920 | $0 | $925,088 | 1,471 | 0 |
+| 4 | $466,744 | $586,560 | $0 | $1,053,304 | 1,471 | 0 |
 
-Marginal annual travel savings diminish: $40K (N=0→1), $34K (N=1→2), $25K (N=2→3), $20K (N=3→4).
+Marginal annual travel savings diminish: $51K (N=0→1), $29K (N=1→2), $24K (N=2→3), $18K (N=3→4).
 
 ### Revenue-from-Freed-Capacity Summary (Annualized)
 
 | N | Realistic Installs/yr | Net Cost Increase | Net Value (Conservative) | Net Value (Moderate) | Net Value (Aggressive) | Break-Even (Mod) |
 |---|----------------------:|------------------:|-------------------------:|---------------------:|-----------------------:|-----------------:|
 | 0 | 0.0 | $0 | $0 | $0 | $0 | 0.0 |
-| 1 | 28.4 | $84,841 | $267,832 | $907,762 | $2,898,656 | 2.4 |
-| 2 | 60.0 | $197,068 | $547,297 | $1,897,959 | $6,100,018 | 5.6 |
-| 3 | 91.6 | $318,966 | $817,239 | $2,878,902 | $9,292,963 | 9.1 |
-| 4 | 123.2 | $446,085 | $1,081,685 | $3,853,848 | $12,478,355 | 12.8 |
+| 1 | 34.3 | $95,233 | $329,694 | $1,100,731 | $3,499,513 | 2.7 |
+| 2 | 63.0 | $212,542 | $568,197 | $1,984,859 | $6,392,254 | 6.1 |
+| 3 | 89.8 | $335,204 | $778,535 | $2,799,433 | $9,086,672 | 9.6 |
+| 4 | 118.9 | $463,420 | $1,010,488 | $3,684,917 | $12,005,364 | 13.3 |
 
-Key takeaway: With the corrected fleet (11.45 FTE), N=0 can't serve all 1,480 appointments (9 unmet). N=1 enables 28.4 installs/yr for only $85K incremental cost (break-even at 2.4 moderate installs, ROI 1,070%). The case for hiring is now even stronger — the fleet is capacity-constrained without new hires.
+Key takeaway: N=0 serves all 1,471 US appointments with 0 unmet. N=1 frees capacity for 34.3 installs/yr at $95K incremental cost (break-even at 2.7 moderate installs, ROI 1,156%). Revenue analysis strongly supports hiring even though cost-only optimization selects N=0.
 
 ### Hiring Placements by Scenario
 
 | N | Recommended Bases |
 |---|-------------------|
-| 1 | CLE (Cleveland, OH) |
-| 2 | ORD (Chicago, IL), CLE |
-| 3 | ORD, CLE, OKC (Oklahoma City, OK) |
-| 4 | ORD, CLE, BNA (Nashville, TN), Fort Smith AR (→ LIT airport) |
+| 1 | DTW (Detroit, MI) |
+| 2 | DTW, Janesville WI (→ MKE airport) |
+| 3 | DTW, Janesville WI, Fort Smith AR (→ LIT airport) |
+| 4 | DTW, BNA (Nashville, TN), Janesville WI, Fort Smith AR |
 
-- BTS-corrected matrix airport benchmarks (key sanity checks):
-  - MDW: $471 → $199 (-57.7%) — now grounded in BTS data, not model speculation
-  - TPA: $418 → $563 (+34.5%) — 6 TPA-based techs now realistically priced
-  - IND: $267 → $225 (-15.9%)
-  - BOI: $322 → $220 (-31.5%)
 
 ## Important File Outputs to Check First
 
 - `data/processed/optimization/optimization_input_summary.json` (includes `data_span_years`)
 - `data/processed/optimization/model_assumptions.json` (includes `data_span_years`, `hire_cost_for_optimization_period`)
-- `data/processed/optimization/travel_model_metrics.json`
-- `data/processed/optimization/travel_matrix_coverage_report.json`
-- `data/processed/optimization/travel_matrix_origin_anomaly_report.json`
-- `data/processed/optimization/baseline_kpis.json`
 - `data/processed/optimization/scenario_summary.csv`
 - `data/processed/optimization/scenario_summary_enhanced.csv`
 - `data/processed/optimization/scenario_placements.csv`
@@ -390,38 +355,36 @@ Key takeaway: With the corrected fleet (11.45 FTE), N=0 can't serve all 1,480 ap
 
 ## Known Limitations and Caveats
 
-### Data Sparsity
-1. Navan coverage window is shorter than full appointment history, so route learning is partially sparse.
-2. 51 of 62 origin airports had fewer than 10 Navan flights; 27 had zero. BTS correction addresses the resulting bias but does not replace the need for broader Navan flight data over time.
-3. BTS fares embedded in Step 10 are Q2 2025 data. Tier 2 airports (~24 of 62) use estimated midpoints rather than directly verified BTS figures. Re-run Step 10 if fare data is refreshed.
+### Flight Cost Data
+1. BTS fares in `config.BTS_RAW_ITINERARY_FARES` are Q2 2025 data. SHV, BIL, BIS, FAR, and ANC use the national fallback ($386) as their BTS-specific fares were unavailable. Update the dict in `config.py` if fare data is refreshed.
+2. The 1.6× corporate premium is calibrated from Navan median ($633) / BTS average ($386). If Navan booking patterns change, recalibrate.
 
 ### Cost Model Simplifications
-4. Hotel cost is **duration-scaled** using per-node average appointment duration (not per-appointment). Nodes with mixed short/long appointments get a blended average. The nightly rate ($159) and day-trip thresholds are Navan-derived constants. Day-trip logic (≤150 mi + ≤1 day avg → $0 hotel) currently triggers on zero nodes because the minimum node avg is 1.18 days.
-5. Same-city trip bundling is not modeled — each of 1,480 appointments is treated as a separate trip. In practice, techs bundle nearby appointments.
-6. Great-circle distance (not road distance) for drive/fly classification. Road distance is typically 10–25% longer, meaning some trips classified as "drive" might actually exceed 300 road-miles.
-7. Canceled/voided overhead ($35,632 full-period / $17,170 annualized) is fixed across all scenarios, not re-estimated per hiring level.
-8. Full cost model hotel nightly rate ($159) and rental car ($235) are 2025 Navan actuals. Re-update in `config.py` if Navan benchmarks change meaningfully.
+3. Hotel cost is **duration-scaled** using per-node average appointment duration (not per-appointment). Nodes with mixed short/long appointments get a blended average. The nightly rate ($159) and day-trip thresholds are Navan-derived constants. Day-trip logic (≤150 mi + ≤1 day avg → $0 hotel) currently triggers on zero nodes because the minimum node avg is 1.18 days.
+4. Same-city trip bundling is not modeled — each of 1,480 appointments is treated as a separate trip. In practice, techs bundle nearby appointments.
+5. Great-circle distance (not road distance) for drive/fly classification. Road distance is typically 10–25% longer, meaning some trips classified as "drive" might actually exceed 300 road-miles.
+6. Canceled and voided booking overhead is excluded (`BASELINE_CANCELED_VOIDED_USD = 0.0`) due to incomplete Navan data coverage (~2 of 16 techs). This is a fixed cost that does not vary by scenario and does not affect the relative comparison between hiring levels.
+7. Full cost model hotel nightly rate ($159) and rental car ($235) are 2025 Navan actuals. Re-update in `config.py` if Navan benchmarks change meaningfully.
 
 ### Model Assumptions
-9. **No seasonality** — the model treats all appointments as equivalent regardless of when they occur during the year.
-10. **New hires cannot serve HPS nodes** — this is a policy assumption. If new hires can be HPS-trained, the model underestimates their value.
-11. Capacity model is demand-normalized (not calendar-based). See "Capacity Model" section above.
-12. BTS prior is optional and currently inactive if the prior CSV is missing.
-13. **Annualization assumes uniform distribution** — dividing by `data_span_years` assumes costs are evenly distributed across the 2.08-year period. If demand or travel patterns shifted significantly within the period, annualized figures may not perfectly represent a single future year.
+8. **No seasonality** — the model treats all appointments as equivalent regardless of when they occur during the year.
+9. **New hires cannot serve HPS nodes** — this is a policy assumption. If new hires can be HPS-trained, the model underestimates their value.
+10. Capacity model is demand-normalized (not calendar-based). See "Capacity Model" section above.
+11. **Annualization assumes uniform distribution** — dividing by `data_span_years` assumes costs are evenly distributed across the 2.08-year period. If demand or travel patterns shifted significantly within the period, annualized figures may not perfectly represent a single future year.
+12. Flight cost is origin-only (no destination dependency). All flights from a given airport cost the same regardless of where the technician is going. This simplification is reasonable because BTS averages are itinerary-level (round-trip) and vary primarily by origin market.
 
 ### Proxy and Approximation Notes
-14. **SHV and ICT travel costs are proxy-based, not BTS-calibrated.** Their matrix rows were generated from LIT (for SHV) and TUL (for ICT) as proxies. SHV mean cost ($476) and ICT mean cost ($370) are reasonable for regional airports but are not BTS-grounded.
-15. **Fort Smith AR maps to LIT (Little Rock, ~157 mi).** No closer airport is in the 62-airport list. Fort Smith has a small regional airport (FSM) not in our candidate pool.
+13. **Fort Smith AR maps to LIT (Little Rock, ~157 mi).** No closer airport is in the 62-airport list. Fort Smith has a small regional airport (FSM) not in our candidate pool.
 
 ### Revenue Model Caveats
-16. Revenue figures represent **capacity enabled**, not guaranteed bookings — actual revenue depends on sales pipeline and market demand.
-17. Profit margins are applied (15%/25%/40% on installations, 70% on service contracts) — actual margins vary by product line and deal structure.
-18. Service contract revenue assumes each new installation generates an annual $7K contract. Fleet mix may shift this up (Apex-tier) or down (Peak-tier).
-19. Estimates are **annualized from the 2.08-year data period** — actual future-year results depend on demand trends.
-20. Revenue analysis is supplementary — the MILP optimizer recommendation (N=0) is unchanged and based purely on cost minimization.
+14. Revenue figures represent **capacity enabled**, not guaranteed bookings — actual revenue depends on sales pipeline and market demand.
+15. Profit margins are applied (15%/25%/40% on installations, 70% on service contracts) — actual margins vary by product line and deal structure.
+16. Service contract revenue assumes each new installation generates an annual $7K contract. Fleet mix may shift this up (Apex-tier) or down (Peak-tier).
+17. Estimates are **annualized from the 2.08-year data period** — actual future-year results depend on demand trends.
+18. Revenue analysis is supplementary — the MILP optimizer recommendation (N=0) is unchanged and based purely on cost minimization.
 
 ### Solver
-21. All 5 scenarios solve to proven optimality (MIP gap = 0.0). Max existing-tech utilization is 99.99% at N=0, indicating the workforce is very tightly loaded.
+19. All 5 scenarios solve to proven optimality (MIP gap = 0.0). Max existing-tech utilization is 99.99% at N=0, indicating the workforce is very tightly loaded.
 
 ## Recommended Defaults for Re-Runs
 
@@ -429,33 +392,28 @@ Use these commands unless a test requires deviation:
 
 ```bash
 /opt/miniconda3/bin/python3 scripts/06_build_optimization_inputs.py
-/opt/miniconda3/bin/python3 scripts/07_build_travel_cost_model.py --engine hybrid --min-direct-route-n 5 --shrinkage-k 10
-/opt/miniconda3/bin/python3 scripts/10_correct_travel_costs.py
 /opt/miniconda3/bin/python3 scripts/11_build_full_cost_table.py
 /opt/miniconda3/bin/python3 scripts/08_optimize_locations.py --min-new-hires 0 --max-new-hires 4 --max-hires-per-base 1 --time-limit-sec 600
 /opt/miniconda3/bin/python3 scripts/09_analyze_scenarios.py
 /opt/miniconda3/bin/python3 scripts/05_generate_map.py
 ```
 
-To revert to the original (uncorrected) matrix without re-running, set `BTS_CORRECTED_MATRIX = False` in `scripts/config.py` and re-run steps 11–8–9–5.
-To revert to the flight-cost-only model, set `FULL_COST_MODEL = False` in `scripts/config.py` and re-run steps 8–9–5 (Step 11 can be skipped).
+To update BTS fares, edit `BTS_RAW_ITINERARY_FARES` in `scripts/config.py` and re-run steps 11–08–09–05.
 
 ## If Starting a New Chat
 
 State these immediately to avoid context drift:
 
-1. Hybrid travel-cost engine is already implemented and in use.
+1. **BTS Q2 2025 lookup table with 1.6× corporate premium** is the flight cost engine. `BTS_RAW_ITINERARY_FARES[origin] × 1.6`. Steps 07 and 10 are deprecated.
 2. **Annualization is active.** Data spans 2.08 years (1,480 appts). All output figures are annualized. Step 06 computes `data_span_years` (2.0753). Step 08 scales hire cost for MILP period. Step 09 divides all costs/hours by `data_span_years`.
 3. **Full cost model is active** (Step 11): duration-scaled hotel ($159/night × node-avg nights) + rental on fly trips; IRS mileage + duration-scaled hotel on drive trips; day-trip logic (≤150 mi + ≤1 day → $0 hotel); drive/fly classified by 300-mile haversine threshold.
-4. **BTS-calibrated cost matrix is active** (Step 10): 62 US airports, 1.22× corporate premium.
-5. Burdened hire cost is `$146,640`/year per incremental hire ($304,322 in MILP period).
-6. Out-of-region penalty default is `0`.
-7. Canceled/voided cost is fixed baseline overhead (`$35,632` full-period / `$17,170` annualized), not scenario-variable.
-8. Canada excluded from optimization. Hakim Mouazer (Montreal) at availability_fte=0.0 (map only).
-9. **New hires cannot serve HPS nodes** (policy constraint, hard variable bound).
-10. Capacity model is demand-normalized with `target_utilization=0.85`.
-11. Scenario panel `Total Cost` shows annualized `economic_total_with_overhead_usd`.
-12. Technician map points are grouped by base; roster details are in marker popup.
-13. N=0 annualized total: `$610,642`. Best scenario is N=0 — all hiring scenarios cost more.
-14. **Revenue-from-freed-capacity analysis is active** in Step 09: 3 profit tiers + $7K service contracts. N=1 moderate net value: ~$848K/year. Break-even: 3.0 installs. This is supplementary — MILP recommendation unchanged.
-15. Pipeline order: 06 → 07 → 10 → 11 → 08 → 09 → 05.
+4. Burdened hire cost is `$146,640`/year per incremental hire ($304,322 in MILP period).
+5. Out-of-region penalty default is `0`.
+6. Canceled/voided overhead excluded (`$0`) — Navan covers only ~2/16 techs. Fixed cost, doesn't affect scenario comparison.
+7. Canada excluded from optimization. Hakim Mouazer (Montreal) at availability_fte=0.0 (map only).
+8. **New hires cannot serve HPS nodes** (policy constraint, hard variable bound).
+9. Capacity model is demand-normalized with `target_utilization=0.85`.
+10. Scenario panel `Total Cost` shows annualized `economic_total_with_overhead_usd`.
+11. Technician map points are grouped by base; roster details are in marker popup.
+12. **Revenue-from-freed-capacity analysis is active** in Step 09: 3 profit tiers + $7K service contracts. Supplementary — MILP recommendation unchanged.
+13. Pipeline order: **06 → 11 → 08 → 09 → 05**.

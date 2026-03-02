@@ -20,51 +20,36 @@ from optimization_utils import normalize_state
 
 def load_inputs(output_dir: Path) -> dict:
     """Load all prerequisite optimization inputs."""
-    corrected_path = output_dir / "travel_cost_matrix_bts_corrected.csv"
-    if config.BTS_CORRECTED_MATRIX and corrected_path.exists():
-        cost_matrix_file = corrected_path
-        print("  [BTS] Using BTS-calibrated travel cost matrix.")
-    else:
-        cost_matrix_file = output_dir / "travel_cost_matrix.csv"
     files = {
         "tech": output_dir / "tech_master.csv",
         "demand": output_dir / "demand_appointments.csv",
         "candidates": output_dir / "candidate_bases.csv",
-        "cost_matrix": cost_matrix_file,
-        "baseline": output_dir / "baseline_kpis.json",
     }
     missing = [str(path) for path in files.values() if not path.exists()]
     if missing:
         joined = "\n".join(f"- {p}" for p in missing)
-        raise FileNotFoundError(f"Missing required input files. Run steps 6 and 7 first.\n{joined}")
-
-    with open(files["baseline"], "r") as f:
-        baseline = json.load(f)
+        raise FileNotFoundError(f"Missing required input files. Run step 06 first.\n{joined}")
 
     result = {
         "tech": pd.read_csv(files["tech"]),
         "demand": pd.read_csv(files["demand"]),
         "candidates": pd.read_csv(files["candidates"]),
-        "cost_matrix": pd.read_csv(files["cost_matrix"]),
-        "baseline": baseline,
         "full_cost_df": None,
     }
 
-    if config.FULL_COST_MODEL:
-        full_cost_path = output_dir / "full_cost_table.csv"
-        if full_cost_path.exists():
-            result["full_cost_df"] = pd.read_csv(full_cost_path)
-            print(
-                f"  [FullCost] Loaded full_cost_table.csv "
-                f"({len(result['full_cost_df']):,} rows, "
-                f"drive/fly model active)."
-            )
-        else:
-            print(
-                "  [FullCost] WARNING: FULL_COST_MODEL=True but full_cost_table.csv not found. "
-                "Run scripts/11_build_full_cost_table.py first. "
-                "Falling back to flight-cost-only model."
-            )
+    full_cost_path = output_dir / "full_cost_table.csv"
+    if full_cost_path.exists():
+        result["full_cost_df"] = pd.read_csv(full_cost_path)
+        print(
+            f"  [FullCost] Loaded full_cost_table.csv "
+            f"({len(result['full_cost_df']):,} rows, "
+            f"drive/fly model active)."
+        )
+    else:
+        raise FileNotFoundError(
+            f"Missing: {full_cost_path}\n"
+            "Run scripts/11_build_full_cost_table.py first."
+        )
 
     return result
 
@@ -101,38 +86,6 @@ def build_demand_nodes(demand: pd.DataFrame) -> pd.DataFrame:
         axis=1,
     )
     return grouped
-
-
-def build_cost_lookup(cost_matrix: pd.DataFrame) -> tuple[dict[tuple[str, str], float], dict[str, float], float]:
-    """Build exact + fallback cost maps."""
-    matrix = cost_matrix.copy()
-    matrix["origin_airport"] = matrix["origin_airport"].astype(str)
-    matrix["state_norm"] = matrix["state_norm"].map(normalize_state)
-    matrix["expected_cost_usd"] = pd.to_numeric(matrix["expected_cost_usd"], errors="coerce")
-    matrix = matrix.dropna(subset=["origin_airport", "state_norm", "expected_cost_usd"])
-
-    exact = {
-        (str(r["origin_airport"]), str(r["state_norm"])): float(r["expected_cost_usd"])
-        for _, r in matrix.iterrows()
-    }
-    origin_avg = matrix.groupby("origin_airport")["expected_cost_usd"].mean().to_dict()
-    global_avg = float(matrix["expected_cost_usd"].mean())
-    return exact, origin_avg, global_avg
-
-
-def get_cost(
-    origin_airport: str,
-    state_norm: str,
-    exact_cost: dict[tuple[str, str], float],
-    origin_avg: dict[str, float],
-    global_avg: float,
-) -> float:
-    """Fetch route cost with fallback."""
-    if (origin_airport, state_norm) in exact_cost:
-        return exact_cost[(origin_airport, state_norm)]
-    if origin_airport in origin_avg:
-        return float(origin_avg[origin_airport])
-    return float(global_avg)
 
 
 def build_full_cost_lookup(
@@ -205,9 +158,7 @@ def solve_scenario(
     tech: pd.DataFrame,
     nodes: pd.DataFrame,
     candidates: pd.DataFrame,
-    exact_cost: dict[tuple[str, str], float],
-    origin_avg: dict[str, float],
-    global_avg: float,
+    full_cost_lookup: dict[tuple[str, str], float],
     contractor_scope: str,
     target_utilization: float,
     out_of_region_penalty: float,
@@ -215,7 +166,6 @@ def solve_scenario(
     annual_hire_cost_usd: float,
     max_hires_per_base: int,
     time_limit_sec: int,
-    full_cost_lookup: dict[tuple[str, str], float] | None = None,
 ) -> dict:
     """Solve one MILP scenario for a fixed new-hire count."""
     nodes = nodes.reset_index(drop=True).copy()
@@ -242,6 +192,10 @@ def solve_scenario(
     u_idx: dict[int, int] = {}
     candidate_indices = list(candidates.index) if hire_count > 0 else []
     _full_cost_fallback_count = 0  # track missing full_cost_lookup entries
+    _fallback_cost = (
+        config.BTS_NATIONAL_FALLBACK * config.CORPORATE_TRAVEL_PREMIUM
+        + config.RENTAL_CAR_AVG_USD + config.HOTEL_AVG_USD
+    )
 
     # Existing tech assignment vars: appointments assigned to node.
     for ti, trow in tech.iterrows():
@@ -255,22 +209,10 @@ def solve_scenario(
             ub.append(float(nrow["appointment_count"]))
             integrality.append(1)
 
-            if full_cost_lookup is not None:
-                _fc_key = (str(trow["tech_id"]), str(nrow["node_id"]))
-                if _fc_key not in full_cost_lookup:
-                    _full_cost_fallback_count += 1
-                base_cost = full_cost_lookup.get(
-                    _fc_key,
-                    global_avg + config.RENTAL_CAR_AVG_USD + config.HOTEL_AVG_USD,
-                )
-            else:
-                base_cost = get_cost(
-                    str(trow["base_airport_iata"]),
-                    str(nrow["state_norm"]),
-                    exact_cost,
-                    origin_avg,
-                    global_avg,
-                )
+            _fc_key = (str(trow["tech_id"]), str(nrow["node_id"]))
+            if _fc_key not in full_cost_lookup:
+                _full_cost_fallback_count += 1
+            base_cost = full_cost_lookup.get(_fc_key, _fallback_cost)
             is_out_region = int(str(trow.get("base_state", "")) != str(nrow["state_norm"]))
             penalty = out_of_region_penalty if is_out_region else 0.0
             obj.append(base_cost + penalty)
@@ -303,22 +245,10 @@ def solve_scenario(
                 ub.append(float(nrow["appointment_count"]))
             integrality.append(1)
 
-            if full_cost_lookup is not None:
-                _fc_key = (str(crow["candidate_id"]), str(nrow["node_id"]))
-                if _fc_key not in full_cost_lookup:
-                    _full_cost_fallback_count += 1
-                base_cost = full_cost_lookup.get(
-                    _fc_key,
-                    global_avg + config.RENTAL_CAR_AVG_USD + config.HOTEL_AVG_USD,
-                )
-            else:
-                base_cost = get_cost(
-                    str(crow["airport_iata"]),
-                    str(nrow["state_norm"]),
-                    exact_cost,
-                    origin_avg,
-                    global_avg,
-                )
+            _fc_key = (str(crow["candidate_id"]), str(nrow["node_id"]))
+            if _fc_key not in full_cost_lookup:
+                _full_cost_fallback_count += 1
+            base_cost = full_cost_lookup.get(_fc_key, _fallback_cost)
             is_out_region = int(str(crow.get("state", "")) != str(nrow["state_norm"]))
             penalty = out_of_region_penalty if is_out_region else 0.0
             obj.append(base_cost + penalty)
@@ -332,9 +262,9 @@ def solve_scenario(
                 }
             )
 
-    if full_cost_lookup is not None and _full_cost_fallback_count > 0:
+    if _full_cost_fallback_count > 0:
         print(f"  WARNING: {_full_cost_fallback_count} (tech/candidate, node) pairs missing from "
-              f"full_cost_table.csv — used global_avg fallback (${global_avg + config.RENTAL_CAR_AVG_USD + config.HOTEL_AVG_USD:,.2f}).")
+              f"full_cost_table.csv — used BTS fallback (${_fallback_cost:,.2f}).")
 
     # Candidate hire-count integer vars.
     for ci in candidate_indices:
@@ -678,8 +608,6 @@ def main() -> None:
     tech = inputs["tech"].copy()
     demand = inputs["demand"].copy()
     candidates = inputs["candidates"].copy()
-    cost_matrix = inputs["cost_matrix"].copy()
-    baseline = inputs["baseline"]
 
     for col in [
         "skill_hps",
@@ -692,12 +620,9 @@ def main() -> None:
     tech["base_state"] = tech["base_state"].map(normalize_state)
 
     demand_nodes = build_demand_nodes(demand)
-    exact_cost, origin_avg, global_avg = build_cost_lookup(cost_matrix)
 
-    full_cost_lookup: dict[tuple[str, str], float] | None = None
-    if config.FULL_COST_MODEL and inputs["full_cost_df"] is not None:
-        full_cost_lookup = build_full_cost_lookup(inputs["full_cost_df"])
-        print(f"  [FullCost] Lookup built: {len(full_cost_lookup):,} (entity, node) pairs.")
+    full_cost_lookup = build_full_cost_lookup(inputs["full_cost_df"])
+    print(f"  [FullCost] Lookup built: {len(full_cost_lookup):,} (entity, node) pairs.")
 
     if args.contractor_assignment_scope:
         contractor_scope = args.contractor_assignment_scope
@@ -715,7 +640,7 @@ def main() -> None:
     all_placements = []
     all_util = []
 
-    canceled_voided_usd = float(baseline.get("canceled_voided_spend_usd_report", 0.0))
+    canceled_voided_usd = config.BASELINE_CANCELED_VOIDED_USD
 
     # Scale hire cost to match the data period.
     # Travel costs cover the full data span (2.08 years of appointments).
@@ -744,9 +669,7 @@ def main() -> None:
                 tech=tech,
                 nodes=demand_nodes,
                 candidates=candidates,
-                exact_cost=exact_cost,
-                origin_avg=origin_avg,
-                global_avg=global_avg,
+                full_cost_lookup=full_cost_lookup,
                 contractor_scope=contractor_scope,
                 target_utilization=args.target_utilization,
                 out_of_region_penalty=args.out_of_region_penalty,
@@ -754,7 +677,6 @@ def main() -> None:
                 annual_hire_cost_usd=hire_cost_for_period,
                 max_hires_per_base=args.max_hires_per_base,
                 time_limit_sec=args.time_limit_sec,
-                full_cost_lookup=full_cost_lookup,
             )
         except RuntimeError as exc:
             msg = f"Solver error for N={hire_count}: {exc}"
@@ -815,8 +737,11 @@ def main() -> None:
         "hire_cost_scope": "incremental_new_hires_only",
         "hire_cost_input_mode": "direct_fixed_value",
         "contractor_assignment_scope": contractor_scope,
-        "full_cost_model": config.FULL_COST_MODEL and full_cost_lookup is not None,
+        "full_cost_model": True,
+        "flight_cost_model": "BTS Q2 2025 lookup × corporate premium",
         "full_cost_model_constants": {
+            "bts_national_fallback_usd": config.BTS_NATIONAL_FALLBACK,
+            "corporate_travel_premium": config.CORPORATE_TRAVEL_PREMIUM,
             "irs_mileage_rate_usd_per_mi": config.IRS_MILEAGE_RATE_USD_PER_MI,
             "rental_car_avg_usd": config.RENTAL_CAR_AVG_USD,
             "hotel_nightly_rate_usd": config.HOTEL_NIGHTLY_RATE_USD,
@@ -825,6 +750,7 @@ def main() -> None:
             "day_trip_max_distance_miles": config.DAY_TRIP_MAX_DISTANCE_MILES,
             "day_trip_max_duration_days": config.DAY_TRIP_MAX_DURATION_DAYS,
             "drive_threshold_miles": config.DRIVE_THRESHOLD_MILES,
+            "baseline_canceled_voided_usd": config.BASELINE_CANCELED_VOIDED_USD,
         },
         "hps_timeline_assumption": {
             "production_end_estimate": "2027-03-31",

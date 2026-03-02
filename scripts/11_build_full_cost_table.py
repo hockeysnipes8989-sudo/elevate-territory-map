@@ -1,17 +1,19 @@
 """Step 11: Pre-compute per-(tech/candidate, node) full trip cost table.
 
 Produces full_cost_table.csv in the optimization output directory.
-Must run after Steps 7 and 10 (travel cost matrix must exist).
-Re-run when demand_appointments.csv, tech_master.csv, or cost matrix changes.
+Must run after Step 06 (demand_appointments.csv, tech_master.csv,
+candidate_bases.csv must exist).
+
+Flight cost: BTS Q2 2025 itinerary fare × 1.6 corporate premium.
+Origin-only — cost does not vary by destination.
 
 Drive/fly classification:
   - Distance < DRIVE_THRESHOLD_MILES from tech/candidate base → drive
   - Distance >= DRIVE_THRESHOLD_MILES → fly
-  - Canadian techs (base_country != USA) always fly regardless of distance
 
 Drive cost:  IRS_MILEAGE_RATE * 2 * median_dist + hotel_nights * HOTEL_NIGHTLY_RATE
              (day-trips: short drive + short appt → $0 hotel)
-Fly cost:    flight_cost(matrix) + RENTAL_CAR_AVG + hotel_nights * HOTEL_NIGHTLY_RATE
+Fly cost:    flight_cost(BTS) + RENTAL_CAR_AVG + hotel_nights * HOTEL_NIGHTLY_RATE
 """
 
 from __future__ import annotations
@@ -37,51 +39,11 @@ def haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float
     return haversine_km(lat1, lon1, lat2, lon2) * MILES_PER_KM
 
 
-def load_cost_matrix(output_dir: Path) -> pd.DataFrame:
-    """Load the active travel cost matrix (BTS-corrected if configured)."""
-    corrected = output_dir / "travel_cost_matrix_bts_corrected.csv"
-    if config.BTS_CORRECTED_MATRIX and corrected.exists():
-        path = corrected
-        print("  [BTS] Using BTS-calibrated travel cost matrix.")
-    else:
-        path = output_dir / "travel_cost_matrix.csv"
-    if not path.exists():
-        raise FileNotFoundError(f"Travel cost matrix not found: {path}\nRun steps 7 and 10 first.")
-    return pd.read_csv(path)
-
-
-def build_flight_cost_lookup(
-    cost_matrix: pd.DataFrame,
-) -> tuple[dict[tuple[str, str], float], dict[str, float], float]:
-    """Build (airport, state_norm) → flight cost lookup with fallbacks."""
-    matrix = cost_matrix.copy()
-    matrix["origin_airport"] = matrix["origin_airport"].astype(str)
-    matrix["state_norm"] = matrix["state_norm"].map(normalize_state)
-    matrix["expected_cost_usd"] = pd.to_numeric(matrix["expected_cost_usd"], errors="coerce")
-    matrix = matrix.dropna(subset=["origin_airport", "state_norm", "expected_cost_usd"])
-
-    exact = {
-        (str(r["origin_airport"]), str(r["state_norm"])): float(r["expected_cost_usd"])
-        for _, r in matrix.iterrows()
-    }
-    origin_avg = matrix.groupby("origin_airport")["expected_cost_usd"].mean().to_dict()
-    global_avg = float(matrix["expected_cost_usd"].mean())
-    return exact, origin_avg, global_avg
-
-
-def get_flight_cost(
-    airport: str,
-    state: str,
-    exact: dict[tuple[str, str], float],
-    origin_avg: dict[str, float],
-    global_avg: float,
-) -> float:
-    """Flight cost lookup with origin-average and global fallbacks."""
-    if (airport, state) in exact:
-        return exact[(airport, state)]
-    if airport in origin_avg:
-        return float(origin_avg[airport])
-    return global_avg
+def get_flight_cost(airport: str) -> float:
+    """BTS Q2 2025 fare × corporate premium. Origin-only, no destination dependency."""
+    code = airport.strip().upper()
+    raw = config.BTS_RAW_ITINERARY_FARES.get(code, config.BTS_NATIONAL_FALLBACK)
+    return raw * config.CORPORATE_TRAVEL_PREMIUM
 
 
 def build_airport_lat_lon() -> dict[str, tuple[float, float]]:
@@ -108,17 +70,13 @@ def prepare_demand(demand_df: pd.DataFrame) -> pd.DataFrame:
 def compute_entity_node_costs(
     entities: list[dict],
     demand: pd.DataFrame,
-    flight_exact: dict[tuple[str, str], float],
-    flight_origin_avg: dict[str, float],
-    flight_global_avg: float,
     node_avg_days: dict[str, float] | None = None,
 ) -> list[dict]:
     """Compute full per-trip cost for all (entity, node) pairs.
 
     Args:
-        entities: list of dicts with keys: id, lat, lon, airport, is_canadian
+        entities: list of dicts with keys: id, lat, lon, airport
         demand: normalized demand_appointments DataFrame with node_id column
-        flight_exact/origin_avg/global_avg: flight cost lookup maps
         node_avg_days: node_id → average appointment duration in days (for hotel scaling)
 
     Returns:
@@ -126,10 +84,8 @@ def compute_entity_node_costs(
     """
     # Group appointments by node_id once for all entities
     node_groups: dict[str, pd.DataFrame] = {}
-    node_states: dict[str, str] = {}
     for node_id, grp in demand.groupby("node_id"):
         node_groups[node_id] = grp
-        node_states[node_id] = str(node_id).split("__", 1)[0]
 
     rows: list[dict] = []
     warned_nodes: set[str] = set()
@@ -139,7 +95,6 @@ def compute_entity_node_costs(
         base_lat = float(entity["lat"]) if pd.notna(entity["lat"]) else float("nan")
         base_lon = float(entity["lon"]) if pd.notna(entity["lon"]) else float("nan")
         airport = str(entity["airport"]).strip()
-        is_canadian = bool(entity["is_canadian"])
 
         if np.isnan(base_lat) or np.isnan(base_lon):
             warnings.warn(
@@ -164,12 +119,9 @@ def compute_entity_node_costs(
                 for la, lo in zip(lats, lons)
             ])
             median_dist = float(np.median(dists_mi))
-            node_state = node_states.get(node_id, "")
 
-            # Classify mode: Canadian techs always fly; others use distance threshold
-            if is_canadian:
-                trip_mode = "fly"
-            elif median_dist < config.DRIVE_THRESHOLD_MILES:
+            # Classify mode: distance threshold only (US-only optimization)
+            if median_dist < config.DRIVE_THRESHOLD_MILES:
                 trip_mode = "drive"
             else:
                 trip_mode = "fly"
@@ -192,9 +144,7 @@ def compute_entity_node_costs(
                     hotel_cost = hotel_nights * config.HOTEL_NIGHTLY_RATE_USD
                 unit_cost = mileage_cost + hotel_cost
             else:
-                flight_cost = get_flight_cost(
-                    airport, node_state, flight_exact, flight_origin_avg, flight_global_avg
-                )
+                flight_cost = get_flight_cost(airport)
                 mileage_cost = 0.0
                 rental_cost = config.RENTAL_CAR_AVG_USD
                 hotel_cost = hotel_nights * config.HOTEL_NIGHTLY_RATE_USD
@@ -236,16 +186,15 @@ def main() -> None:
     demand_path = out_dir / "demand_appointments.csv"
     for p in [tech_path, candidates_path, demand_path]:
         if not p.exists():
-            raise FileNotFoundError(f"Missing: {p}\nRun steps 6 and 7 first.")
+            raise FileNotFoundError(f"Missing: {p}\nRun step 06 first.")
 
     # Load data
     tech_df = pd.read_csv(tech_path)
     candidates_df = pd.read_csv(candidates_path)
     demand_df = pd.read_csv(demand_path)
-    cost_matrix = load_cost_matrix(out_dir)
-
-    flight_exact, flight_origin_avg, flight_global_avg = build_flight_cost_lookup(cost_matrix)
     airport_latlon = build_airport_lat_lon()
+
+    print(f"  Flight cost model: BTS Q2 2025 × {config.CORPORATE_TRAVEL_PREMIUM:.1f}x corporate premium")
 
     demand_prepared = prepare_demand(demand_df)
     n_nodes = demand_prepared["node_id"].nunique()
@@ -266,8 +215,6 @@ def main() -> None:
     for _, row in tech_df.iterrows():
         lat = pd.to_numeric(row.get("base_lat"), errors="coerce")
         lon = pd.to_numeric(row.get("base_lon"), errors="coerce")
-        country = str(row.get("base_country", "USA")).strip().upper()
-        is_canadian = country != "USA"
         airport = str(row.get("base_airport_iata", "")).strip()
         tech_entities.append(
             {
@@ -275,7 +222,6 @@ def main() -> None:
                 "lat": lat,
                 "lon": lon,
                 "airport": airport,
-                "is_canadian": is_canadian,
             }
         )
 
@@ -307,20 +253,17 @@ def main() -> None:
                 "lat": lat,
                 "lon": lon,
                 "airport": airport,
-                "is_canadian": False,  # New hires assumed US-based
             }
         )
 
     print(f"Processing {len(tech_entities)} techs × {n_nodes} nodes...")
     tech_rows = compute_entity_node_costs(
-        tech_entities, demand_prepared, flight_exact, flight_origin_avg, flight_global_avg,
-        node_avg_days=node_avg_days,
+        tech_entities, demand_prepared, node_avg_days=node_avg_days,
     )
 
     print(f"Processing {len(candidate_entities)} candidates × {n_nodes} nodes...")
     candidate_rows = compute_entity_node_costs(
-        candidate_entities, demand_prepared, flight_exact, flight_origin_avg, flight_global_avg,
-        node_avg_days=node_avg_days,
+        candidate_entities, demand_prepared, node_avg_days=node_avg_days,
     )
 
     all_rows = tech_rows + candidate_rows
@@ -357,8 +300,15 @@ def main() -> None:
         print("  Hotel nights distribution:")
         for nights_val, cnt in nights_dist.items():
             print(f"    {int(nights_val)} nights: {cnt} ({cnt/len(out_df)*100:.1f}%)")
+        # Flight cost sanity check
+        if fly_mask.any():
+            fly_flights = out_df.loc[fly_mask, "flight_cost_usd"]
+            print(f"  Flight cost range: ${fly_flights.min():,.2f} – ${fly_flights.max():,.2f}")
+            print(f"  Flight cost mean:  ${fly_flights.mean():,.2f}")
         print(
             f"\n  Cost constants used:\n"
+            f"    BTS corporate premium: {config.CORPORATE_TRAVEL_PREMIUM:.1f}x\n"
+            f"    BTS national fallback: ${config.BTS_NATIONAL_FALLBACK:.2f}\n"
             f"    IRS mileage rate:     ${config.IRS_MILEAGE_RATE_USD_PER_MI:.2f}/mi\n"
             f"    Rental car avg:       ${config.RENTAL_CAR_AVG_USD:.2f}/trip\n"
             f"    Hotel nightly rate:   ${config.HOTEL_NIGHTLY_RATE_USD:.2f}/night\n"
