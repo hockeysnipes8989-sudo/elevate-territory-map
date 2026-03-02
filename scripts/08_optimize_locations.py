@@ -15,10 +15,7 @@ from scipy.optimize import Bounds, LinearConstraint, milp
 
 sys.path.insert(0, os.path.dirname(__file__))
 import config
-from optimization_utils import CANADA_ABBR, normalize_state
-
-
-CANADA_NODE_STATES = set(CANADA_ABBR) | {"CANADA"}
+from optimization_utils import normalize_state
 
 
 def load_inputs(output_dir: Path) -> dict:
@@ -148,11 +145,6 @@ def build_full_cost_lookup(
     }
 
 
-def is_canada_node_state(state_norm: str) -> bool:
-    """Return True for Canadian province nodes plus generic CANADA node label."""
-    return str(state_norm).strip().upper() in CANADA_NODE_STATES
-
-
 def tech_eligible_for_node(tech: pd.Series, node: pd.Series, contractor_scope: str) -> bool:
     """Check skill and special geography constraints."""
     if int(node["required_hps"]) and int(tech["skill_hps"]) == 0:
@@ -162,21 +154,13 @@ def tech_eligible_for_node(tech: pd.Series, node: pd.Series, contractor_scope: s
     if int(tech["skill_patient"]) == 0:
         return False
 
-    tech_state = str(tech.get("base_state", ""))
     node_state = str(node.get("state_norm", ""))
     is_contractor = str(tech.get("employment_type", "")).lower() == "contractor"
     florida_only = int(tech.get("constraint_florida_only", 0)) == 1
-    canada_wide = int(tech.get("constraint_canada_wide", 0)) == 1
-    node_is_canada = is_canada_node_state(node_state)
 
     if florida_only and node_state != "FL":
         return False
     if is_contractor and contractor_scope == "texas_only" and node_state != "TX":
-        return False
-    # Canada-wide specialists (Hakim) should only cover Canada; Canada nodes should only use them.
-    if node_is_canada and not canada_wide:
-        return False
-    if canada_wide and not node_is_canada:
         return False
 
     # If no origin airport, don't allow assignment.
@@ -303,18 +287,17 @@ def solve_scenario(
     # New-hire assignment vars.
     # New hires are NOT eligible for HPS-required nodes (skill_class "hps" or
     # "hps_ls") — they lack HPS certification. They CAN serve "regular" and "ls"
-    # nodes. Canada exclusion (Hakim policy) also enforced.
+    # nodes.
     for ci in candidate_indices:
         crow = candidates.loc[ci]
         for ni, nrow in nodes.iterrows():
-            node_is_canada = is_canada_node_state(str(nrow["state_norm"]))
             node_requires_hps = int(nrow.get("required_hps", 0)) == 1
             idx = len(var_names)
             z_idx[(ci, ni)] = idx
             var_names.append(f"z__{crow['candidate_id']}__{nrow['node_id']}")
             lb.append(0.0)
-            # Block new hires from Canada demand and HPS-required nodes.
-            if node_is_canada or node_requires_hps:
+            # Block new hires from HPS-required nodes.
+            if node_requires_hps:
                 ub.append(0.0)
             else:
                 ub.append(float(nrow["appointment_count"]))
@@ -703,7 +686,6 @@ def main() -> None:
         "skill_ls",
         "skill_patient",
         "constraint_florida_only",
-        "constraint_canada_wide",
     ]:
         tech[col] = pd.to_numeric(tech[col], errors="coerce").fillna(0).astype(int)
     tech["availability_fte"] = pd.to_numeric(tech["availability_fte"], errors="coerce").fillna(0.0)

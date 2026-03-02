@@ -104,23 +104,9 @@ BTS_CORP_ADJ_OW: dict[str, float] = {
 # National average fallback: $386/2 × 1.22 = $235
 BTS_NATIONAL_FALLBACK = 235.0
 
-# Canadian airports: base OW est (USD) × 1.22 × 2.0 cross-border multiplier
-# YUL overridden below after blending with Navan actuals.
-CANADIAN_BTS_CORP_ADJ_OW: dict[str, float] = {
-    "YEG": 405.0,   # ~$166 × 1.22 × 2.0
-    "YQR": 471.0,   # ~$193 × 1.22 × 2.0
-    "YUL": 447.0,   # ~$183 × 1.22 × 2.0  (pure BTS component; blended separately)
-    "YVR": 491.0,   # ~$201 × 1.22 × 2.0
-    "YYC": 405.0,   # ~$166 × 1.22 × 2.0
-    "YYZ": 447.0,   # ~$183 × 1.22 × 2.0
-}
-
-
 def get_bts_fare(airport: str) -> float:
     """Return BTS corporate-adjusted one-way fare for the given airport code."""
     code = airport.strip().upper()
-    if code in CANADIAN_BTS_CORP_ADJ_OW:
-        return CANADIAN_BTS_CORP_ADJ_OW[code]
     return BTS_CORP_ADJ_OW.get(code, BTS_NATIONAL_FALLBACK)
 
 
@@ -131,10 +117,6 @@ def compute_corrected_benchmark(
     bts_corporate: float,
 ) -> float:
     """Apply blending table and return corrected airport-level benchmark."""
-    # Special case: YUL with 10 Navan flights → 60/40 blend
-    if airport.upper() == "YUL" and navan_count >= 10:
-        return 0.60 * navan_mean + 0.40 * bts_corporate
-
     if navan_count >= 20:
         return navan_mean
     elif navan_count >= 10:
@@ -240,9 +222,7 @@ def main() -> None:
         airport_corrections[airport] = correction_ratio
 
         # Determine tier
-        if airport in CANADIAN_BTS_CORP_ADJ_OW:
-            tier = "canadian_crossborder"
-        elif airport in BTS_CORP_ADJ_OW:
+        if airport in BTS_CORP_ADJ_OW:
             tier = "tier1_bts_verified" if airport not in {
                 "ABQ", "BOI", "BUF", "CHS", "JAX", "MKE", "OMA", "ONT",
                 "BHM", "DSM", "FAR", "GRR", "LIT", "MEM", "OKC", "RIC",

@@ -210,12 +210,13 @@ def build_tech_master(
             availability = 0.25
         if canonical_name == "James Sanchez":
             availability = 0.0
+        if canonical_name == "Hakim Mouazer":
+            availability = 0.0
         if canonical_name in ("Damion Lyn", "Elier Martin"):
             availability = 0.10
 
         note = row.get("Comments", "").strip()
         florida_only = int("only covers florida" in note.lower())
-        canada_wide = int("covers all of canada" in note.lower())
 
         rows.append(
             {
@@ -238,7 +239,6 @@ def build_tech_master(
                 "can_relocate": 0,
                 "contractor_assignment_scope": contractor_scope if is_contractor else "",
                 "constraint_florida_only": florida_only,
-                "constraint_canada_wide": canada_wide,
                 "notes": note,
             }
         )
@@ -282,6 +282,12 @@ def build_demand_appointments(
     demand["state_raw"] = demand["State/Province"].astype(str).str.strip()
     demand["state_norm"] = demand["state_raw"].map(normalize_state)
     demand["country"] = demand["state_norm"].map(country_from_state)
+    # Exclude Canadian appointments — US-only optimization.
+    n_before = len(demand)
+    demand = demand[demand["country"] != "Canada"].copy()
+    n_dropped = n_before - len(demand)
+    if n_dropped:
+        print(f"  Filtered out {n_dropped} Canadian appointment(s) — US-only scope.")
     demand["territory"] = demand["Territory"].astype(str).str.strip()
 
     parsed = demand.apply(

@@ -332,11 +332,4 @@ MAJOR_AIRPORTS = [
     {"code": "PDX", "name": "Portland Intl",          "city": "Portland, OR",         "lat": 45.5898, "lon": -122.5951},
     {"code": "BOI", "name": "Boise Airport",          "city": "Boise, ID",            "lat": 43.5644, "lon": -116.2228},
     {"code": "ANC", "name": "Anchorage Intl",         "city": "Anchorage, AK",        "lat": 61.1744, "lon": -149.9963},
-    # --- CANADA ---
-    {"code": "YYZ", "name": "Toronto Pearson",        "city": "Toronto, ON",          "lat": 43.6777, "lon": -79.6248},
-    {"code": "YUL", "name": "Montreal-Trudeau",       "city": "Montreal, QC",         "lat": 45.4706, "lon": -73.7408},
-    {"code": "YYC", "name": "Calgary Intl",           "city": "Calgary, AB",          "lat": 51.1215, "lon": -114.0076},
-    {"code": "YEG", "name": "Edmonton Intl",          "city": "Edmonton, AB",         "lat": 53.3097, "lon": -113.5827},
-    {"code": "YVR", "name": "Vancouver Intl",         "city": "Vancouver, BC",        "lat": 49.1967, "lon": -123.1815},
-    {"code": "YQR", "name": "Regina Intl",            "city": "Regina, SK",           "lat": 50.4319, "lon": -104.6659},
 ]

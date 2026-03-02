@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This repository supports Elevate Healthcare service planning across the US and Canada with:
+This repository supports Elevate Healthcare service planning across the US with:
 
 1. An interactive map (`docs/index.html`) for assets, appointments, technicians, territories, airports, and scenario overlays.
 2. A cost optimization pipeline (`scripts/06` to `11`) for evaluating incremental hiring scenarios.
@@ -22,7 +22,7 @@ This file is the canonical context handoff for future chats.
 - **Full cost model is active** (Step 11). `config.FULL_COST_MODEL = True`. Hotel cost is **duration-scaled**: `HOTEL_NIGHTLY_RATE_USD` ($159) × hotel nights (derived from per-node avg appointment duration). Day-trip logic zeros out hotel for short drive trips (≤150 mi + ≤1 day avg). Each fly trip also includes rental car ($235). Drive trips use IRS mileage ($0.70/mi × round-trip) + duration-scaled hotel. Drive/fly classified by 300-mile haversine threshold. Step 11 pre-computes a per-(tech/candidate, node) cost table (`full_cost_table.csv`) used by the optimizer.
 - Burdened new-hire payroll is modeled in Step 8 (`146,640` USD per incremental hire per year).
 - Default out-of-region penalty is disabled (`0` USD).
-- Hakim-only Canada servicing rule is implemented (Canada is restricted to Canada-wide specialist techs).
+- Canada is excluded from optimization scope. Hakim Mouazer (Montreal) has availability_fte=0.0 (visible on map only).
 - Simulation panel reads optimization outputs and shows scenario KPIs for `N=0..4`.
 - Technician markers are grouped by shared coordinates so all 16 roster members are visible via popup rosters.
 - New-hire allocation is hard-capped at 1 hire per base by default.
@@ -122,7 +122,6 @@ Step 10 only needs to re-run when the raw travel cost matrix (`travel_cost_matri
 - Skills are parsed from appointment text and roster columns.
 - Special technician constraints are derived from roster comments:
   - `constraint_florida_only`
-  - `constraint_canada_wide`
 - Candidate bases combine major airports plus top demand-city candidates.
 - **Data span computation:** `data_span_years = max(date_span_days / 365.25, 0.5)`. Currently 2.0753 years (Jan 2, 2024 → Jan 29, 2026, 758 days).
 
@@ -245,12 +244,6 @@ Where:
 - It is not scaled by hires and not re-estimated per scenario.
 - Annualized to ~$17,170/year in Step 09 output.
 - Intent: preserve known historical overhead as a static add-on to scenario totals.
-
-### Canada Coverage Rule (Hakim Policy)
-
-- Canada nodes can only be assigned to techs with `constraint_canada_wide = 1`.
-- Those techs are restricted to Canada nodes only.
-- New hires are currently blocked from serving Canada nodes.
 
 ### Skill Constraints (HPS / LS)
 
@@ -376,7 +369,6 @@ Key takeaway: With the corrected fleet (11.45 FTE), N=0 can't serve all 1,480 ap
   - TPA: $418 → $563 (+34.5%) — 6 TPA-based techs now realistically priced
   - IND: $267 → $225 (-15.9%)
   - BOI: $322 → $220 (-31.5%)
-  - YUL: $676 → $754 (+11.6%) — 60/40 blend of 10 Navan actuals + BTS cross-border
 
 ## Important File Outputs to Check First
 
@@ -400,8 +392,8 @@ Key takeaway: With the corrected fleet (11.45 FTE), N=0 can't serve all 1,480 ap
 
 ### Data Sparsity
 1. Navan coverage window is shorter than full appointment history, so route learning is partially sparse.
-2. 57 of 68 origin airports had fewer than 10 Navan flights; 27 had zero. BTS correction addresses the resulting bias but does not replace the need for broader Navan flight data over time.
-3. BTS fares embedded in Step 10 are Q2 2025 data. Tier 2 airports (~24 of 68) use estimated midpoints rather than directly verified BTS figures. Re-run Step 10 if fare data is refreshed.
+2. 51 of 62 origin airports had fewer than 10 Navan flights; 27 had zero. BTS correction addresses the resulting bias but does not replace the need for broader Navan flight data over time.
+3. BTS fares embedded in Step 10 are Q2 2025 data. Tier 2 airports (~24 of 62) use estimated midpoints rather than directly verified BTS figures. Re-run Step 10 if fare data is refreshed.
 
 ### Cost Model Simplifications
 4. Hotel cost is **duration-scaled** using per-node average appointment duration (not per-appointment). Nodes with mixed short/long appointments get a blended average. The nightly rate ($159) and day-trip thresholds are Navan-derived constants. Day-trip logic (≤150 mi + ≤1 day avg → $0 hotel) currently triggers on zero nodes because the minimum node avg is 1.18 days.
@@ -419,18 +411,17 @@ Key takeaway: With the corrected fleet (11.45 FTE), N=0 can't serve all 1,480 ap
 
 ### Proxy and Approximation Notes
 14. **SHV and ICT travel costs are proxy-based, not BTS-calibrated.** Their matrix rows were generated from LIT (for SHV) and TUL (for ICT) as proxies. SHV mean cost ($476) and ICT mean cost ($370) are reasonable for regional airports but are not BTS-grounded.
-15. **Fort Smith AR maps to LIT (Little Rock, ~157 mi).** No closer airport is in the 68-airport list. Fort Smith has a small regional airport (FSM) not in our candidate pool.
-16. YUL (Montreal-Trudeau) raw hybrid model estimated ~$676 vs observed ~$959 (29% underestimate). The BTS correction blends 60% Navan actual ($959) + 40% BTS cross-border ($447) → $754. The remaining ~$205 gap vs observed reflects that cross-border fares vary by specific routing.
+15. **Fort Smith AR maps to LIT (Little Rock, ~157 mi).** No closer airport is in the 62-airport list. Fort Smith has a small regional airport (FSM) not in our candidate pool.
 
 ### Revenue Model Caveats
-17. Revenue figures represent **capacity enabled**, not guaranteed bookings — actual revenue depends on sales pipeline and market demand.
-18. Profit margins are applied (15%/25%/40% on installations, 70% on service contracts) — actual margins vary by product line and deal structure.
-19. Service contract revenue assumes each new installation generates an annual $7K contract. Fleet mix may shift this up (Apex-tier) or down (Peak-tier).
-20. Estimates are **annualized from the 2.08-year data period** — actual future-year results depend on demand trends.
-21. Revenue analysis is supplementary — the MILP optimizer recommendation (N=0) is unchanged and based purely on cost minimization.
+16. Revenue figures represent **capacity enabled**, not guaranteed bookings — actual revenue depends on sales pipeline and market demand.
+17. Profit margins are applied (15%/25%/40% on installations, 70% on service contracts) — actual margins vary by product line and deal structure.
+18. Service contract revenue assumes each new installation generates an annual $7K contract. Fleet mix may shift this up (Apex-tier) or down (Peak-tier).
+19. Estimates are **annualized from the 2.08-year data period** — actual future-year results depend on demand trends.
+20. Revenue analysis is supplementary — the MILP optimizer recommendation (N=0) is unchanged and based purely on cost minimization.
 
 ### Solver
-22. All 5 scenarios solve to proven optimality (MIP gap = 0.0). Max existing-tech utilization is 99.99% at N=0, indicating the workforce is very tightly loaded.
+21. All 5 scenarios solve to proven optimality (MIP gap = 0.0). Max existing-tech utilization is 99.99% at N=0, indicating the workforce is very tightly loaded.
 
 ## Recommended Defaults for Re-Runs
 
@@ -456,11 +447,11 @@ State these immediately to avoid context drift:
 1. Hybrid travel-cost engine is already implemented and in use.
 2. **Annualization is active.** Data spans 2.08 years (1,480 appts). All output figures are annualized. Step 06 computes `data_span_years` (2.0753). Step 08 scales hire cost for MILP period. Step 09 divides all costs/hours by `data_span_years`.
 3. **Full cost model is active** (Step 11): duration-scaled hotel ($159/night × node-avg nights) + rental on fly trips; IRS mileage + duration-scaled hotel on drive trips; day-trip logic (≤150 mi + ≤1 day → $0 hotel); drive/fly classified by 300-mile haversine threshold.
-4. **BTS-calibrated cost matrix is active** (Step 10): 68 airports, 1.22× corporate premium, 2.0× Canadian cross-border multiplier.
+4. **BTS-calibrated cost matrix is active** (Step 10): 62 US airports, 1.22× corporate premium.
 5. Burdened hire cost is `$146,640`/year per incremental hire ($304,322 in MILP period).
 6. Out-of-region penalty default is `0`.
 7. Canceled/voided cost is fixed baseline overhead (`$35,632` full-period / `$17,170` annualized), not scenario-variable.
-8. Hakim-only Canada rule is active. New hires blocked from Canada nodes.
+8. Canada excluded from optimization. Hakim Mouazer (Montreal) at availability_fte=0.0 (map only).
 9. **New hires cannot serve HPS nodes** (policy constraint, hard variable bound).
 10. Capacity model is demand-normalized with `target_utilization=0.85`.
 11. Scenario panel `Total Cost` shows annualized `economic_total_with_overhead_usd`.
