@@ -18,7 +18,7 @@ This file is the canonical context handoff for future chats.
 
 - **Annualization is active.** The appointment dataset spans 2.08 years (Jan 2, 2024 → Jan 29, 2026, 758 days). Step 06 computes `data_span_years` (2.0753). Step 08 scales hire cost to match the data period. Step 09 divides all period costs and freed hours by `data_span_years` so every output figure is an annual equivalent. All figures labeled in the map and reports are annualized.
 - **BTS Q2 2025 lookup table with 1.6x corporate premium** is active. Flight cost = `BTS_RAW_ITINERARY_FARES[origin_airport] × 1.6`. Origin-only — no destination dependency. 63 US airports with direct BTS fares; national fallback ($386) for unlisted airports. Steps 07 and 10 (ML model + BTS correction) are deprecated and removed from the pipeline.
-- **Full cost model is active** (Step 11). Hotel cost is **duration-scaled**: `HOTEL_NIGHTLY_RATE_USD` ($159) × hotel nights (derived from per-node avg appointment duration). Day-trip logic zeros out hotel for short drive trips (≤150 mi + ≤1 day avg). Each fly trip also includes rental car ($235). Drive trips use IRS mileage ($0.70/mi × round-trip) + duration-scaled hotel. Drive/fly classified by 300-mile haversine threshold. Step 11 pre-computes a per-(tech/candidate, node) cost table (`full_cost_table.csv`) used by the optimizer.
+- **Full cost model is active** (Step 11). Three-tier distance-based trip classification: same-day drive (<100 mi, mileage only), overnight drive (100–300 mi, mileage + 1 hotel night), fly (≥300 mi, flight + duration-scaled hotel + rental car). IRS mileage $0.70/mi round-trip, hotel $159/night, rental $235/fly trip. Step 11 pre-computes a per-(tech/candidate, node) cost table (`full_cost_table.csv`) used by the optimizer.
 - Burdened new-hire payroll is modeled in Step 8 (`146,640` USD per incremental hire per year).
 - Default out-of-region penalty is disabled (`0` USD).
 - Canada is excluded from optimization scope. Hakim Mouazer (Montreal) has availability_fte=0.0 (visible on map only).
@@ -103,7 +103,7 @@ Typical UI-only changes require Step 5 only.
 Pipeline order: **06 → 11 → 08 → 09 → 05** (Steps 07 and 10 are deprecated).
 
 1. `06_build_optimization_inputs.py` — also computes `data_span_years` for annualization
-2. `11_build_full_cost_table.py` — pre-computes `full_cost_table.csv` using BTS Q2 2025 fares × 1.6 corporate premium for flight costs, plus drive/fly classification, rental car, and duration-scaled hotel. Re-run when `demand_appointments.csv`, `tech_master.csv`, or BTS fare data changes.
+2. `11_build_full_cost_table.py` — pre-computes `full_cost_table.csv` using three-tier trip model (drive_day / drive_overnight / fly) with BTS Q2 2025 fares × 1.6 for flight costs. Re-run when `demand_appointments.csv`, `tech_master.csv`, or BTS fare data changes.
 3. `08_optimize_locations.py --min-new-hires 0 --max-new-hires 4 --max-hires-per-base 1 --time-limit-sec 600` — reads `data_span_years`, scales hire cost to match data period
 4. `09_analyze_scenarios.py` — reads `data_span_years`, annualizes all period costs and freed hours
 5. `05_generate_map.py` to refresh scenario panel in map output.
@@ -137,10 +137,10 @@ Flight cost = `BTS_RAW_ITINERARY_FARES[origin_airport] × CORPORATE_TRAVEL_PREMI
 
 The 1.6× corporate premium is calibrated from Navan median actual cost ($633) divided by BTS average domestic fare ($386).
 
-Full trip cost per (tech/candidate, node) pair:
-- **Fly** (≥300 mi): flight cost + rental car ($235) + duration-scaled hotel ($159/night)
-- **Drive** (<300 mi): IRS mileage ($0.70/mi × round-trip) + duration-scaled hotel ($159/night)
-- **Day-trip exception**: ≤150 mi + ≤1 day avg → $0 hotel
+Three-tier trip cost per (tech/candidate, node) pair:
+- **Same-day drive** (<100 mi): IRS mileage ($0.70/mi × round-trip), no hotel, no rental
+- **Overnight drive** (100–300 mi): IRS mileage ($0.70/mi × round-trip) + 1 hotel night ($159), no rental
+- **Fly** (≥300 mi): flight cost + rental car ($235) + duration-scaled hotel ($159/night × node avg duration)
 
 ### Step 8: MILP Scenarios
 
@@ -289,7 +289,7 @@ All figures in the simulation panel are annualized. The subtitle reads "Cost-fir
 
 ## Latest Validated Run Snapshot
 
-From current optimization artifacts (BTS Q2 2025 lookup + full cost model + annualization active + AVS=LS + Shannon/Isabelle FTE updates):
+From current optimization artifacts (BTS Q2 2025 lookup + three-tier cost model + annualization active + AVS=LS + Shannon/Isabelle FTE updates):
 
 - Data span: **2.0753 years** (Jan 2, 2024 → Jan 29, 2026, 758 days, 1,471 US appointments)
 - Annualized appointment count: ~709/year
@@ -297,15 +297,15 @@ From current optimization artifacts (BTS Q2 2025 lookup + full cost model + annu
 - Scenario range: `N=0..4`
 - Selection mode: `proven_optimal_only` (N=1..4 solved to proven optimality; N=0 hit time limit with MIP gap 0.004% — effectively optimal)
 - Best scenario: `N=1` (proven optimal; N=0 not proven optimal due to time limit)
-- **N=0 annualized travel cost: `$638,434` USD** (0 unmet appointments)
+- **N=0 annualized travel cost: `$540,747` USD** (0 unmet appointments)
 - **N=0 annualized overhead: `$0` USD** (canceled/voided excluded)
-- **N=0 annualized total: `$638,434` USD**
+- **N=0 annualized total: `$540,747` USD**
 - Burdened annual per-hire planning cost: `$146,640` USD (period-scaled to `$304,322` in MILP)
-- Full cost model constants: IRS $0.70/mi, rental $235/trip, hotel $159/night (duration-scaled), drive threshold 300 mi, day-trip ≤150 mi + ≤1 day
+- Full cost model constants: IRS $0.70/mi, rental $235/fly trip, hotel $159/night. Same-day drive <100 mi, overnight drive 100–300 mi, fly ≥300 mi.
 - Flight cost: BTS Q2 2025 × 1.6 corporate premium. Mean flight cost $633, range $455–$783.
 - Full cost table: 10,961 rows (15 techs × 113 nodes + 82 candidates × 113 nodes). Hakim Mouazer (no lat/lon) excluded.
-- Drive/fly split in cost table: 8.9% drive, 91.1% fly
-- Hotel nights distribution: 1 night (0.9%), 2 nights (39.8%), 3 nights (34.5%), 4 nights (24.8%). Mean hotel cost: $450/trip. No day trips.
+- Trip type split: 1.8% same-day drive, 7.1% overnight drive, 91.1% fly
+- Hotel nights distribution: 0 nights (1.8%), 1 night (7.9%), 2 nights (36.1%), 3 nights (31.6%), 4 nights (22.7%). Mean hotel cost: $422/trip.
 - No scenario allocates more than one hire to a single base (`max_hires_per_base=1`).
 - N=0: 1,471 served, 0 unmet. N=1..4: all 1,471 served, 0 unmet.
 - Active techs at N=0: 16 (all techs active). James Sanchez at 1.0 FTE, Damion Lyn at 0.20 FTE, Elier Martin at 0.10 FTE. Total effective FTE: 12.55.
@@ -315,36 +315,36 @@ From current optimization artifacts (BTS Q2 2025 lookup + full cost model + annu
 
 | N | Annual Travel | Annual Payroll | Annual Overhead | Annual Total | Served | Unmet |
 |---|--------------|----------------|-----------------|-------------|--------|-------|
-| 0 | $638,434 | $0 | $0 | **$638,434** | 1,471 | 0 |
-| 1 | $588,115 | $146,640 | $0 | $734,755 | 1,471 | 0 |
-| 2 | $552,491 | $293,280 | $0 | $845,771 | 1,471 | 0 |
-| 3 | $524,382 | $439,920 | $0 | $964,302 | 1,471 | 0 |
-| 4 | $498,847 | $586,560 | $0 | $1,085,407 | 1,471 | 0 |
+| 0 | $540,747 | $0 | $0 | **$540,747** | 1,471 | 0 |
+| 1 | $466,463 | $146,640 | $0 | $613,103 | 1,471 | 0 |
+| 2 | $411,008 | $293,280 | $0 | $704,288 | 1,471 | 0 |
+| 3 | $366,397 | $439,920 | $0 | $806,317 | 1,471 | 0 |
+| 4 | $324,352 | $586,560 | $0 | $910,912 | 1,471 | 0 |
 
-Marginal annual travel savings diminish: $50K (N=0→1), $36K (N=1→2), $28K (N=2→3), $26K (N=3→4).
+Marginal annual travel savings diminish: $74K (N=0→1), $55K (N=1→2), $45K (N=2→3), $42K (N=3→4).
 
 ### Revenue-from-Freed-Capacity Summary (Annualized)
 
 | N | Installs/yr | Net Cost Increase | Net Value (Conservative) | Net Value (Moderate) | Net Value (Aggressive) | Break-Even (Mod) |
 |---|------------:|------------------:|-------------------------:|---------------------:|-----------------------:|-----------------:|
 | 0 | 0.0 | $0 | $0 | $0 | $0 | 0.0 |
-| 1 | 42.5 | $96,321 | $962,808 | $2,153,795 | $4,365,630 | 1.8 |
-| 2 | 85.0 | $207,338 | $1,908,780 | $4,288,349 | $8,707,550 | 3.9 |
-| 3 | 127.0 | $325,868 | $2,837,112 | $6,393,877 | $12,999,297 | 6.2 |
-| 4 | 169.5 | $446,973 | $3,773,667 | $8,519,769 | $17,333,958 | 8.4 |
+| 1 | 42.5 | $72,355 | $986,773 | $2,177,761 | $4,389,596 | 1.4 |
+| 2 | 85.0 | $163,540 | $1,951,915 | $4,330,740 | $8,748,558 | 3.1 |
+| 3 | 127.5 | $265,570 | $2,908,208 | $6,477,114 | $13,105,083 | 5.0 |
+| 4 | 169.5 | $370,164 | $3,850,476 | $8,596,578 | $17,410,767 | 7.0 |
 
 Revenue assumptions: $50K/$120K/$250K per patient sim install × uniform 40% margin + $7K×70% annual service contract. ISO installations only (LS excluded). Profit margins applied — figures represent P&L impact.
 
-Key takeaway: N=0 serves all 1,471 US appointments with 0 unmet. N=1 frees capacity for 42.5 patient sim installs/yr at $96K incremental cost (break-even at 1.8 moderate installs, ROI 2,236%). Revenue analysis strongly supports hiring even though cost-only optimization selects N=0.
+Key takeaway: N=0 serves all 1,471 US appointments with 0 unmet. N=1 frees capacity for 42.5 patient sim installs/yr at $72K incremental cost (break-even at 1.4 moderate installs, ROI 3,010%). Revenue analysis strongly supports hiring even though cost-only optimization selects N=0.
 
 ### Hiring Placements by Scenario
 
 | N | Recommended Bases |
 |---|-------------------|
 | 1 | CLE (Cleveland, OH) |
-| 2 | CLE, ORD (Chicago, IL) |
-| 3 | CLE, ORD, ATL (Atlanta, GA) |
-| 4 | CLE, ORD, ATL, Fort Smith AR (→ LIT airport) |
+| 2 | CLE, Janesville WI |
+| 3 | ORD (Chicago, IL), CLE, Fort Smith AR |
+| 4 | ATL (Atlanta, GA), ORD, CLE, Fort Smith AR |
 
 
 ## Important File Outputs to Check First
@@ -368,7 +368,7 @@ Key takeaway: N=0 serves all 1,471 US appointments with 0 unmet. N=1 frees capac
 2. The 1.6× corporate premium is calibrated from Navan median ($633) / BTS average ($386). If Navan booking patterns change, recalibrate.
 
 ### Cost Model Simplifications
-3. Hotel cost is **duration-scaled** using per-node average appointment duration (not per-appointment). Nodes with mixed short/long appointments get a blended average. The nightly rate ($159) and day-trip thresholds are Navan-derived constants. Day-trip logic (≤150 mi + ≤1 day avg → $0 hotel) currently triggers on zero nodes because the minimum node avg is 1.18 days.
+3. Three-tier drive model: same-day (<100 mi, no hotel), overnight (100–300 mi, 1 hotel night), fly (≥300 mi, duration-scaled hotel). Hotel cost for fly trips uses per-node average appointment duration (not per-appointment). The nightly rate ($159) is a Navan-derived constant. Drive trips use fixed hotel nights (0 or 1) regardless of appointment duration.
 4. Same-city trip bundling is not modeled — each of 1,480 appointments is treated as a separate trip. In practice, techs bundle nearby appointments.
 5. Great-circle distance (not road distance) for drive/fly classification. Road distance is typically 10–25% longer, meaning some trips classified as "drive" might actually exceed 300 road-miles.
 6. Canceled and voided booking overhead is excluded (`BASELINE_CANCELED_VOIDED_USD = 0.0`) due to incomplete Navan data coverage (~2 of 16 techs). This is a fixed cost that does not vary by scenario and does not affect the relative comparison between hiring levels.
@@ -415,7 +415,7 @@ State these immediately to avoid context drift:
 
 1. **BTS Q2 2025 lookup table with 1.6× corporate premium** is the flight cost engine. `BTS_RAW_ITINERARY_FARES[origin] × 1.6`. Steps 07 and 10 are deprecated.
 2. **Annualization is active.** Data spans 2.08 years (1,471 US appts). All output figures are annualized. Step 06 computes `data_span_years` (2.0753). Step 08 scales hire cost for MILP period. Step 09 divides all costs/hours by `data_span_years`.
-3. **Full cost model is active** (Step 11): duration-scaled hotel ($159/night × node-avg nights) + rental on fly trips; IRS mileage + duration-scaled hotel on drive trips; day-trip logic (≤150 mi + ≤1 day → $0 hotel); drive/fly classified by 300-mile haversine threshold.
+3. **Full cost model is active** (Step 11): three-tier distance-based — same-day drive (<100 mi, mileage only), overnight drive (100–300 mi, mileage + 1 hotel night), fly (≥300 mi, flight + duration-scaled hotel + rental). IRS $0.70/mi, hotel $159/night, rental $235/fly trip.
 4. Burdened hire cost is `$146,640`/year per incremental hire ($304,322 in MILP period).
 5. Out-of-region penalty default is `0`.
 6. Canceled/voided overhead excluded (`$0`) — Navan covers only ~2/16 techs. Fixed cost, doesn't affect scenario comparison.

@@ -133,21 +133,23 @@ CORPORATE_TRAVEL_PREMIUM = 1.6       # Navan median $633 / BTS avg $386
 # the relative comparison between hiring levels.
 BASELINE_CANCELED_VOIDED_USD = 0.0
 
-# Full cost model: drive/fly classification with rental car and hotel costs.
+# Full cost model: three-tier trip classification with rental car and hotel costs.
 # Requires full_cost_table.csv produced by scripts/11_build_full_cost_table.py.
 FULL_COST_MODEL = True
 IRS_MILEAGE_RATE_USD_PER_MI = 0.70   # 2025 IRS standard mileage rate
 RENTAL_CAR_AVG_USD = 235.0            # Navan average across 82 confirmed bookings
 HOTEL_NIGHTLY_RATE_USD = 159.0        # Navan average nightly rate (rounded from $158.76, 125 bookings)
-HOTEL_AVG_NIGHTS = 2.5                # Navan average stay length (for fallback calculations)
+HOTEL_AVG_NIGHTS = 2.5                # Navan average stay length (fly trip duration fallback)
 
-# Day-trip thresholds: short drive + short appointment = tech drives home, no hotel.
-DAY_TRIP_MAX_DISTANCE_MILES = 150.0   # One-way haversine miles
-DAY_TRIP_MAX_DURATION_DAYS = 1.0      # Appointments ≤ 1 calendar day eligible
+# Three-tier trip cost model (Step 11):
+#   < 100 mi:  same-day drive — mileage only, no hotel, no rental
+#   100–300 mi: overnight drive — mileage + 1 hotel night, no rental
+#   >= 300 mi:  fly — flight + duration-scaled hotel + rental car
+SAME_DAY_DRIVE_THRESHOLD_MI = 100.0
+OVERNIGHT_DRIVE_THRESHOLD_MI = 300.0
 
-# Legacy reference (deprecated — use HOTEL_NIGHTLY_RATE_USD × nights instead)
+# Legacy reference (fly-trip average only — use HOTEL_NIGHTLY_RATE_USD × nights instead)
 HOTEL_AVG_USD = round(HOTEL_NIGHTLY_RATE_USD * HOTEL_AVG_NIGHTS)  # $398 ≈ $399
-DRIVE_THRESHOLD_MILES = 300.0         # Great-circle miles; ≈ 5 hours driving
 
 # Revenue-from-freed-capacity analysis (Step 09).
 # Three installation revenue scenarios — patient simulator installations only.

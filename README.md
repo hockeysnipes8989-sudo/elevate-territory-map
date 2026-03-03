@@ -52,7 +52,10 @@ python scripts/09_analyze_scenarios.py
 python scripts/05_generate_map.py
 ```
 
-Step 11 uses BTS Q2 2025 itinerary fares × 1.6 corporate premium for flight costs (origin-only, no destination dependency). It also pre-computes drive/fly classification, rental car, and duration-scaled hotel costs per (tech/candidate, node) pair. Hotel cost is `$159/night × hotel_nights`, where `hotel_nights` is derived from per-node average appointment duration. Day-trip logic zeros out hotel for short drive trips (≤150 mi haversine + ≤1 day avg duration).
+Step 11 uses a three-tier distance-based trip model per (tech/candidate, node) pair:
+- **Same-day drive** (<100 mi): IRS mileage ($0.70/mi × round-trip), no hotel, no rental
+- **Overnight drive** (100–300 mi): IRS mileage + 1 hotel night ($159), no rental
+- **Fly** (≥300 mi): BTS Q2 2025 fare × 1.6 corporate premium + duration-scaled hotel ($159/night) + rental car ($235)
 
 Default external workbook paths are in `scripts/config.py` (overridable via env vars
 `ELEVATE_APPTS_SOURCE`, `ELEVATE_TECH_SOURCE`, `ELEVATE_NAVAN_SOURCE`):
@@ -115,17 +118,18 @@ Step 9 then divides all costs by `data_span_years` (2.0753) to produce annual eq
 
 ## Latest Baseline Snapshot (Annualized — Current Repo Outputs)
 
-From the latest optimization artifacts (BTS Q2 2025 lookup + full cost model + annualization + AVS=LS + Shannon/Isabelle FTE updates):
+From the latest optimization artifacts (BTS Q2 2025 lookup + three-tier cost model + annualization + AVS=LS + Shannon/Isabelle FTE updates):
 
 - Data span: **2.0753 years** (Jan 2, 2024 → Jan 29, 2026, 758 days)
 - Annualized appointment count: ~709/year (1,471 US total)
 - Skill breakdown: 115 HPS, 320 LS (including 315 AVS→LS), 1,036 regular
 - Scenario window: `N=0..4`
 - Best scenario: `N=1` (N=0 hit time limit with MIP gap 0.004%; N=1..4 proven optimal)
-- N=0 annualized total: **$638,434** (travel only, overhead excluded)
+- N=0 annualized total: **$540,747** (travel only, overhead excluded)
 - Hard cap result: no scenario allocates more than 1 hire to the same base
 - All 1,471 appointments served across all scenarios (zero unmet)
 - Active techs at N=0: 16. Total effective FTE: 12.55
+- Trip type split: 1.8% same-day drive, 7.1% overnight drive, 91.1% fly
 - Target utilization: 85% (demand-normalized capacity model)
 - Mean utilization at N=0: 85.1%. Max: 100.00%.
 
@@ -133,11 +137,11 @@ From the latest optimization artifacts (BTS Q2 2025 lookup + full cost model + a
 
 | N | Annual Travel | Annual Payroll | Annual Total |
 |---|--------------|----------------|-------------|
-| 0 | $638,434 | $0 | **$638,434** |
-| 1 | $588,115 | $146,640 | $734,755 |
-| 2 | $552,491 | $293,280 | $845,771 |
-| 3 | $524,382 | $439,920 | $964,302 |
-| 4 | $498,847 | $586,560 | $1,085,407 |
+| 0 | $540,747 | $0 | **$540,747** |
+| 1 | $466,463 | $146,640 | $613,103 |
+| 2 | $411,008 | $293,280 | $704,288 |
+| 3 | $366,397 | $439,920 | $806,317 |
+| 4 | $324,352 | $586,560 | $910,912 |
 
 All scenarios cost more than N=0. Marginal annual travel savings diminish with each additional hire.
 
@@ -146,10 +150,10 @@ All scenarios cost more than N=0. Marginal annual travel savings diminish with e
 | N | Installs/yr | Net Cost Increase | Net Value (Conservative) | Net Value (Moderate) | Net Value (Aggressive) | Break-Even (Mod) |
 |---|------------:|------------------:|-------------------------:|---------------------:|-----------------------:|-----------------:|
 | 0 | 0.0 | $0 | $0 | $0 | $0 | 0.0 |
-| 1 | 42.5 | $96,321 | $962,808 | $2,153,795 | $4,365,630 | 1.8 |
-| 2 | 85.0 | $207,338 | $1,908,780 | $4,288,349 | $8,707,550 | 3.9 |
-| 3 | 127.0 | $325,868 | $2,837,112 | $6,393,877 | $12,999,297 | 6.2 |
-| 4 | 169.5 | $446,973 | $3,773,667 | $8,519,769 | $17,333,958 | 8.4 |
+| 1 | 42.5 | $72,355 | $986,773 | $2,177,761 | $4,389,596 | 1.4 |
+| 2 | 85.0 | $163,540 | $1,951,915 | $4,330,740 | $8,748,558 | 3.1 |
+| 3 | 127.5 | $265,570 | $2,908,208 | $6,477,114 | $13,105,083 | 5.0 |
+| 4 | 169.5 | $370,164 | $3,850,476 | $8,596,578 | $17,410,767 | 7.0 |
 
 Revenue assumptions: $50K/$120K/$250K per patient sim install × uniform 40% margin + $7K×70% annual service contract per system. ISO installations only — Learning Space (AVS/LS) excluded per Shannon. Profit margins applied — figures represent P&L impact.
 
@@ -158,14 +162,14 @@ Revenue assumptions: $50K/$120K/$250K per patient sim install × uniform 40% mar
 | N | Recommended Bases |
 |---|-------------------|
 | 1 | CLE (Cleveland, OH) |
-| 2 | CLE, ORD (Chicago, IL) |
-| 3 | CLE, ORD, ATL (Atlanta, GA) |
-| 4 | CLE, ORD, ATL, Fort Smith AR (→ LIT airport) |
+| 2 | CLE, Janesville WI |
+| 3 | ORD (Chicago, IL), CLE, Fort Smith AR |
+| 4 | ATL (Atlanta, GA), ORD, CLE, Fort Smith AR |
 
 ## Key Caveats
 
-- Hotel cost is duration-scaled ($159/night × node-avg nights, range 1–4). Day-trip logic (≤150 mi + ≤1 day) currently triggers on zero nodes (min node avg is 1.18 days). Trip bundling is not modeled.
-- Great-circle distance (not road distance) for drive/fly classification at 300 mi threshold.
+- Three-tier drive model: same-day (<100 mi, no hotel), overnight (100–300 mi, 1 hotel night), fly (≥300 mi, duration-scaled hotel). Trip bundling is not modeled.
+- Great-circle distance (not road distance) for trip classification thresholds.
 - No seasonality — all appointments treated equivalently regardless of time of year.
 - New hires cannot serve HPS nodes (policy constraint). 115 HPS appointments are served by existing certified techs. HPS product line discontinuing.
 - AVS = Learning Space mapping reclassifies ~315 appointments as LS-requiring, constraining dispatch to LS-certified techs (7 of 16).

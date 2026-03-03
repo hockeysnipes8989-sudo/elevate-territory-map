@@ -7,13 +7,10 @@ candidate_bases.csv must exist).
 Flight cost: BTS Q2 2025 itinerary fare × 1.6 corporate premium.
 Origin-only — cost does not vary by destination.
 
-Drive/fly classification:
-  - Distance < DRIVE_THRESHOLD_MILES from tech/candidate base → drive
-  - Distance >= DRIVE_THRESHOLD_MILES → fly
-
-Drive cost:  IRS_MILEAGE_RATE * 2 * median_dist + hotel_nights * HOTEL_NIGHTLY_RATE
-             (day-trips: short drive + short appt → $0 hotel)
-Fly cost:    flight_cost(BTS) + RENTAL_CAR_AVG + hotel_nights * HOTEL_NIGHTLY_RATE
+Three-tier trip classification (distance-based):
+  < 100 mi:    drive_day       — mileage only, no hotel, no rental
+  100–300 mi:  drive_overnight — mileage + 1 hotel night, no rental
+  >= 300 mi:   fly             — flight + duration-scaled hotel + rental car
 """
 
 from __future__ import annotations
@@ -120,30 +117,30 @@ def compute_entity_node_costs(
             ])
             median_dist = float(np.median(dists_mi))
 
-            # Classify mode: distance threshold only (US-only optimization)
-            if median_dist < config.DRIVE_THRESHOLD_MILES:
-                trip_mode = "drive"
-            else:
-                trip_mode = "fly"
-
-            # Duration-scaled hotel cost
-            avg_days = node_avg_days.get(node_id, config.HOTEL_AVG_NIGHTS) if node_avg_days else config.HOTEL_AVG_NIGHTS
-            hotel_nights = max(1, round(avg_days))
-
-            # Compute cost components
-            if trip_mode == "drive":
+            # --- Three-tier trip classification (distance-based) ---
+            if median_dist < config.SAME_DAY_DRIVE_THRESHOLD_MI:
+                # Same-day drive: mileage only, tech drives home same day
+                trip_mode = "drive_day"
                 mileage_cost = config.IRS_MILEAGE_RATE_USD_PER_MI * 2.0 * median_dist
                 flight_cost = 0.0
                 rental_cost = 0.0
-                # Day-trip logic: short drive + short appointment = no hotel
-                if (median_dist <= config.DAY_TRIP_MAX_DISTANCE_MILES
-                        and avg_days <= config.DAY_TRIP_MAX_DURATION_DAYS):
-                    hotel_nights = 0
-                    hotel_cost = 0.0
-                else:
-                    hotel_cost = hotel_nights * config.HOTEL_NIGHTLY_RATE_USD
+                hotel_nights = 0
+                hotel_cost = 0.0
+                unit_cost = mileage_cost
+            elif median_dist < config.OVERNIGHT_DRIVE_THRESHOLD_MI:
+                # Overnight drive: mileage + exactly 1 hotel night
+                trip_mode = "drive_overnight"
+                mileage_cost = config.IRS_MILEAGE_RATE_USD_PER_MI * 2.0 * median_dist
+                flight_cost = 0.0
+                rental_cost = 0.0
+                hotel_nights = 1
+                hotel_cost = config.HOTEL_NIGHTLY_RATE_USD
                 unit_cost = mileage_cost + hotel_cost
             else:
+                # Fly trip: flight + duration-scaled hotel + rental car
+                trip_mode = "fly"
+                avg_days = node_avg_days.get(node_id, config.HOTEL_AVG_NIGHTS) if node_avg_days else config.HOTEL_AVG_NIGHTS
+                hotel_nights = max(1, round(avg_days))
                 flight_cost = get_flight_cost(airport)
                 mileage_cost = 0.0
                 rental_cost = config.RENTAL_CAR_AVG_USD
@@ -278,23 +275,25 @@ def main() -> None:
     n_total = len(out_df)
 
     if not out_df.empty:
-        drive_mask = out_df["trip_mode"] == "drive"
+        drive_day_mask = out_df["trip_mode"] == "drive_day"
+        drive_overnight_mask = out_df["trip_mode"] == "drive_overnight"
         fly_mask = out_df["trip_mode"] == "fly"
-        drive_pct = drive_mask.mean() * 100.0
+        drive_day_pct = drive_day_mask.mean() * 100.0
+        drive_overnight_pct = drive_overnight_mask.mean() * 100.0
+        fly_pct = fly_mask.mean() * 100.0
         print(f"\nSaved: {out_path}")
         print(f"  Total rows: {n_total:,}  (techs: {n_tech_ids}, candidates: {n_cand_ids})")
-        print(f"  Drive: {drive_pct:.1f}%  Fly: {100.0 - drive_pct:.1f}%")
+        print(f"  Drive (same-day): {drive_day_pct:.1f}%  Drive (overnight): {drive_overnight_pct:.1f}%  Fly: {fly_pct:.1f}%")
         print(f"  Mean unit cost: ${out_df['unit_cost_usd'].mean():,.2f}")
-        if drive_mask.any():
-            print(f"  Drive mean: ${out_df.loc[drive_mask, 'unit_cost_usd'].mean():,.2f}")
+        if drive_day_mask.any():
+            print(f"  Drive (same-day) mean:  ${out_df.loc[drive_day_mask, 'unit_cost_usd'].mean():,.2f}")
+        if drive_overnight_mask.any():
+            print(f"  Drive (overnight) mean: ${out_df.loc[drive_overnight_mask, 'unit_cost_usd'].mean():,.2f}")
         if fly_mask.any():
-            print(f"  Fly mean:   ${out_df.loc[fly_mask, 'unit_cost_usd'].mean():,.2f}")
+            print(f"  Fly mean:               ${out_df.loc[fly_mask, 'unit_cost_usd'].mean():,.2f}")
         print(f"  Hotel nightly rate: ${config.HOTEL_NIGHTLY_RATE_USD:.2f}")
         print(f"  Mean hotel nights: {out_df['hotel_nights'].mean():.1f}")
         print(f"  Mean hotel cost: ${out_df['hotel_cost_usd'].mean():,.2f}")
-        if (out_df['hotel_nights'] == 0).any():
-            n_day_trips = (out_df['hotel_nights'] == 0).sum()
-            print(f"  Day trips (no hotel): {n_day_trips} ({n_day_trips/len(out_df)*100:.1f}%)")
         # Hotel nights distribution
         nights_dist = out_df['hotel_nights'].value_counts().sort_index()
         print("  Hotel nights distribution:")
@@ -307,14 +306,13 @@ def main() -> None:
             print(f"  Flight cost mean:  ${fly_flights.mean():,.2f}")
         print(
             f"\n  Cost constants used:\n"
-            f"    BTS corporate premium: {config.CORPORATE_TRAVEL_PREMIUM:.1f}x\n"
-            f"    BTS national fallback: ${config.BTS_NATIONAL_FALLBACK:.2f}\n"
-            f"    IRS mileage rate:     ${config.IRS_MILEAGE_RATE_USD_PER_MI:.2f}/mi\n"
-            f"    Rental car avg:       ${config.RENTAL_CAR_AVG_USD:.2f}/trip\n"
-            f"    Hotel nightly rate:   ${config.HOTEL_NIGHTLY_RATE_USD:.2f}/night\n"
-            f"    Day-trip max dist:    {config.DAY_TRIP_MAX_DISTANCE_MILES:.0f} miles\n"
-            f"    Day-trip max duration:{config.DAY_TRIP_MAX_DURATION_DAYS:.1f} days\n"
-            f"    Drive threshold:      {config.DRIVE_THRESHOLD_MILES:.0f} miles"
+            f"    BTS corporate premium:       {config.CORPORATE_TRAVEL_PREMIUM:.1f}x\n"
+            f"    BTS national fallback:       ${config.BTS_NATIONAL_FALLBACK:.2f}\n"
+            f"    IRS mileage rate:            ${config.IRS_MILEAGE_RATE_USD_PER_MI:.2f}/mi\n"
+            f"    Rental car avg:              ${config.RENTAL_CAR_AVG_USD:.2f}/trip\n"
+            f"    Hotel nightly rate:          ${config.HOTEL_NIGHTLY_RATE_USD:.2f}/night\n"
+            f"    Same-day drive threshold:    {config.SAME_DAY_DRIVE_THRESHOLD_MI:.0f} miles\n"
+            f"    Overnight drive threshold:   {config.OVERNIGHT_DRIVE_THRESHOLD_MI:.0f} miles"
         )
     else:
         print(f"\nSaved: {out_path} (empty — no valid (entity, node) pairs found)")

@@ -747,9 +747,8 @@ def main() -> None:
             "hotel_nightly_rate_usd": config.HOTEL_NIGHTLY_RATE_USD,
             "hotel_avg_nights": config.HOTEL_AVG_NIGHTS,
             "hotel_avg_usd_legacy": config.HOTEL_AVG_USD,
-            "day_trip_max_distance_miles": config.DAY_TRIP_MAX_DISTANCE_MILES,
-            "day_trip_max_duration_days": config.DAY_TRIP_MAX_DURATION_DAYS,
-            "drive_threshold_miles": config.DRIVE_THRESHOLD_MILES,
+            "same_day_drive_threshold_mi": config.SAME_DAY_DRIVE_THRESHOLD_MI,
+            "overnight_drive_threshold_mi": config.OVERNIGHT_DRIVE_THRESHOLD_MI,
             "baseline_canceled_voided_usd": config.BASELINE_CANCELED_VOIDED_USD,
         },
         "hps_timeline_assumption": {
