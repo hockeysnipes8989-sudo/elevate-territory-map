@@ -25,7 +25,8 @@ This file is the canonical context handoff for future chats.
 - Simulation panel reads optimization outputs and shows scenario KPIs for `N=0..4`.
 - Technician markers are grouped by shared coordinates so all 16 roster members are visible via popup rosters.
 - New-hire allocation is hard-capped at 1 hire per base by default.
-- **Revenue-from-freed-capacity analysis is active** (Step 09). Three profit-margin-based revenue scenarios ($50K/$120K/$250K per install at 15%/25%/40% margins) + $7K annual service contracts (70% margin) quantify the net economic value of freed technician capacity. This is supplementary analysis — the MILP optimizer and N=0 recommendation are unchanged.
+- **AVS = Learning Space (LS)** — confirmed by Shannon/Isabelle. All AVS appointments are reclassified as LS-requiring in Step 06 post-processing. ~315 AVS appointments now require LS-certified techs.
+- **Revenue-from-freed-capacity analysis is active** (Step 09). Patient simulator installations only (ISO). Three system-size scenarios ($50K/$120K/$250K per install) at uniform 40% margin + $7K annual service contracts (70% margin). Learning Space (AVS/LS) installations excluded per Shannon — too variable ($6.5K–$106K). This is supplementary analysis — the MILP optimizer recommendation is unchanged.
 
 ## Repository Structure (Important Paths)
 
@@ -176,7 +177,7 @@ Where:
 - **Annualizes all period costs:** divides `travel_cost_usd`, `hire_cost_usd`, `baseline_canceled_voided_usd`, `modeled_total_cost_usd`, `economic_total_with_overhead_usd`, and other period-total columns by `data_span_years`. Also annualizes `hours_freed_existing_techs`.
 - Computes savings vs `N=0`.
 - Computes marginal savings from previous `N`.
-- **Capacity-freed analysis:** converts freed existing-tech hours → realistic installation estimates using avg duration days (3.25), travel overhead (1.0 day), and 75% utilization factor. Hours are annualized before conversion.
+- **Capacity-freed analysis:** converts freed existing-tech hours → realistic patient simulator installation estimates using avg duration days (2.1 for ISO-only), travel overhead (1.0 day), and 75% utilization factor. Hours are annualized before conversion. Learning Space (AVS/LS) installations excluded from revenue conversion per Shannon — too variable ($6.5K–$106K).
 - **Revenue-from-freed-capacity analysis:** for each hiring scenario, computes net economic value across 3 profit-margin tiers (conservative/moderate/aggressive) plus annual service contract revenue. Includes ROI and break-even installations per tier.
 - Picks best scenario using proven-optimal solutions first (`selection_mode = proven_optimal_only`).
 - Writes:
@@ -219,10 +220,11 @@ Where:
 - This is a fixed cost that does not vary by scenario and does not affect the relative comparison between hiring levels.
 - Previously $35,632 (full-period) from Navan Report tab, now excluded.
 
-### Skill Constraints (HPS / LS)
+### Skill Constraints (HPS / LS / AVS)
 
 - Existing techs must have `skill_hps=1` to serve HPS nodes and `skill_ls=1` to serve LS nodes.
-- **New hires cannot serve HPS nodes** — hard variable bound (`ub=0.0`) in Step 8. This is a policy assumption, not a data-driven constraint. If new hires can be HPS-trained, the model underestimates their value.
+- **AVS = Learning Space:** All AVS appointments are reclassified as LS-requiring in Step 06. ~315 AVS appointments + 5 original LS = 320 LS-requiring appointments. 7 of 16 techs have LS certification.
+- **New hires cannot serve HPS nodes** — hard variable bound (`ub=0.0`) in Step 8. Shannon/Isabelle confirmed new hires would NOT be HPS-trained (product line discontinuing).
 - New hires can serve LS and regular nodes with no restriction.
 - 115 HPS appointments in the demand pool are all served by existing HPS-certified techs.
 
@@ -232,17 +234,20 @@ Where:
 - Formula: `hours_per_unit = total_demand_hours / (total_FTE × target_utilization)`
 - Each tech's capacity: `availability_fte × hours_per_unit`
 - `target_utilization` defaults to `0.85` (Step 08 CLI argument, not in config.py). This means the fleet targets 85% utilization at N=0, leaving 15% buffer for scheduling friction.
-- Techs with `availability_fte=0.0` (e.g., James Sanchez) get zero capacity and zero assignments.
-- Damion Lyn and Elier Martin are phone techs (Clay's team) at `availability_fte=0.10` (~10% field time).
-- Current computed values: total_FTE=11.45, total_demand=86,760 hrs, hours_per_unit=8,914.46
+- James Sanchez: `availability_fte=1.0` — full field tech; temporarily on phones (injury) but model targets ideal state.
+- Damion Lyn: `availability_fte=0.20` — repair center hybrid, 20-25% field when fully staffed (conservative). Clay's team.
+- Elier Martin: `availability_fte=0.10` — phone tech, confirmed by Shannon/Isabelle at ~10% field. Clay's team.
+- Hakim Mouazer: `availability_fte=0.0` — Canada excluded (visible on map only).
+- Current computed values: total_FTE=12.55, total_demand=86,760 hrs, hours_per_unit=8,751
 
 ### Revenue-from-Freed-Capacity Model (Step 09)
 
 - **Framing:** Below 15% volume reduction (Shannon Drew directive), the value of hiring should be understood as capacity for revenue, not cost savings.
-- Three profit-margin-based revenue scenarios (per installation):
-  - Conservative: `$50,000` × 15% margin = $7,500 profit (small systems — Aria, Apollo)
-  - Moderate: `$120,000` × 25% margin = $30,000 profit (mid-range — Lucina, Evo)
-  - Aggressive: `$250,000` × 40% margin = $100,000 profit (large systems — HPS full suite)
+- **Patient simulator installations only** (ISO). Learning Space (AVS/LS) excluded per Shannon — install values "too variable" ($6.5K–$106K).
+- Three system-size revenue scenarios at **uniform 40% gross margin** (Shannon: company targets 60%, "wouldn't go any less than 40%"):
+  - Conservative: `$50,000` × 40% margin = $20,000 profit (small patient sims — Aria, Apollo)
+  - Moderate: `$120,000` × 40% margin = $48,000 profit (mid-range patient sims — Lucina, Evo)
+  - Aggressive: `$250,000` × 40% margin = $100,000 profit (large patient sims — HPS full suite)
 - Annual recurring service contract: `$7,000/system` × 70% margin = $4,900 profit.
 - Revenue figures are **capacity enabled, not guaranteed** — actual revenue depends on sales pipeline and market demand.
 - Profit margins are applied (not raw MSRP) — the analysis shows actual P&L impact.
@@ -254,9 +259,9 @@ Where:
 
 - `TRAVEL_DAYS_PER_INSTALLATION = 1.0` — travel overhead per installation (days).
 - `FREED_CAPACITY_UTILIZATION_FACTOR = 0.75` — fraction of freed days practically usable (accounts for scheduling gaps, PTO, non-installation work).
-- Avg duration days per installation: `3.25` (computed from appointment data: ISO 2.1d, AVS ISO 3.6d, AVS 1.1d).
-- Effective days per installation: `4.25` (3.25 duration + 1.0 travel).
-- Realistic installations = (freed days × 0.75) / 4.25.
+- Avg duration days per installation: `2.1` (computed from ISO-only appointment data). Shannon confirmed patient sim on-site time is ~5 hours (4hr assembly + sub-1hr orientation); the 2.1 days represents the full calendar window (travel + setup + on-site + teardown).
+- Effective days per installation: `3.1` (2.1 duration + 1.0 travel).
+- Realistic installations = (freed days × 0.75) / 3.1.
 - All freed-hours metrics are annualized (divided by `data_span_years`) before conversion.
 
 ### Contractor Scope
@@ -284,59 +289,62 @@ All figures in the simulation panel are annualized. The subtitle reads "Cost-fir
 
 ## Latest Validated Run Snapshot
 
-From current optimization artifacts (BTS Q2 2025 lookup + full cost model + annualization active):
+From current optimization artifacts (BTS Q2 2025 lookup + full cost model + annualization active + AVS=LS + Shannon/Isabelle FTE updates):
 
 - Data span: **2.0753 years** (Jan 2, 2024 → Jan 29, 2026, 758 days, 1,471 US appointments)
 - Annualized appointment count: ~709/year
+- Skill breakdown: 115 HPS, 320 LS (including 315 AVS→LS), 1,036 regular
 - Scenario range: `N=0..4`
-- Selection mode: `proven_optimal_only` (N=1..4 solved to proven optimality; N=0 hit time limit with MIP gap 0.003% — effectively optimal)
-- Best scenario: `N=0` (cost-minimizing — all 1,471 appointments served, 0 unmet)
-- **N=0 annualized travel cost: `$589,884` USD** (0 unmet appointments)
+- Selection mode: `proven_optimal_only` (N=1..4 solved to proven optimality; N=0 hit time limit with MIP gap 0.004% — effectively optimal)
+- Best scenario: `N=1` (proven optimal; N=0 not proven optimal due to time limit)
+- **N=0 annualized travel cost: `$638,434` USD** (0 unmet appointments)
 - **N=0 annualized overhead: `$0` USD** (canceled/voided excluded)
-- **N=0 annualized total: `$589,884` USD**
+- **N=0 annualized total: `$638,434` USD**
 - Burdened annual per-hire planning cost: `$146,640` USD (period-scaled to `$304,322` in MILP)
 - Full cost model constants: IRS $0.70/mi, rental $235/trip, hotel $159/night (duration-scaled), drive threshold 300 mi, day-trip ≤150 mi + ≤1 day
 - Flight cost: BTS Q2 2025 × 1.6 corporate premium. Mean flight cost $633, range $455–$783.
-- Full cost table: 7,372 rows (15 techs × 76 nodes + 82 candidates × 76 nodes). Hakim Mouazer (no lat/lon) excluded.
-- Drive/fly split in cost table: 9.0% drive, 91.0% fly
-- Hotel nights distribution: 1 night (2.6%), 2 nights (44.7%), 3 nights (47.4%), 4 nights (5.3%). Mean hotel cost: $406/trip. No day trips.
+- Full cost table: 10,961 rows (15 techs × 113 nodes + 82 candidates × 113 nodes). Hakim Mouazer (no lat/lon) excluded.
+- Drive/fly split in cost table: 8.9% drive, 91.1% fly
+- Hotel nights distribution: 1 night (0.9%), 2 nights (39.8%), 3 nights (34.5%), 4 nights (24.8%). Mean hotel cost: $450/trip. No day trips.
 - No scenario allocates more than one hire to a single base (`max_hires_per_base=1`).
 - N=0: 1,471 served, 0 unmet. N=1..4: all 1,471 served, 0 unmet.
-- Active techs at N=0: 15 (excludes James Sanchez (availability_fte=0.0)). Damion Lyn and Elier Martin at 0.10 FTE each. Total effective FTE: 11.45.
-- Mean utilization at N=0: 86.4%. Max: 100.00%.
+- Active techs at N=0: 16 (all techs active). James Sanchez at 1.0 FTE, Damion Lyn at 0.20 FTE, Elier Martin at 0.10 FTE. Total effective FTE: 12.55.
+- Mean utilization at N=0: 85.1%. Max: 100.00%.
 
 ### Scenario Cost Summary (Annualized)
 
 | N | Annual Travel | Annual Payroll | Annual Overhead | Annual Total | Served | Unmet |
 |---|--------------|----------------|-----------------|-------------|--------|-------|
-| 0 | $589,884 | $0 | $0 | **$589,884** | 1,471 | 0 |
-| 1 | $538,477 | $146,640 | $0 | $685,117 | 1,471 | 0 |
-| 2 | $509,146 | $293,280 | $0 | $802,426 | 1,471 | 0 |
-| 3 | $485,168 | $439,920 | $0 | $925,088 | 1,471 | 0 |
-| 4 | $466,744 | $586,560 | $0 | $1,053,304 | 1,471 | 0 |
+| 0 | $638,434 | $0 | $0 | **$638,434** | 1,471 | 0 |
+| 1 | $588,115 | $146,640 | $0 | $734,755 | 1,471 | 0 |
+| 2 | $552,491 | $293,280 | $0 | $845,771 | 1,471 | 0 |
+| 3 | $524,382 | $439,920 | $0 | $964,302 | 1,471 | 0 |
+| 4 | $498,847 | $586,560 | $0 | $1,085,407 | 1,471 | 0 |
 
-Marginal annual travel savings diminish: $51K (N=0→1), $29K (N=1→2), $24K (N=2→3), $18K (N=3→4).
+Marginal annual travel savings diminish: $50K (N=0→1), $36K (N=1→2), $28K (N=2→3), $26K (N=3→4).
 
 ### Revenue-from-Freed-Capacity Summary (Annualized)
 
-| N | Realistic Installs/yr | Net Cost Increase | Net Value (Conservative) | Net Value (Moderate) | Net Value (Aggressive) | Break-Even (Mod) |
-|---|----------------------:|------------------:|-------------------------:|---------------------:|-----------------------:|-----------------:|
+| N | Installs/yr | Net Cost Increase | Net Value (Conservative) | Net Value (Moderate) | Net Value (Aggressive) | Break-Even (Mod) |
+|---|------------:|------------------:|-------------------------:|---------------------:|-----------------------:|-----------------:|
 | 0 | 0.0 | $0 | $0 | $0 | $0 | 0.0 |
-| 1 | 34.3 | $95,233 | $329,694 | $1,100,731 | $3,499,513 | 2.7 |
-| 2 | 63.0 | $212,542 | $568,197 | $1,984,859 | $6,392,254 | 6.1 |
-| 3 | 89.8 | $335,204 | $778,535 | $2,799,433 | $9,086,672 | 9.6 |
-| 4 | 118.9 | $463,420 | $1,010,488 | $3,684,917 | $12,005,364 | 13.3 |
+| 1 | 42.5 | $96,321 | $962,808 | $2,153,795 | $4,365,630 | 1.8 |
+| 2 | 85.0 | $207,338 | $1,908,780 | $4,288,349 | $8,707,550 | 3.9 |
+| 3 | 127.0 | $325,868 | $2,837,112 | $6,393,877 | $12,999,297 | 6.2 |
+| 4 | 169.5 | $446,973 | $3,773,667 | $8,519,769 | $17,333,958 | 8.4 |
 
-Key takeaway: N=0 serves all 1,471 US appointments with 0 unmet. N=1 frees capacity for 34.3 installs/yr at $95K incremental cost (break-even at 2.7 moderate installs, ROI 1,156%). Revenue analysis strongly supports hiring even though cost-only optimization selects N=0.
+Revenue assumptions: $50K/$120K/$250K per patient sim install × uniform 40% margin + $7K×70% annual service contract. ISO installations only (LS excluded). Profit margins applied — figures represent P&L impact.
+
+Key takeaway: N=0 serves all 1,471 US appointments with 0 unmet. N=1 frees capacity for 42.5 patient sim installs/yr at $96K incremental cost (break-even at 1.8 moderate installs, ROI 2,236%). Revenue analysis strongly supports hiring even though cost-only optimization selects N=0.
 
 ### Hiring Placements by Scenario
 
 | N | Recommended Bases |
 |---|-------------------|
-| 1 | DTW (Detroit, MI) |
-| 2 | DTW, Janesville WI (→ MKE airport) |
-| 3 | DTW, Janesville WI, Fort Smith AR (→ LIT airport) |
-| 4 | DTW, BNA (Nashville, TN), Janesville WI, Fort Smith AR |
+| 1 | CLE (Cleveland, OH) |
+| 2 | CLE, ORD (Chicago, IL) |
+| 3 | CLE, ORD, ATL (Atlanta, GA) |
+| 4 | CLE, ORD, ATL, Fort Smith AR (→ LIT airport) |
 
 
 ## Important File Outputs to Check First
@@ -378,13 +386,14 @@ Key takeaway: N=0 serves all 1,471 US appointments with 0 unmet. N=1 frees capac
 
 ### Revenue Model Caveats
 14. Revenue figures represent **capacity enabled**, not guaranteed bookings — actual revenue depends on sales pipeline and market demand.
-15. Profit margins are applied (15%/25%/40% on installations, 70% on service contracts) — actual margins vary by product line and deal structure.
+15. Profit margins are uniform 40% on installations (confirmed by Shannon Drew), 70% on service contracts — actual margins vary by product line and deal structure.
 16. Service contract revenue assumes each new installation generates an annual $7K contract. Fleet mix may shift this up (Apex-tier) or down (Peak-tier).
 17. Estimates are **annualized from the 2.08-year data period** — actual future-year results depend on demand trends.
 18. Revenue analysis is supplementary — the MILP optimizer recommendation (N=0) is unchanged and based purely on cost minimization.
 
 ### Solver
-19. All 5 scenarios solve to proven optimality (MIP gap = 0.0). Max existing-tech utilization is 99.99% at N=0, indicating the workforce is very tightly loaded.
+19. N=1..4 solve to proven optimality (MIP gap = 0.0). N=0 hits time limit with MIP gap 0.004% (effectively optimal). Max existing-tech utilization is 100.00% at N=0.
+20. **Learning Space (AVS/LS) excluded from revenue model** — Shannon confirmed install values range $6.5K to $106K, too variable to model meaningfully. LS appointments remain in demand data for dispatch/utilization modeling.
 
 ## Recommended Defaults for Re-Runs
 
@@ -405,7 +414,7 @@ To update BTS fares, edit `BTS_RAW_ITINERARY_FARES` in `scripts/config.py` and r
 State these immediately to avoid context drift:
 
 1. **BTS Q2 2025 lookup table with 1.6× corporate premium** is the flight cost engine. `BTS_RAW_ITINERARY_FARES[origin] × 1.6`. Steps 07 and 10 are deprecated.
-2. **Annualization is active.** Data spans 2.08 years (1,480 appts). All output figures are annualized. Step 06 computes `data_span_years` (2.0753). Step 08 scales hire cost for MILP period. Step 09 divides all costs/hours by `data_span_years`.
+2. **Annualization is active.** Data spans 2.08 years (1,471 US appts). All output figures are annualized. Step 06 computes `data_span_years` (2.0753). Step 08 scales hire cost for MILP period. Step 09 divides all costs/hours by `data_span_years`.
 3. **Full cost model is active** (Step 11): duration-scaled hotel ($159/night × node-avg nights) + rental on fly trips; IRS mileage + duration-scaled hotel on drive trips; day-trip logic (≤150 mi + ≤1 day → $0 hotel); drive/fly classified by 300-mile haversine threshold.
 4. Burdened hire cost is `$146,640`/year per incremental hire ($304,322 in MILP period).
 5. Out-of-region penalty default is `0`.
@@ -415,5 +424,6 @@ State these immediately to avoid context drift:
 9. Capacity model is demand-normalized with `target_utilization=0.85`.
 10. Scenario panel `Total Cost` shows annualized `economic_total_with_overhead_usd`.
 11. Technician map points are grouped by base; roster details are in marker popup.
-12. **Revenue-from-freed-capacity analysis is active** in Step 09: 3 profit tiers + $7K service contracts. Supplementary — MILP recommendation unchanged.
-13. Pipeline order: **06 → 11 → 08 → 09 → 05**.
+12. **AVS = Learning Space (LS)** — all AVS appointments reclassified as LS-requiring in Step 06. ~320 LS appointments require LS-certified techs (7 of 16).
+13. **Revenue-from-freed-capacity analysis is active** in Step 09: patient sim only (ISO), uniform 40% margin, 3 system-size tiers + $7K service contracts. Supplementary — MILP recommendation unchanged.
+14. Pipeline order: **06 → 11 → 08 → 09 → 05**.

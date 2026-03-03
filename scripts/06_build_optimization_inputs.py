@@ -209,11 +209,13 @@ def build_tech_master(
         if canonical_name == "Tameka Gongs":
             availability = 0.25
         if canonical_name == "James Sanchez":
-            availability = 0.0
+            availability = 1.0  # Full field tech; temporarily on phones (injury) but model targets ideal state
         if canonical_name == "Hakim Mouazer":
             availability = 0.0
-        if canonical_name in ("Damion Lyn", "Elier Martin"):
-            availability = 0.10
+        if canonical_name == "Elier Martin":
+            availability = 0.10  # Phone tech, confirmed by Shannon/Isabelle at ~10% field
+        if canonical_name == "Damion Lyn":
+            availability = 0.20  # Repair center hybrid, 20-25% field when fully staffed (conservative)
 
         note = row.get("Comments", "").strip()
         florida_only = int("only covers florida" in note.lower())
@@ -296,6 +298,18 @@ def build_demand_appointments(
         result_type="expand",
     )
     demand = pd.concat([demand, parsed], axis=1)
+
+    # AVS (Audiovisual Solutions) = Learning Space — confirmed by Shannon/Isabelle.
+    # AVS was a temporary name; all AVS appointments require LS-certified techs.
+    avs_mask = demand["Service Type"].astype(str).str.upper().str.contains("AVS", na=False)
+    n_avs = int(avs_mask.sum())
+    if n_avs > 0:
+        demand.loc[avs_mask & (demand["required_ls"] == 0), "required_ls"] = 1
+        demand.loc[avs_mask & (demand["skill_class"] == "regular"), "skill_class"] = "ls"
+        demand.loc[avs_mask & (demand["skill_class"] == "hps"), "skill_class"] = "hps_ls"
+        demand.loc[avs_mask, "parse_reason"] = demand.loc[avs_mask, "parse_reason"] + "__avs_is_ls"
+        print(f"  AVS→LS mapping: {n_avs} AVS appointments reclassified as LS-requiring.")
+
     demand["model_hint"] = demand.apply(
         lambda r: parse_model_hint(r.get("Description"), r.get("Subject")),
         axis=1,

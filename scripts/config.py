@@ -150,23 +150,22 @@ HOTEL_AVG_USD = round(HOTEL_NIGHTLY_RATE_USD * HOTEL_AVG_NIGHTS)  # $398 ≈ $39
 DRIVE_THRESHOLD_MILES = 300.0         # Great-circle miles; ≈ 5 hours driving
 
 # Revenue-from-freed-capacity analysis (Step 09).
-# Three installation revenue scenarios (MSRP-based, Year 1 gross revenue per installation).
-REVENUE_PER_INSTALLATION_CONSERVATIVE_USD = 50_000    # Small systems (Aria, Apollo)
-REVENUE_PER_INSTALLATION_MODERATE_USD = 120_000       # Mid-range (Lucina, Evo)
-REVENUE_PER_INSTALLATION_AGGRESSIVE_USD = 250_000     # Large systems (HPS full suite)
+# Three installation revenue scenarios — patient simulator installations only.
+# Learning Space (AVS/LS) installations excluded per Shannon (too variable $6.5K–$106K).
+REVENUE_PER_INSTALLATION_CONSERVATIVE_USD = 50_000    # Small patient sims (Aria, Apollo)
+REVENUE_PER_INSTALLATION_MODERATE_USD = 120_000       # Mid-range patient sims (Lucina, Evo)
+REVENUE_PER_INSTALLATION_AGGRESSIVE_USD = 250_000     # Large patient sims (HPS full suite)
 
 # Average annual recurring service contract revenue per installed system.
 # Based on UIUC Service Contract pricing: Apex $7K-$24K, Peak $2K-$8.5K.
 # $7K is a conservative fleet-weighted estimate skewed toward Peak-tier.
 AVG_ANNUAL_SERVICE_CONTRACT_USD = 7_000
 
-# Estimated profit margin on installation sales.
-# Medical device industry typical gross margins: 50-65%, net margins: 15-25%.
-# Accounts for COGS (hardware, AV equipment, software), shipping,
-# sales commissions, warranty reserves, and overhead allocation.
-INSTALLATION_PROFIT_MARGIN_CONSERVATIVE = 0.15   # 15% net margin
-INSTALLATION_PROFIT_MARGIN_MODERATE = 0.25       # 25% net margin
-INSTALLATION_PROFIT_MARGIN_AGGRESSIVE = 0.40     # 40% gross margin territory
+# Installation profit margin: 40% gross margin confirmed by Shannon Drew (VP Service).
+# Company targets 60% but doesn't always hit it; 40% is the conservative floor.
+INSTALLATION_PROFIT_MARGIN_CONSERVATIVE = 0.40
+INSTALLATION_PROFIT_MARGIN_MODERATE = 0.40
+INSTALLATION_PROFIT_MARGIN_AGGRESSIVE = 0.40
 
 # Service/software contracts have higher margins than hardware sales.
 # Medical device recurring revenue typically 60-80% margin.

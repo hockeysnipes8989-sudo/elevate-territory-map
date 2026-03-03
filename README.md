@@ -11,7 +11,8 @@ Interactive US/Canada map and optimization model for service coverage, travel co
 2. Optimization scenario panel on the map for `N=0..4` new hires (all figures annualized).
 3. End-to-end MILP pipeline for travel + hiring economics with automatic annualization.
 4. BTS Q2 2025 fare lookup table with 1.6× corporate premium for flight costs.
-5. Revenue-from-freed-capacity analysis with three profit-margin tiers.
+5. AVS = Learning Space product mapping (all AVS appointments require LS-certified techs).
+6. Revenue-from-freed-capacity analysis: patient sim only (ISO), uniform 40% margin across three system-size tiers.
 
 ## Install
 
@@ -76,12 +77,16 @@ This means the MILP solution quality is fully preserved (same solver, same appoi
 - Unmet demand penalty: `$5,000` per appointment (`DEFAULT_UNMET_PENALTY_USD`).
 - Out-of-region soft penalty default: `$0.0` (disabled by default).
 - Canada excluded from optimization scope. Hakim Mouazer (Montreal) at `availability_fte=0.0` (visible on map only).
+- James Sanchez: `availability_fte=1.0` (full field tech; temporarily on phones due to injury but model targets ideal state).
+- Damion Lyn: `availability_fte=0.20` (repair center hybrid, 20-25% field when fully staffed).
+- Elier Martin: `availability_fte=0.10` (phone tech, ~10% field).
+- **AVS = Learning Space (LS):** All AVS appointments reclassified as LS-requiring. ~320 LS appointments require LS-certified techs (7 of 16).
 - Canceled/voided overhead excluded (`$0`) — Navan data covers only ~2/16 techs. Fixed cost, does not affect scenario comparison.
 - Contractor scope defaults to `texas_only` unless explicitly overridden.
 - New-hire concentration cap defaults to `1` per base (`--max-hires-per-base 1`).
-- Current verified technician roster is 16 total (including both HTX contractors).
+- Current verified technician roster is 16 total (including both HTX contractors). Total effective FTE: 12.55.
 - Technician markers are grouped by shared base location (popup lists all names at that base).
-- **New hires cannot serve HPS nodes** — policy constraint (hard variable bound in MILP). 115 HPS appointments served by existing certified techs.
+- **New hires cannot serve HPS nodes** — policy constraint (hard variable bound in MILP). 115 HPS appointments served by existing certified techs. Shannon/Isabelle confirmed new hires would NOT be HPS-trained (product line discontinuing).
 
 ## Flight Cost Model
 
@@ -110,29 +115,29 @@ Step 9 then divides all costs by `data_span_years` (2.0753) to produce annual eq
 
 ## Latest Baseline Snapshot (Annualized — Current Repo Outputs)
 
-From the latest committed optimization artifacts (BTS Q2 2025 lookup + full cost model + annualization active):
+From the latest optimization artifacts (BTS Q2 2025 lookup + full cost model + annualization + AVS=LS + Shannon/Isabelle FTE updates):
 
 - Data span: **2.0753 years** (Jan 2, 2024 → Jan 29, 2026, 758 days)
 - Annualized appointment count: ~709/year (1,471 US total)
+- Skill breakdown: 115 HPS, 320 LS (including 315 AVS→LS), 1,036 regular
 - Scenario window: `N=0..4`
-- Best scenario: `N=0`
-- N=0 annualized total: **$589,884** (travel only, overhead excluded)
+- Best scenario: `N=1` (N=0 hit time limit with MIP gap 0.004%; N=1..4 proven optimal)
+- N=0 annualized total: **$638,434** (travel only, overhead excluded)
 - Hard cap result: no scenario allocates more than 1 hire to the same base
-- N=0: MIP gap 0.003% (effectively optimal). N=1..4: proven optimal.
 - All 1,471 appointments served across all scenarios (zero unmet)
-- Active techs at N=0: 15 (one tech has `availability_fte=0.0`)
+- Active techs at N=0: 16. Total effective FTE: 12.55
 - Target utilization: 85% (demand-normalized capacity model)
-- Mean utilization at N=0: 86.4%. Max: 100.00%.
+- Mean utilization at N=0: 85.1%. Max: 100.00%.
 
 ### Scenario Results (Annualized)
 
 | N | Annual Travel | Annual Payroll | Annual Total |
 |---|--------------|----------------|-------------|
-| 0 | $589,884 | $0 | **$589,884** |
-| 1 | $538,477 | $146,640 | $685,117 |
-| 2 | $509,146 | $293,280 | $802,426 |
-| 3 | $485,168 | $439,920 | $925,088 |
-| 4 | $466,744 | $586,560 | $1,053,304 |
+| 0 | $638,434 | $0 | **$638,434** |
+| 1 | $588,115 | $146,640 | $734,755 |
+| 2 | $552,491 | $293,280 | $845,771 |
+| 3 | $524,382 | $439,920 | $964,302 |
+| 4 | $498,847 | $586,560 | $1,085,407 |
 
 All scenarios cost more than N=0. Marginal annual travel savings diminish with each additional hire.
 
@@ -141,32 +146,34 @@ All scenarios cost more than N=0. Marginal annual travel savings diminish with e
 | N | Installs/yr | Net Cost Increase | Net Value (Conservative) | Net Value (Moderate) | Net Value (Aggressive) | Break-Even (Mod) |
 |---|------------:|------------------:|-------------------------:|---------------------:|-----------------------:|-----------------:|
 | 0 | 0.0 | $0 | $0 | $0 | $0 | 0.0 |
-| 1 | 34.3 | $95,233 | $329,694 | $1,100,731 | $3,499,513 | 2.7 |
-| 2 | 63.0 | $212,542 | $568,197 | $1,984,859 | $6,392,254 | 6.1 |
-| 3 | 89.8 | $335,204 | $778,535 | $2,799,433 | $9,086,672 | 9.6 |
-| 4 | 118.9 | $463,420 | $1,010,488 | $3,684,917 | $12,005,364 | 13.3 |
+| 1 | 42.5 | $96,321 | $962,808 | $2,153,795 | $4,365,630 | 1.8 |
+| 2 | 85.0 | $207,338 | $1,908,780 | $4,288,349 | $8,707,550 | 3.9 |
+| 3 | 127.0 | $325,868 | $2,837,112 | $6,393,877 | $12,999,297 | 6.2 |
+| 4 | 169.5 | $446,973 | $3,773,667 | $8,519,769 | $17,333,958 | 8.4 |
 
-Revenue assumptions: Conservative $50K×15%, Moderate $120K×25%, Aggressive $250K×40% margin per install + $7K×70% annual service contract per system. Profit margins applied — figures represent P&L impact, not gross MSRP.
+Revenue assumptions: $50K/$120K/$250K per patient sim install × uniform 40% margin + $7K×70% annual service contract per system. ISO installations only — Learning Space (AVS/LS) excluded per Shannon. Profit margins applied — figures represent P&L impact.
 
 ### Hiring Recommendations by Scenario
 
 | N | Recommended Bases |
 |---|-------------------|
-| 1 | DTW (Detroit, MI) |
-| 2 | DTW, Janesville WI (→ MKE airport) |
-| 3 | DTW, Janesville WI, Fort Smith AR (→ LIT airport) |
-| 4 | DTW, BNA (Nashville, TN), Janesville WI, Fort Smith AR |
+| 1 | CLE (Cleveland, OH) |
+| 2 | CLE, ORD (Chicago, IL) |
+| 3 | CLE, ORD, ATL (Atlanta, GA) |
+| 4 | CLE, ORD, ATL, Fort Smith AR (→ LIT airport) |
 
 ## Key Caveats
 
 - Hotel cost is duration-scaled ($159/night × node-avg nights, range 1–4). Day-trip logic (≤150 mi + ≤1 day) currently triggers on zero nodes (min node avg is 1.18 days). Trip bundling is not modeled.
 - Great-circle distance (not road distance) for drive/fly classification at 300 mi threshold.
 - No seasonality — all appointments treated equivalently regardless of time of year.
-- New hires cannot serve HPS nodes (policy constraint). 115 HPS appointments are served by existing certified techs.
+- New hires cannot serve HPS nodes (policy constraint). 115 HPS appointments are served by existing certified techs. HPS product line discontinuing.
+- AVS = Learning Space mapping reclassifies ~315 appointments as LS-requiring, constraining dispatch to LS-certified techs (7 of 16).
 - BTS fares are Q2 2025 data. A few airports (SHV, BIL, BIS, FAR, ANC) use the national fallback ($386) where specific BTS data was unavailable.
 - Flight cost is origin-only (no destination dependency) — a simplification justified by BTS itinerary-level averages varying primarily by origin market.
 - Annualization assumes uniform distribution of costs across the 2.08-year data period.
-- Revenue figures represent capacity enabled, not guaranteed bookings. Profit margins (15%/25%/40%) are industry-typical estimates.
+- Revenue figures represent capacity enabled, not guaranteed bookings. Uniform 40% margin confirmed by Shannon Drew (VP Service).
+- Revenue model covers patient simulator installations only (ISO). Learning Space (AVS/LS) excluded — install values too variable ($6.5K–$106K).
 
 ## Key Output Files
 
@@ -175,7 +182,7 @@ Revenue assumptions: Conservative $50K×15%, Moderate $120K×25%, Aggressive $25
 - `data/processed/optimization/tech_master.csv`
 - `data/processed/optimization/demand_appointments.csv`
 - `data/processed/optimization/candidate_bases.csv`
-- `data/processed/optimization/full_cost_table.csv` — per-(tech/candidate, node) drive/fly cost table (7,372 rows)
+- `data/processed/optimization/full_cost_table.csv` — per-(tech/candidate, node) drive/fly cost table (10,961 rows)
 - `data/processed/optimization/scenario_summary.csv` — raw MILP output (full-period costs)
 - `data/processed/optimization/scenario_summary_enhanced.csv` — annualized with revenue analysis
 - `data/processed/optimization/scenario_placements.csv`

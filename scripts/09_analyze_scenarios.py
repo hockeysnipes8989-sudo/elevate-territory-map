@@ -58,7 +58,10 @@ def main() -> None:
 
     # --- Block A: Compute avg calendar hours per installation ---
     appts_path = Path(config.CLEAN_APPTS_CSV)
-    installation_types = ["ISO", "AVS ISO", "AVS"]
+    # Revenue model: patient simulator installations only (ISO).
+    # Learning Space (AVS ISO, AVS) excluded per Shannon — too variable ($6.5K–$106K).
+    # LS appointments remain in demand data for dispatch/utilization modeling.
+    installation_types = ["ISO"]
     if appts_path.exists():
         appts_df = pd.read_csv(appts_path)
         install_rows = appts_df[appts_df["Service Type"].isin(installation_types)].copy()
@@ -69,6 +72,9 @@ def main() -> None:
         install_rows["calendar_hours"] = install_hours
         if len(install_rows) > 0:
             avg_calendar_hours_per_installation = float(install_rows["calendar_hours"].mean())
+            # Shannon confirmed patient sim on-site time is ~5 hours (4hr assembly + sub-1hr orientation).
+            # The data-derived avg_duration_days represents the full appointment calendar window
+            # (travel + setup + on-site + teardown), which is the correct unit for freed-capacity conversion.
             avg_duration_days_per_installation = float(install_rows["Duration Days"].mean())
             install_type_breakdown = {}
             for stype in installation_types:
