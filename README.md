@@ -150,12 +150,12 @@ All scenarios cost more than N=0. Marginal annual travel savings diminish with e
 | N | Installs/yr | Net Cost Increase | Net Value (Conservative) | Net Value (Moderate) | Net Value (Aggressive) | Break-Even (Mod) |
 |---|------------:|------------------:|-------------------------:|---------------------:|-----------------------:|-----------------:|
 | 0 | 0.0 | $0 | $0 | $0 | $0 | 0.0 |
-| 1 | 42.5 | $72,355 | $986,773 | $2,177,761 | $4,389,596 | 1.4 |
-| 2 | 85.0 | $163,540 | $1,951,915 | $4,330,740 | $8,748,558 | 3.1 |
-| 3 | 127.5 | $265,570 | $2,908,208 | $6,477,114 | $13,105,083 | 5.0 |
-| 4 | 169.5 | $370,164 | $3,850,476 | $8,596,578 | $17,410,767 | 7.0 |
+| 1 | 17.0 | $72,355 | $351,296 | $827,691 | $1,712,425 | 1.4 |
+| 2 | 34.0 | $163,540 | $682,642 | $1,634,172 | $3,401,299 | 3.1 |
+| 3 | 51.0 | $265,570 | $1,003,941 | $2,431,504 | $5,082,691 | 5.0 |
+| 4 | 67.8 | $370,164 | $1,318,092 | $3,216,533 | $6,742,208 | 7.0 |
 
-Revenue assumptions: $50K/$120K/$250K per patient sim install × uniform 40% margin + $7K×70% annual service contract per system. ISO installations only — Learning Space (AVS/LS) excluded per Shannon. Profit margins applied — figures represent P&L impact.
+Revenue assumptions: $50K/$120K/$250K per patient sim install × uniform 40% margin + $7K×70% annual service contract per system. ISO installations only — Learning Space (AVS/LS) excluded per Shannon. Profit margins applied — figures represent P&L impact. Utilization factor 30% (conservative — accounts for scheduling friction, admin overhead, sales pipeline constraints, ramp-up time).
 
 ### Hiring Recommendations by Scenario
 

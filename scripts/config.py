@@ -175,7 +175,12 @@ SERVICE_CONTRACT_PROFIT_MARGIN = 0.70
 
 # Realistic installation estimate parameters (Step 09 capacity-freed analysis).
 TRAVEL_DAYS_PER_INSTALLATION = 1.0            # Travel overhead per installation (days)
-FREED_CAPACITY_UTILIZATION_FACTOR = 0.75       # Fraction of freed days practically usable
+# 30% of freed calendar time realistically converts to installations.
+# Conservative estimate accounting for: scheduling friction, non-installation
+# tasks (phone coverage, training, admin), sales pipeline constraints
+# (installations require customers who have already purchased), ramp-up time,
+# and general real-world overhead. Previous value was 0.75.
+FREED_CAPACITY_UTILIZATION_FACTOR = 0.30
 
 # ---------------------------------------------------------------------------
 # Colors

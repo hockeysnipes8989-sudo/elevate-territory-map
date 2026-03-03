@@ -184,23 +184,23 @@ The pipeline applies three deductions to convert freed calendar hours into a rea
 
 1. **Calendar → days:** `freed_duration_days = hours_freed / 24` (calendar hours include nights/weekends; dividing by 24 yields Duration Days, the same unit as appointment durations)
 2. **Travel overhead:** each installation requires an additional 1.0 day for travel to/from the site
-3. **Utilization factor (75%):** accounts for scheduling gaps, PTO, admin time, and non-installation work that consumes freed capacity
+3. **Utilization factor (30%):** conservative estimate accounting for scheduling friction, non-installation tasks (phone coverage, training, admin), sales pipeline constraints (installations require customers who have already purchased), ramp-up time, and general real-world overhead
 
-Formula: `realistic_installations = (freed_days × 0.75) / (avg_duration_days + travel_days)`
+Formula: `realistic_installations = (freed_days × 0.30) / (avg_duration_days + travel_days)`
 
 Parameters (from appointment data):
 - Avg Duration Days per installation: **3.25** (ISO: 68 appts @ 2.10 days, AVS ISO: 310 appts @ 3.60 days, AVS: 14 appts @ 1.09 days)
 - Travel overhead: **1.0 day** per installation
 - Effective days per installation: **4.25** (3.25 + 1.0)
-- Utilization factor: **75%**
+- Utilization factor: **30%**
 
-| Scenario | Days Freed | Usable Days (×0.75) | Realistic Installs | Theoretical Max |
+| Scenario | Days Freed | Usable Days (×0.30) | Realistic Installs | Theoretical Max |
 |----------|----------:|-----------:|-------------------:|----------------:|
 | N=0 | 0.0 | 0.0 | 0.0 | 0 |
-| N=1 | 320.9 | 240.7 | 56.6 | 99 |
-| N=2 | 641.9 | 481.5 | 113.3 | 198 |
-| N=3 | 962.7 | 722.0 | 169.9 | 296 |
-| N=4 | 1,283.4 | 962.6 | 226.5 | 395 |
+| N=1 | 175.6 | 52.7 | 17.0 | 84 |
+| N=2 | 350.7 | 105.2 | 34.0 | 167 |
+| N=3 | 526.1 | 157.8 | 51.0 | 251 |
+| N=4 | 699.6 | 209.9 | 67.8 | 334 |
 
 **Theoretical Max** retains the previous metric (hours freed ÷ avg calendar hours per installation) for reference — it assumes 100% of freed calendar time converts to installations with no scheduling gaps, travel, or overhead.
 
@@ -215,9 +215,9 @@ At N=1, the Cleveland hire absorbs demand from:
 
 Net freed from existing techs: 7,701.00 calendar hours = **320.9 days**.
 
-After applying the 75% utilization factor: **240.7 usable days**.
+After applying the 30% utilization factor: **52.7 usable days**.
 
-At 4.25 effective days per installation (3.25 duration + 1.0 travel): **~56.6 realistic installations** — compared to the theoretical max of 99 installations (which assumed 100% conversion of calendar hours).
+At 3.1 effective days per installation (2.1 duration + 1.0 travel): **~17.0 realistic installations** — compared to the theoretical max of 84 installations (which assumed 100% conversion of calendar hours).
 
 ### Conversion to Labor Terms
 

@@ -729,7 +729,7 @@ Two estimates are produced for each scenario:
 
   (B) REALISTIC INSTALLATIONS ENABLED:
       freed_duration_days = hours_freed / 24.0
-      usable_days = freed_duration_days × UTILIZATION_FACTOR (0.75)
+      usable_days = freed_duration_days × UTILIZATION_FACTOR (0.30)
       effective_days_per_install = avg_duration_days + TRAVEL_DAYS (1.0)
       realistic_installations = usable_days / effective_days_per_install
 
@@ -739,13 +739,13 @@ Two estimates are produced for each scenario:
           - AVS ISO: 310 appointments, avg 3.60 days
           - AVS: 14 appointments, avg 1.09 days
         TRAVEL_DAYS_PER_INSTALLATION = 1.0 day (travel to/from site)
-        FREED_CAPACITY_UTILIZATION_FACTOR = 0.75 (25% lost to scheduling gaps,
-          PTO, admin work, non-installation tasks)
+        FREED_CAPACITY_UTILIZATION_FACTOR = 0.30 (70% lost to scheduling friction,
+          non-installation tasks, sales pipeline constraints, ramp-up time, overhead)
         effective_days_per_install = 3.25 + 1.0 = 4.25 days
 
       The three deductions from theoretical to realistic:
         1. Calendar → days: divide by 24 (Duration Days unit)
-        2. Utilization factor: multiply by 0.75
+        2. Utilization factor: multiply by 0.30
         3. Travel overhead: add 1.0 day per installation to the denominator
 
 10.4  BEST SCENARIO SELECTION
@@ -1063,13 +1063,13 @@ Midwest demand cluster is large and far from all existing tech bases.
 17.2  CAPACITY FREED BY SCENARIO
 
   Scenario | Days Freed | Usable Days | Realistic  | Theoretical Max
-           |            | (×0.75)     | Installs   | Installs
+           |            | (×0.30)     | Installs   | Installs
   ---------|------------|-------------|------------|------------------
   N=0      | 0.0        | 0.0         | 0.0        | 0
-  N=1      | 320.9      | 240.7       | 56.7       | 99
-  N=2      | 641.9      | 481.4       | 113.3      | 198
-  N=3      | 962.7      | 722.0       | 170.0      | 296
-  N=4      | 1,283.4    | 962.6       | 226.6      | 395
+  N=1      | 175.6      | 52.7        | 17.0       | 84
+  N=2      | 350.7      | 105.2       | 34.0       | 167
+  N=3      | 526.1      | 157.8       | 51.0       | 251
+  N=4      | 699.6      | 209.9       | 67.8       | 334
 
 17.3  N=1 DETAILED EXAMPLE
 
@@ -1081,8 +1081,8 @@ At N=1, the Cleveland hire absorbs 7,701 calendar hours from existing techs:
 
 Net freed: 7,701 calendar hours = 320.9 days
 
-After 75% utilization factor: 240.7 usable days
-At 4.25 effective days per installation: ~56.7 realistic installations
+After 30% utilization factor: 52.7 usable days
+At 3.1 effective days per installation: ~17.0 realistic installations
 
 The optimizer redistributes assignments GLOBALLY, not just from the nearest
 tech. This is why Elier Martin (Florida) gains work — the overall
