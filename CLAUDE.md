@@ -39,12 +39,9 @@ elevate-territory-map/
     04_build_territories.py
     05_generate_map.py
     06_build_optimization_inputs.py
-    07_build_travel_cost_model.py    # DEPRECATED — left on disk, not in pipeline
     08_optimize_locations.py
     09_analyze_scenarios.py
-    10_correct_travel_costs.py       # DEPRECATED — left on disk, not in pipeline
     11_build_full_cost_table.py      # per-(tech/candidate, node) drive/fly cost table
-    travel_cost_modeling.py          # DEPRECATED — left on disk, not in pipeline
     optimization_utils.py
     config.py
   data/
@@ -82,7 +79,6 @@ overridden via environment variables:
 
 - `EXTERNAL_APPOINTMENTS_XLSX` (env: `ELEVATE_APPTS_SOURCE`)
 - `EXTERNAL_TECH_ROSTER_XLSX` (env: `ELEVATE_TECH_SOURCE`)
-- `EXTERNAL_NAVAN_XLSX` (env: `ELEVATE_NAVAN_SOURCE`)
 
 Do not commit sensitive external files.
 
@@ -100,7 +96,7 @@ Typical UI-only changes require Step 5 only.
 
 ### Steps 6-11 (Optimization)
 
-Pipeline order: **06 → 11 → 08 → 09 → 05** (Steps 07 and 10 are deprecated).
+Pipeline order: **06 → 11 → 08 → 09 → 05**.
 
 1. `06_build_optimization_inputs.py` — also computes `data_span_years` for annualization
 2. `11_build_full_cost_table.py` — pre-computes `full_cost_table.csv` using three-tier trip model (drive_day / drive_overnight / fly) with BTS Q2 2025 fares × 1.6 for flight costs. Re-run when `demand_appointments.csv`, `tech_master.csv`, or BTS fare data changes.
@@ -122,14 +118,6 @@ Pipeline order: **06 → 11 → 08 → 09 → 05** (Steps 07 and 10 are deprecat
   - `constraint_florida_only`
 - Candidate bases combine major airports plus top demand-city candidates.
 - **Data span computation:** `data_span_years = max(date_span_days / 365.25, 0.5)`. Currently 2.0753 years (Jan 2, 2024 → Jan 29, 2026, 758 days).
-
-### Step 7: DEPRECATED (Travel Cost Matrix)
-
-Step 7 (`07_build_travel_cost_model.py`) is deprecated and no longer part of the pipeline. The ML-based flight cost engine (GradientBoostingRegressor trained on Navan flights) has been replaced by a direct BTS Q2 2025 fare lookup table in `config.py`. The script file remains on disk for historical reference.
-
-### Step 10: DEPRECATED (BTS Correction Layer)
-
-Step 10 (`10_correct_travel_costs.py`) is deprecated and no longer part of the pipeline. The BTS correction layer that post-processed the ML model output is no longer needed — flight costs now come directly from BTS data via `config.BTS_RAW_ITINERARY_FARES`. The script file remains on disk for historical reference.
 
 ### Step 11: Full Cost Table (BTS Lookup)
 
@@ -413,7 +401,7 @@ To update BTS fares, edit `BTS_RAW_ITINERARY_FARES` in `scripts/config.py` and r
 
 State these immediately to avoid context drift:
 
-1. **BTS Q2 2025 lookup table with 1.6× corporate premium** is the flight cost engine. `BTS_RAW_ITINERARY_FARES[origin] × 1.6`. Steps 07 and 10 are deprecated.
+1. **BTS Q2 2025 lookup table with 1.6× corporate premium** is the flight cost engine. `BTS_RAW_ITINERARY_FARES[origin] × 1.6`.
 2. **Annualization is active.** Data spans 2.08 years (1,471 US appts). All output figures are annualized. Step 06 computes `data_span_years` (2.0753). Step 08 scales hire cost for MILP period. Step 09 divides all costs/hours by `data_span_years`.
 3. **Full cost model is active** (Step 11): three-tier distance-based — same-day drive (<100 mi, mileage only), overnight drive (100–300 mi, mileage + 1 hotel night), fly (≥300 mi, flight + duration-scaled hotel + rental). IRS $0.70/mi, hotel $159/night, rental $235/fly trip.
 4. Burdened hire cost is `$146,640`/year per incremental hire ($304,322 in MILP period).

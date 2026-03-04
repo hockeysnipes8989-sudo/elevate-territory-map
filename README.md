@@ -100,7 +100,7 @@ Flight cost = `BTS_RAW_ITINERARY_FARES[origin_airport] × 1.6`. Origin-only — 
 - The 1.6× corporate premium is calibrated from Navan median actual cost ($633) / BTS average domestic fare ($386).
 - Mean flight cost: $633. Range: $455–$783.
 
-Steps 07 (`07_build_travel_cost_model.py`) and 10 (`10_correct_travel_costs.py`) are deprecated and no longer part of the pipeline. Files remain on disk for historical reference.
+Steps 07 and 10 (ML flight cost model and BTS correction layer) were removed — replaced by the BTS Q2 2025 lookup table in Step 11.
 
 ## Scenario Cost Formula
 

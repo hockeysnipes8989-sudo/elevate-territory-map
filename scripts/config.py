@@ -31,8 +31,8 @@ INSTALL_BASE = os.path.join(
 )
 
 # External source-of-truth workbooks used by optimization scripts.
-# Set env vars (ELEVATE_APPTS_SOURCE, ELEVATE_TECH_SOURCE, ELEVATE_NAVAN_SOURCE)
-# to override the machine-specific fallback paths below.
+# Set env vars (ELEVATE_APPTS_SOURCE, ELEVATE_TECH_SOURCE) to override the
+# machine-specific fallback paths below.
 EXTERNAL_APPOINTMENTS_XLSX = os.environ.get(
     "ELEVATE_APPTS_SOURCE",
     "/Users/patricklipinski/Desktop/opus 4.6 final excel sheets/"
@@ -41,10 +41,6 @@ EXTERNAL_APPOINTMENTS_XLSX = os.environ.get(
 EXTERNAL_TECH_ROSTER_XLSX = os.environ.get(
     "ELEVATE_TECH_SOURCE",
     "/Users/patricklipinski/Downloads/Tech location and product experience (1).xlsx",
-)
-EXTERNAL_NAVAN_XLSX = os.environ.get(
-    "ELEVATE_NAVAN_SOURCE",
-    "/Users/patricklipinski/Downloads/navan_export.xlsx",
 )
 
 # Processed outputs
@@ -133,9 +129,6 @@ CORPORATE_TRAVEL_PREMIUM = 1.6       # Navan median $633 / BTS avg $386
 # the relative comparison between hiring levels.
 BASELINE_CANCELED_VOIDED_USD = 0.0
 
-# Full cost model: three-tier trip classification with rental car and hotel costs.
-# Requires full_cost_table.csv produced by scripts/11_build_full_cost_table.py.
-FULL_COST_MODEL = True
 IRS_MILEAGE_RATE_USD_PER_MI = 0.70   # 2025 IRS standard mileage rate
 RENTAL_CAR_AVG_USD = 235.0            # Navan average across 82 confirmed bookings
 HOTEL_NIGHTLY_RATE_USD = 159.0        # Navan average nightly rate (rounded from $158.76, 125 bookings)
