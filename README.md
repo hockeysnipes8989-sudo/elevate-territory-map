@@ -58,11 +58,10 @@ Step 11 uses a three-tier distance-based trip model per (tech/candidate, node) p
 - **Fly** (≥300 mi): BTS Q2 2025 fare × 1.6 corporate premium + duration-scaled hotel ($159/night) + rental car ($235)
 
 Default external workbook paths are in `scripts/config.py` (overridable via env vars
-`ELEVATE_APPTS_SOURCE`, `ELEVATE_TECH_SOURCE`, `ELEVATE_NAVAN_SOURCE`):
+`ELEVATE_APPTS_SOURCE`, `ELEVATE_TECH_SOURCE`):
 
 - `EXTERNAL_APPOINTMENTS_XLSX`
 - `EXTERNAL_TECH_ROSTER_XLSX`
-- `EXTERNAL_NAVAN_XLSX`
 
 ## Annualization
 

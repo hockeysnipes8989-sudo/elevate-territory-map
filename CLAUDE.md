@@ -60,7 +60,7 @@ elevate-territory-map/
 - Python dependencies are in `requirements.txt`.
 - In this workstation, prefer:
   - `/opt/miniconda3/bin/python3`
-- Reason: avoids mixed interpreter issues (system Python may miss `openpyxl`/`sklearn`).
+- Reason: avoids mixed interpreter issues (system Python may miss `openpyxl`).
 
 ## Source Data Inputs
 
