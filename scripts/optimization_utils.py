@@ -81,6 +81,7 @@ CANADA_PROV_ABBR = {
 
 CANADA_ABBR = set(CANADA_PROV_ABBR.values())
 US_ABBR = set(US_STATE_ABBR.values())
+CANADA_COUNTRY_TOKENS = {"CANADA", "CAN"}
 
 
 def slugify(value: str) -> str:
@@ -111,7 +112,8 @@ def country_from_state(state_abbr: Optional[str]) -> str:
     """Infer country from state/province abbreviation."""
     if not state_abbr:
         return "USA"
-    if state_abbr in CANADA_ABBR:
+    token = str(state_abbr).strip().upper()
+    if token in CANADA_ABBR or token in CANADA_COUNTRY_TOKENS:
         return "Canada"
     return "USA"
 

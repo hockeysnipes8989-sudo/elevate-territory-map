@@ -1293,7 +1293,7 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names,
       </div>
       <div style="border-top: 2px solid #163b59; margin: 10px 0 8px 0;"></div>
       <div style="font-size: 12px; font-weight: 700; margin-bottom: 2px;">Freed Capacity &amp; Profit Potential</div>
-      <div style="font-size: 9px; color: #666; margin-bottom: 6px;">Moderate scenario: $120K/install, 25% margin</div>
+      <div style="font-size: 9px; color: #666; margin-bottom: 6px;">Moderate scenario: $120K/install, 40% margin</div>
       <div id="sim-kpis-revenue" style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px;">
         <div class="sim-kpi kpi-clickable" data-kpi="installs"><div class="label">Realistic Installations</div><div class="value" id="kpi-installs">-</div></div>
         <div class="sim-kpi kpi-clickable" data-kpi="gross-rev"><div class="label">Gross Revenue Enabled</div><div class="value" id="kpi-gross-rev">-</div></div>
@@ -1520,7 +1520,7 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names,
       var kpiExplanations = {{
         "total-cost": {{
           title: "Total Cost",
-          body: "<p><b>What:</b> The total annual economic cost for this hiring scenario, including travel costs for all technicians, new-hire payroll, and fixed canceled/voided overhead ($35,632).</p><p><b>Formula:</b> Travel Cost + Hire Payroll + Canceled/Voided Overhead</p><p><b>Interpretation:</b> Lower is better from a pure cost perspective. N=0 is the cheapest scenario because adding hires increases payroll faster than it reduces travel costs.</p>"
+          body: "<p><b>What:</b> The total annual economic cost for this hiring scenario, including travel costs for all technicians, new-hire payroll, and configured canceled/voided overhead (currently $0).</p><p><b>Formula:</b> Travel Cost + Hire Payroll + Canceled/Voided Overhead</p><p><b>Interpretation:</b> Lower is better from a pure cost perspective. N=0 is the cheapest scenario because adding hires increases payroll faster than it reduces travel costs.</p>"
         }},
         "cost-change": {{
           title: "Cost Change vs N=0",
@@ -1532,7 +1532,7 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names,
         }},
         "unmet": {{
           title: "Unmet Appointments",
-          body: "<p><b>What:</b> Number of service appointments that could not be assigned to any technician in the optimal solution.</p><p><b>Formula:</b> Count of demand appointments with no feasible assignment</p><p><b>Interpretation:</b> Zero means all 1,480 appointments are served. Non-zero would indicate capacity or skill constraints preventing full coverage.</p>"
+          body: "<p><b>What:</b> Number of service appointments that could not be assigned to any technician in the optimal solution.</p><p><b>Formula:</b> Count of demand appointments with no feasible assignment</p><p><b>Interpretation:</b> Zero means all modeled appointments are served. Non-zero would indicate capacity or skill constraints preventing full coverage.</p>"
         }},
         "hire-payroll": {{
           title: "Annual Hire Payroll",
@@ -1548,7 +1548,7 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names,
         }},
         "installs": {{
           title: "Realistic Installations Enabled",
-          body: "<p><b>What:</b> Estimated number of new installations that freed existing-tech time could support.</p><p><b>Formula:</b> (Freed duration days &times; 75% utilization factor) &divide; (3.25 avg install days + 1.0 travel day)</p><p><b>Interpretation:</b> This accounts for scheduling gaps, PTO, and travel overhead. It's what freed capacity <i>could enable</i>, not guaranteed bookings. N=0 shows 0 because no capacity is freed without hiring.</p>"
+          body: "<p><b>What:</b> Estimated number of new installations that freed existing-tech time could support.</p><p><b>Formula:</b> (Freed duration days &times; 30% utilization factor) &divide; (avg install duration days + 1.0 travel day)</p><p><b>Interpretation:</b> This accounts for scheduling gaps, PTO, and travel overhead. It's what freed capacity <i>could enable</i>, not guaranteed bookings. N=0 shows 0 because no capacity is freed without hiring.</p>"
         }},
         "gross-rev": {{
           title: "Gross Revenue Enabled",
@@ -1556,7 +1556,7 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names,
         }},
         "profit": {{
           title: "Estimated Profit Enabled",
-          body: "<p><b>What:</b> Estimated profit from installations and service contracts, with industry-typical margins applied.</p><p><b>Formula:</b> (Installs &times; $120K &times; 25% install margin) + (Installs &times; $7K &times; 70% service margin)</p><p><b>Interpretation:</b> Uses moderate scenario assumptions. Installation margin (25%) covers COGS, shipping, commissions, and warranty. Service contract margin (70%) reflects higher-margin recurring revenue.</p>"
+          body: "<p><b>What:</b> Estimated profit from installations and service contracts, with configured margins applied.</p><p><b>Formula:</b> (Installs &times; $120K &times; 40% install margin) + (Installs &times; $7K &times; 70% service margin)</p><p><b>Interpretation:</b> Uses moderate scenario assumptions. Installation margin (40%) covers COGS, shipping, commissions, and warranty. Service contract margin (70%) reflects higher-margin recurring revenue.</p>"
         }},
         "net-value": {{
           title: "Net Economic Value",
@@ -1564,7 +1564,7 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names,
         }},
         "break-even": {{
           title: "Break-Even Installations",
-          body: "<p><b>What:</b> Minimum installations needed to recoup the net cost increase of hiring.</p><p><b>Formula:</b> Net Cost Increase &divide; ($120K &times; 25% + $7K &times; 70% = $34,900 profit per install)</p><p><b>Interpretation:</b> A low break-even (e.g., 1.7) means only ~2 installations are needed to justify the hire. Compare to realistic installations enabled (~56.7 for N=1) to assess feasibility.</p>"
+          body: "<p><b>What:</b> Minimum installations needed to recoup the net cost increase of hiring.</p><p><b>Formula:</b> Net Cost Increase &divide; ($120K &times; 40% + $7K &times; 70% = $52,900 profit per install)</p><p><b>Interpretation:</b> Lower break-even values mean fewer installations are needed to justify hiring. Compare this with realistic installations enabled to assess feasibility.</p>"
         }},
         "roi": {{
           title: "ROI (Return on Investment)",

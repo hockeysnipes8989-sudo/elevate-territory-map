@@ -482,7 +482,14 @@ def main() -> None:
     lines.append("")
     lines.append("### Caveats")
     lines.append("1. Revenue figures represent **capacity enabled**, not guaranteed bookings — actual revenue depends on sales pipeline and market demand.")
-    lines.append("2. Profit margins are applied (15%/25%/40% on installations, 70% on service contracts) — actual margins vary by product line and deal structure.")
+    lines.append(
+        "2. Profit margins are applied "
+        f"({config.INSTALLATION_PROFIT_MARGIN_CONSERVATIVE:.0%}/"
+        f"{config.INSTALLATION_PROFIT_MARGIN_MODERATE:.0%}/"
+        f"{config.INSTALLATION_PROFIT_MARGIN_AGGRESSIVE:.0%} on installations, "
+        f"{config.SERVICE_CONTRACT_PROFIT_MARGIN:.0%} on service contracts) "
+        "— actual margins vary by product line and deal structure."
+    )
     lines.append("3. Service contract revenue assumes each new installation generates an annual contract.")
     lines.append("4. Estimates are **Year 1 only** — multi-year NPV would require discount rate assumptions.")
     lines.append("5. The MILP optimizer recommendation (N=0) is unchanged — this analysis is supplementary.")

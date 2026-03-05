@@ -40,7 +40,6 @@ TECH_LOCATION_AIRPORT_OVERRIDES = {
     "st louis, mo": "STL",
     "ontario ca": "ONT",
     "tampa fl": "TPA",
-    "montreal qc": "YUL",
     "phoenix az": "PHX",
     "philadelphia pa": "PHL",
     "baltimore md": "BWI",
@@ -58,6 +57,12 @@ LS_PATTERNS = [
     r"\bmlsp\b",
     r"\bls\b",
 ]
+
+EXCLUDED_US_TERRITORIES = {
+    "US VIRGIN ISLANDS",
+    "VIRGIN ISLANDS",
+    "VI",
+}
 
 
 def resolve_path(candidates: list[str], label: str) -> str:
@@ -174,11 +179,84 @@ def build_tech_master(
     contractor_scope: str,
 ) -> pd.DataFrame:
     """Build canonical technician table."""
-    raw = pd.read_excel(tech_path, sheet_name=0, header=None)
-    headers = raw.iloc[1].tolist()
-    tech = raw.iloc[2:].copy()
-    tech.columns = headers
-    tech = tech.dropna(how="all")
+    if str(tech_path).lower().endswith(".csv"):
+        cached = pd.read_csv(tech_path)
+        required_cols = {
+            "tech_id",
+            "tech_name",
+            "source_name",
+            "employment_type",
+            "base_location_raw",
+            "base_city",
+            "base_state",
+            "base_country",
+            "base_airport_iata",
+            "base_lat",
+            "base_lon",
+            "skill_hps",
+            "skill_ls",
+            "skill_patient",
+            "availability_fte",
+            "fixed_base",
+            "can_relocate",
+            "contractor_assignment_scope",
+            "constraint_florida_only",
+            "notes",
+        }
+        missing = sorted(required_cols - set(cached.columns))
+        if missing:
+            raise ValueError(
+                f"Cached tech_master CSV at {tech_path} is missing required columns: {missing}"
+            )
+        valid_airports = set(airports_df["airport_code"].astype(str))
+        airport_series = cached["base_airport_iata"].fillna("").astype(str).str.strip()
+        invalid_mask = airport_series.ne("") & ~airport_series.isin(valid_airports)
+        if invalid_mask.any():
+            invalid_values = sorted(set(airport_series[invalid_mask].tolist()))
+            cached.loc[invalid_mask, "base_airport_iata"] = ""
+            print(
+                "  NOTE: cleared unsupported cached airport code(s): "
+                + ", ".join(invalid_values)
+            )
+        print("  NOTE: using cached tech_master CSV fallback.")
+        return cached.sort_values("tech_name").reset_index(drop=True)
+
+    tech = None
+
+    # Preferred "Tech/Location/Comments" workbook layout.
+    try:
+        raw = pd.read_excel(tech_path, sheet_name=0, header=None)
+        if len(raw) >= 3:
+            headers = ["" if pd.isna(h) else str(h).strip() for h in raw.iloc[1].tolist()]
+            parsed = raw.iloc[2:].copy()
+            parsed.columns = headers
+            parsed = parsed.dropna(how="all")
+            if {"Tech", "Location", "Comments"}.issubset(parsed.columns):
+                tech = parsed[["Tech", "Location", "Comments"]].copy()
+    except Exception:
+        tech = None
+
+    # Fallback legacy layout from Service Appointments report.
+    if tech is None:
+        fallback = pd.read_excel(tech_path, sheet_name=config.APPTS_REPORT_RESOURCES_SHEET)
+        missing_cols = [
+            c for c in ["Service Resource Name", "Location", "Comment"] if c not in fallback.columns
+        ]
+        if missing_cols:
+            raise ValueError(
+                f"Unsupported technician workbook format at {tech_path}. "
+                f"Missing columns: {missing_cols}"
+            )
+        tech = fallback.rename(
+            columns={
+                "Service Resource Name": "Tech",
+                "Comment": "Comments",
+            }
+        )[["Tech", "Location", "Comments"]].copy()
+        print(
+            "  NOTE: technician workbook did not match source-of-truth schema; "
+            "using Resources-sheet fallback columns."
+        )
 
     for col in tech.columns:
         tech[col] = tech[col].apply(lambda v: "" if pd.isna(v) else str(v).strip())
@@ -203,6 +281,12 @@ def build_tech_master(
             if not ap.empty:
                 airport_lat = float(ap.iloc[0]["lat"])
                 airport_lon = float(ap.iloc[0]["lon"])
+            else:
+                print(
+                    f"  WARNING: '{canonical_name}' mapped to unknown airport "
+                    f"'{airport_code}' (not in MAJOR_AIRPORTS); leaving airport blank."
+                )
+                airport_code = None
 
         is_contractor = "contractor" in name_raw.lower()
         availability = 0.5 if is_contractor else 1.0
@@ -230,7 +314,7 @@ def build_tech_master(
                 "base_city": city,
                 "base_state": state_abbr,
                 "base_country": country,
-                "base_airport_iata": airport_code,
+                "base_airport_iata": airport_code or "",
                 "base_lat": airport_lat,
                 "base_lon": airport_lon,
                 "skill_hps": int(yesno_to_bool(row.get("HPS"))),
@@ -284,12 +368,21 @@ def build_demand_appointments(
     demand["state_raw"] = demand["State/Province"].astype(str).str.strip()
     demand["state_norm"] = demand["state_raw"].map(normalize_state)
     demand["country"] = demand["state_norm"].map(country_from_state)
-    # Exclude Canadian appointments — US-only optimization.
+    # Exclude Canadian appointments and US territories outside scope.
     n_before = len(demand)
-    demand = demand[demand["country"] != "Canada"].copy()
+    state_norm_upper = demand["state_norm"].astype(str).str.upper()
+    canada_mask = demand["country"] == "Canada"
+    excluded_territory_mask = state_norm_upper.isin(EXCLUDED_US_TERRITORIES)
+    demand = demand[~(canada_mask | excluded_territory_mask)].copy()
     n_dropped = n_before - len(demand)
     if n_dropped:
-        print(f"  Filtered out {n_dropped} Canadian appointment(s) — US-only scope.")
+        n_canada = int(canada_mask.sum())
+        n_territory = int(excluded_territory_mask.sum())
+        print(
+            "  Filtered out "
+            f"{n_dropped} appointment(s) outside optimization scope "
+            f"({n_canada} Canada, {n_territory} excluded territory)."
+        )
     demand["territory"] = demand["Territory"].astype(str).str.strip()
 
     parsed = demand.apply(
@@ -500,6 +593,8 @@ def main() -> None:
             args.tech_xlsx,
             os.environ.get("ELEVATE_TECH_SOURCE"),
             DEFAULT_TECH_XLSX,
+            os.path.join(config.OPTIMIZATION_DIR, "tech_master.csv"),
+            config.SERVICE_APPTS_REPORT,
         ],
         "technician workbook",
     )
@@ -513,7 +608,7 @@ def main() -> None:
     sched_start_dt = pd.to_datetime(demand["scheduled_start"], errors="coerce").dropna()
     date_min = sched_start_dt.min()
     date_max = sched_start_dt.max()
-    data_span_days = (date_max - date_min).days
+    data_span_days = max((date_max - date_min).days + 1, 1)
     data_span_years = max(data_span_days / 365.25, 0.5)  # floor at 0.5 to avoid division issues
 
     if data_span_years < 0.8:

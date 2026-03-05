@@ -140,7 +140,8 @@ def compute_entity_node_costs(
                 # Fly trip: flight + duration-scaled hotel + rental car
                 trip_mode = "fly"
                 avg_days = node_avg_days.get(node_id, config.HOTEL_AVG_NIGHTS) if node_avg_days else config.HOTEL_AVG_NIGHTS
-                hotel_nights = max(1, round(avg_days))
+                # Round up partial trip durations to avoid understating overnight cost.
+                hotel_nights = max(1, int(np.ceil(avg_days)))
                 flight_cost = get_flight_cost(airport)
                 mileage_cost = 0.0
                 rental_cost = config.RENTAL_CAR_AVG_USD

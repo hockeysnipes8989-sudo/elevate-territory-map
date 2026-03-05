@@ -117,7 +117,11 @@ def tech_eligible_for_node(tech: pd.Series, node: pd.Series, contractor_scope: s
         return False
 
     # If no origin airport, don't allow assignment.
-    if not str(tech.get("base_airport_iata", "")).strip():
+    airport_raw = tech.get("base_airport_iata", "")
+    if pd.isna(airport_raw):
+        return False
+    airport = str(airport_raw).strip()
+    if not airport or airport.lower() == "nan":
         return False
     return True
 
