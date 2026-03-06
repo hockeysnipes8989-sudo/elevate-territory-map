@@ -86,24 +86,53 @@ def add_territory_boundaries(m, geojson_path, layer_name, show=False):
         color = feature["properties"]["color"]
         appts = feature["properties"]["appointments"]
         assets = feature["properties"]["active_assets"]
+        omitted_split_states = feature["properties"].get("omitted_split_states", [])
+        split_note = ""
+        if omitted_split_states:
+            split_list = ", ".join(omitted_split_states)
+            split_note = (
+                "<br><span style='color:#666;font-size:11px;'>"
+                f"Split-state coverage shown as reference markers only: {split_list}"
+                "</span>"
+            )
 
         popup_html = (
             f"<b>{name}</b><br>"
             f"Service appointments: {appts}<br>"
             f"Active contract assets: {assets}"
+            f"{split_note}"
         )
 
-        folium.GeoJson(
-            {"type": "FeatureCollection", "features": [feature]},
-            style_function=lambda x, c=color: {
-                "fillColor": c,
-                "color": c,
-                "weight": 3,
-                "fillOpacity": 0.10,
-            },
-            tooltip=name,
-            popup=folium.Popup(popup_html, max_width=250),
-        ).add_to(fg)
+        if feature.get("geometry", {}).get("coordinates"):
+            folium.GeoJson(
+                {"type": "FeatureCollection", "features": [feature]},
+                style_function=lambda x, c=color: {
+                    "fillColor": c,
+                    "color": c,
+                    "weight": 3,
+                    "fillOpacity": 0.10,
+                },
+                tooltip=name,
+                popup=folium.Popup(popup_html, max_width=250),
+            ).add_to(fg)
+
+        for marker in feature["properties"].get("reference_markers", []):
+            lat = marker.get("lat")
+            lon = marker.get("lon")
+            label = marker.get("label", f"{name} reference")
+            if lat is None or lon is None:
+                continue
+            folium.CircleMarker(
+                location=[lat, lon],
+                radius=6,
+                color=color,
+                fill=True,
+                fill_color=color,
+                fill_opacity=0.95,
+                weight=2,
+                tooltip=f"{name}: {label}",
+                popup=folium.Popup(popup_html, max_width=250),
+            ).add_to(fg)
 
         # Outlier locations (Alaska, USVI, etc.) are rendered as points, not polygon vertices.
         for marker in feature["properties"].get("outlier_markers", []):

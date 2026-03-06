@@ -7,7 +7,7 @@ Interactive US/Canada map and optimization model for service coverage, travel co
 
 ## What This Includes
 
-1. Map layers for active-contract assets, appointments, technicians, territories, and airports.
+1. Map layers for active-contract assets, appointments, technicians, territories, and airports. Split-state territories use reference markers instead of invented full-state polygons.
 2. Optimization scenario panel on the map for `N=0..4` new hires (all figures annualized).
 3. End-to-end MILP pipeline for travel + hiring economics with automatic annualization.
 4. BTS Q2 2025 fare lookup table with 1.6× corporate premium for flight costs.
@@ -38,6 +38,8 @@ python scripts/05_generate_map.py
 
 Source files for steps 1-4 are expected in `data/raw/`. Geocoding cache lives in `data/geocode_cache.json`.
 
+If the external technician workbook is unavailable, Step 1 falls back to the tracked canonical roster at `data/processed/optimization/tech_master.csv` before using the legacy `Resources` sheet.
+
 ## Optimization Pipeline (Steps 6-11)
 
 Outputs are written to `data/processed/optimization/`.
@@ -65,30 +67,30 @@ Default external workbook paths are in `scripts/config.py` (overridable via env 
 
 ## Annualization
 
-The appointment dataset spans **2.08 years** (Jan 2, 2024 → Jan 29, 2026, 758 days, 1,471 US appointments). The pipeline automatically detects this and annualizes all output figures:
+The appointment dataset spans **2.08 years** (Jan 2, 2024 → Jan 29, 2026, 759 days, 1,466 US appointments). The pipeline automatically detects this and annualizes all output figures:
 
-- **Step 06** computes `data_span_years` (2.0753) from the appointment date range and writes it to `optimization_input_summary.json`.
-- **Step 08** reads `data_span_years` and scales hire cost to match the data period ($146,640/yr × 2.0753 = $304,322) so the MILP compares travel and hire costs over the same time span.
+- **Step 06** computes `data_span_years` (2.0780) from the appointment date range and writes it to `optimization_input_summary.json`.
+- **Step 08** reads `data_span_years` and scales hire cost to match the data period ($146,640/yr × 2.0780 = $304,718) so the MILP compares travel and hire costs over the same time span.
 - **Step 09** divides all period-total costs (travel, hire, overhead) and freed capacity hours by `data_span_years` to produce annual equivalents. All figures in reports and the map are per-year.
 
 This means the MILP solution quality is fully preserved (same solver, same appointments, same optimality) while reported numbers accurately represent one year of operations.
 
 ## Current Model Rules (Important)
 
-- Annual burdened planning cost per incremental new hire: `$146,640` (scaled to `$304,322` in MILP to match 2.08-year data period).
+- Annual burdened planning cost per incremental new hire: `$146,640` (scaled to `$304,718` in MILP to match the 2.08-year data period).
 - Unmet demand penalty: `$5,000` per appointment (`DEFAULT_UNMET_PENALTY_USD`).
 - Out-of-region soft penalty default: `$0.0` (disabled by default).
 - Canada excluded from optimization scope. Hakim Mouazer (Montreal) at `availability_fte=0.0` (visible on map only).
 - James Sanchez: `availability_fte=1.0` (full field tech; temporarily on phones due to injury but model targets ideal state).
 - Damion Lyn: `availability_fte=0.20` (repair center hybrid, 20-25% field when fully staffed).
 - Elier Martin: `availability_fte=0.10` (phone tech, ~10% field).
-- **AVS = Learning Space (LS):** All AVS appointments reclassified as LS-requiring. ~320 LS appointments require LS-certified techs (7 of 16).
+- **AVS = Learning Space (LS):** All AVS appointments reclassified as LS-requiring. 319 LS appointments require LS-certified techs (7 of 16).
 - Canceled/voided overhead excluded (`$0`) — Navan data covers only ~2/16 techs. Fixed cost, does not affect scenario comparison.
 - Contractor scope defaults to `texas_only` unless explicitly overridden.
 - New-hire concentration cap defaults to `1` per base (`--max-hires-per-base 1`).
 - Current verified technician roster is 16 total (including both HTX contractors). Total effective FTE: 12.55.
 - Technician markers are grouped by shared base location (popup lists all names at that base).
-- **New hires cannot serve HPS nodes** — policy constraint (hard variable bound in MILP). 115 HPS appointments served by existing certified techs. Shannon/Isabelle confirmed new hires would NOT be HPS-trained (product line discontinuing).
+- **New hires cannot serve HPS nodes** — policy constraint (hard variable bound in MILP). 114 HPS appointments are served by existing certified techs. Shannon/Isabelle confirmed new hires would NOT be HPS-trained (product line discontinuing).
 
 ## Flight Cost Model
 
@@ -110,23 +112,23 @@ Step 8 computes (over the full 2.08-year data period):
 
 Where:
 
-- `hire_cost_usd = (number of incremental new hires) × $304,322` (annual $146,640 × 2.0753 years)
+- `hire_cost_usd = (number of incremental new hires) × $304,718` (annual $146,640 × 2.0780 years)
 - `baseline_canceled_voided_usd = $0` (excluded — incomplete Navan data coverage)
 
-Step 9 then divides all costs by `data_span_years` (2.0753) to produce annual equivalents shown in reports and the map.
+Step 9 then divides all costs by `data_span_years` (2.0780) to produce annual equivalents shown in reports and the map.
 
 ## Latest Baseline Snapshot (Annualized — Current Repo Outputs)
 
 From the latest optimization artifacts (BTS Q2 2025 lookup + three-tier cost model + annualization + AVS=LS + Shannon/Isabelle FTE updates):
 
-- Data span: **2.0753 years** (Jan 2, 2024 → Jan 29, 2026, 758 days)
-- Annualized appointment count: ~709/year (1,471 US total)
-- Skill breakdown: 115 HPS, 320 LS (including 315 AVS→LS), 1,036 regular
+- Data span: **2.0780 years** (Jan 2, 2024 → Jan 29, 2026, 759 days)
+- Annualized appointment count: ~706/year (1,466 US total)
+- Skill breakdown: 114 HPS, 319 LS (including AVS→LS remaps), 1,033 regular
 - Scenario window: `N=0..4`
-- Best scenario: `N=1` (N=0 hit time limit with MIP gap 0.004%; N=1..4 proven optimal)
-- N=0 annualized total: **$540,747** (travel only, overhead excluded)
+- Best scenario: `N=1` under the repo's proven-optimal selection rule (`N=0` was cheapest observed but did not prove optimal before the time limit)
+- N=0 annualized total: **$556,549** (travel only, overhead excluded)
 - Hard cap result: no scenario allocates more than 1 hire to the same base
-- All 1,471 appointments served across all scenarios (zero unmet)
+- All 1,466 appointments served across all scenarios (zero unmet)
 - Active techs at N=0: 16. Total effective FTE: 12.55
 - Trip type split: 1.8% same-day drive, 7.1% overnight drive, 91.1% fly
 - Target utilization: 85% (demand-normalized capacity model)
@@ -136,11 +138,11 @@ From the latest optimization artifacts (BTS Q2 2025 lookup + three-tier cost mod
 
 | N | Annual Travel | Annual Payroll | Annual Total |
 |---|--------------|----------------|-------------|
-| 0 | $540,747 | $0 | **$540,747** |
-| 1 | $466,463 | $146,640 | $613,103 |
-| 2 | $411,008 | $293,280 | $704,288 |
-| 3 | $366,397 | $439,920 | $806,317 |
-| 4 | $324,352 | $586,560 | $910,912 |
+| 0 | $556,549 | $0 | **$556,549** |
+| 1 | $480,342 | $146,640 | $626,982 |
+| 2 | $423,357 | $293,280 | $716,637 |
+| 3 | $375,018 | $439,920 | $814,938 |
+| 4 | $329,658 | $586,560 | $916,218 |
 
 All scenarios cost more than N=0. Marginal annual travel savings diminish with each additional hire.
 
@@ -149,10 +151,10 @@ All scenarios cost more than N=0. Marginal annual travel savings diminish with e
 | N | Installs/yr | Net Cost Increase | Net Value (Conservative) | Net Value (Moderate) | Net Value (Aggressive) | Break-Even (Mod) |
 |---|------------:|------------------:|-------------------------:|---------------------:|-----------------------:|-----------------:|
 | 0 | 0.0 | $0 | $0 | $0 | $0 | 0.0 |
-| 1 | 17.0 | $72,355 | $351,296 | $827,691 | $1,712,425 | 1.4 |
-| 2 | 34.0 | $163,540 | $682,642 | $1,634,172 | $3,401,299 | 3.1 |
-| 3 | 51.0 | $265,570 | $1,003,941 | $2,431,504 | $5,082,691 | 5.0 |
-| 4 | 67.8 | $370,164 | $1,318,092 | $3,216,533 | $6,742,208 | 7.0 |
+| 1 | 16.9 | $70,433 | $351,010 | $824,921 | $1,705,043 | 1.3 |
+| 2 | 33.9 | $160,088 | $682,907 | $1,630,854 | $3,391,327 | 3.0 |
+| 3 | 50.7 | $258,389 | $1,002,808 | $2,421,021 | $5,054,845 | 4.9 |
+| 4 | 67.6 | $359,669 | $1,322,694 | $3,214,508 | $6,727,876 | 6.8 |
 
 Revenue assumptions: $50K/$120K/$250K per patient sim install × uniform 40% margin + $7K×70% annual service contract per system. ISO installations only — Learning Space (AVS/LS) excluded per Shannon. Profit margins applied — figures represent P&L impact. Utilization factor 30% (conservative — accounts for scheduling friction, admin overhead, sales pipeline constraints, ramp-up time).
 
@@ -169,8 +171,9 @@ Revenue assumptions: $50K/$120K/$250K per patient sim install × uniform 40% mar
 
 - Three-tier drive model: same-day (<100 mi, no hotel), overnight (100–300 mi, 1 hotel night), fly (≥300 mi, duration-scaled hotel). Trip bundling is not modeled.
 - Great-circle distance (not road distance) for trip classification thresholds.
+- Territory polygons are only drawn for unique-state coverage. Split-state territories (for example FL/TX/CA/NY/NJ/PA splits) are shown with reference markers rather than invented full-state boundaries.
 - No seasonality — all appointments treated equivalently regardless of time of year.
-- New hires cannot serve HPS nodes (policy constraint). 115 HPS appointments are served by existing certified techs. HPS product line discontinuing.
+- New hires cannot serve HPS nodes (policy constraint). 114 HPS appointments are served by existing certified techs. HPS product line discontinuing.
 - AVS = Learning Space mapping reclassifies ~315 appointments as LS-requiring, constraining dispatch to LS-certified techs (7 of 16).
 - BTS fares are Q2 2025 data. A few airports (SHV, BIL, BIS, FAR, ANC) use the national fallback ($386) where specific BTS data was unavailable.
 - Flight cost is origin-only (no destination dependency) — a simplification justified by BTS itinerary-level averages varying primarily by origin market.

@@ -24,6 +24,13 @@ MANUAL_ACCOUNT_MAP = {
     "Cleveland Clinic - Akron General": "Cleveland Clinic",
     "North Georgia Technical College - Blairsville Campus": "North Georgia Technical College",
     "Valencia College School of Public Safety": "Valencia College - West Campus",
+    "Bevill State Community College: Carrollton Campus": (
+        "Bevill State Community College: Hamilton Campus"
+    ),
+    "University of Tennessee Health Science Center": (
+        "University of Tennessee-Memphis Health Science Center"
+    ),
+    "Frank Phillips College Rahll Campus": "Frank Phillips College Allen Campus",
 }
 
 
@@ -54,7 +61,11 @@ FUZZY_REJECT_PAIRS = {
     ("castle medical center", "wesley medical center"),
     ("wayne state university", "weber state university"),
     ("muskegon community college", "sampson community college"),
+    ("columbia state community college", "columbus state community college"),
 }
+
+
+FUZZY_MATCH_THRESHOLD = 95
 
 
 def norm_account(name):
@@ -97,7 +108,7 @@ def fuzzy_match(
     unmatched_accounts,
     appt_accounts_by_territory,
     install_account_territory,
-    threshold=92,
+    threshold=FUZZY_MATCH_THRESHOLD,
 ):
     """Fuzzy match within the same territory using a high-confidence threshold."""
     matched = {}
@@ -171,7 +182,7 @@ def build_matches(install_df, appt_account_coords, appt_accounts_by_territory):
         unmatched,
         appt_accounts_by_territory=appt_accounts_by_territory,
         install_account_territory=install_account_territory,
-        threshold=92,
+        threshold=FUZZY_MATCH_THRESHOLD,
     )
 
     all_matches = {}
@@ -277,7 +288,7 @@ def main():
     )
     print(f"  Exact matches: {len(exact)}")
     print(f"  Manual matches: {len(manual)}")
-    print(f"  Fuzzy matches (same territory, >=92): {len(fuzzy)}")
+    print(f"  Fuzzy matches (same territory, >={FUZZY_MATCH_THRESHOLD}): {len(fuzzy)}")
     print(f"  Fuzzy rejects (known bad pairs): {len(fuzzy_rejected)}")
     print(
         f"  Matched assets (all): {int(install_all_matched['matched'].sum())}/{len(install_all_matched)} "

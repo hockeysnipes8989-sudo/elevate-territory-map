@@ -96,12 +96,44 @@ def build_geocode_key(city, state):
         return None
     city = str(city).strip()
     state = str(state).strip()
+    if state.casefold() == "canada":
+        return f"{city}, Canada"
     # Detect Canadian provinces by abbreviation or full name
-    if state in _CANADA_PROVINCE_ABBR or state in _CANADA_PROVINCE_NAMES or state == "Canada":
-        if state in _CANADA_PROVINCE_ABBR:
-            return f"{city}, {state}, Canada"
+    if state in _CANADA_PROVINCE_ABBR or state in _CANADA_PROVINCE_NAMES:
         return f"{city}, {state}, Canada"
     return f"{city}, {state}, USA"
+
+
+def load_cached_tech_master(path):
+    """Load canonical technician roster from cached optimization tech_master CSV."""
+    df = pd.read_csv(path)
+    required_cols = {"tech_name", "base_city", "base_state"}
+    missing = sorted(required_cols - set(df.columns))
+    if missing:
+        raise ValueError(f"Cached tech_master missing required columns: {missing}")
+
+    if "base_location_raw" in df.columns:
+        location = df["base_location_raw"].fillna("").astype(str).str.strip()
+    else:
+        location = pd.Series("", index=df.index, dtype="object")
+    city = df["base_city"].fillna("").astype(str).str.strip()
+    state = df["base_state"].fillna("").astype(str).str.strip()
+    fallback_location = (city + ", " + state).str.strip(", ")
+    location = location.where(location != "", fallback_location)
+
+    if "notes" in df.columns:
+        notes = df["notes"]
+    else:
+        notes = pd.Series(index=df.index, dtype="object")
+
+    out = pd.DataFrame(
+        {
+            "name": df["tech_name"],
+            "location": location,
+            "comment": notes,
+        }
+    )
+    return out
 
 
 def load_technicians():
@@ -109,7 +141,9 @@ def load_technicians():
     print("Loading technicians...")
 
     source_path = getattr(config, "EXTERNAL_TECH_ROSTER_XLSX", None)
+    cached_path = os.path.join(config.OPTIMIZATION_DIR, "tech_master.csv")
     use_source_truth = bool(source_path and os.path.exists(source_path))
+    use_cached_master = os.path.exists(cached_path)
 
     if use_source_truth:
         raw = pd.read_excel(source_path, sheet_name=0, header=None)
@@ -120,6 +154,9 @@ def load_technicians():
         df = df[["Tech", "Location", "Comments"]].copy()
         df.columns = ["name", "location", "comment"]
         print(f"  Source: {source_path}")
+    elif use_cached_master:
+        df = load_cached_tech_master(cached_path)
+        print(f"  Source fallback: {cached_path}")
     else:
         # Backward-compatible fallback to legacy Resources sheet.
         df = pd.read_excel(

@@ -1,4 +1,5 @@
 """Step 4: Build territory boundary polygons from US states and Canadian provinces."""
+from collections import defaultdict
 import json
 import os
 import sys
@@ -71,6 +72,8 @@ US_ABBR_TO_NAME = {
     "WY": "Wyoming",
 }
 
+STATE_NAME_TO_ABBR = {name: abbr for abbr, name in US_ABBR_TO_NAME.items()}
+
 
 TERRITORY_TO_US_STATES = {
     "New England": ["CT", "MA", "ME", "NH", "RI", "VT"],
@@ -118,6 +121,29 @@ CANADA_PROVINCES_WITH_DATA = {
     "Quebec",
     "Saskatchewan",
 }
+
+
+def state_value_to_abbr(value):
+    """Normalize mixed state-name/state-abbreviation values to US state abbreviations."""
+    if pd.isna(value):
+        return None
+    text = str(value).strip()
+    if text in US_ABBR_TO_NAME:
+        return text
+    return STATE_NAME_TO_ABBR.get(text)
+
+
+def build_split_state_lookup():
+    """Return US states reused across multiple named territories."""
+    state_to_territories = defaultdict(list)
+    for territory, state_abbrs in TERRITORY_TO_US_STATES.items():
+        for abbr in state_abbrs:
+            state_to_territories[abbr].append(territory)
+    return {
+        abbr: sorted(territories)
+        for abbr, territories in state_to_territories.items()
+        if len(territories) > 1
+    }
 
 
 def load_geojson_with_cache(url, cache_path):
@@ -203,6 +229,34 @@ def make_outlier_markers(appts):
     return markers
 
 
+def make_split_state_reference_markers(appts, split_state_lookup):
+    """Create centroid reference markers for split-state territories."""
+    markers = {territory: [] for territory in config.TERRITORY_COLORS}
+    if not split_state_lookup:
+        return markers
+
+    appts = appts.dropna(subset=["lat", "lon", "Territory"]).copy()
+    if appts.empty:
+        return markers
+    appts["state_abbr"] = appts["State/Province"].apply(state_value_to_abbr)
+
+    for state_abbr, territories in split_state_lookup.items():
+        for territory in territories:
+            subset = appts[
+                (appts["Territory"] == territory) & (appts["state_abbr"] == state_abbr)
+            ]
+            if subset.empty:
+                continue
+            markers.setdefault(territory, []).append(
+                {
+                    "lat": float(subset["lat"].mean()),
+                    "lon": float(subset["lon"].mean()),
+                    "label": f"Split-state reference ({state_abbr})",
+                }
+            )
+    return markers
+
+
 def main():
     os.makedirs(config.PROCESSED_DIR, exist_ok=True)
 
@@ -210,7 +264,9 @@ def main():
     territory_summary = pd.read_csv(config.TERRITORY_SUMMARY_CSV)
     appt_counts = appts["Territory"].value_counts().to_dict()
     asset_counts = dict(zip(territory_summary["Territory"], territory_summary["total_assets"]))
+    split_state_lookup = build_split_state_lookup()
     outlier_markers = make_outlier_markers(appts)
+    split_state_markers = make_split_state_reference_markers(appts, split_state_lookup)
 
     us_geojson = load_geojson_with_cache(US_STATES_URL, US_STATES_CACHE_PATH)
     canada_geojson = load_geojson_with_cache(CANADA_PROVINCES_URL, CANADA_PROVINCES_CACHE_PATH)
@@ -227,6 +283,8 @@ def main():
     for territory in config.TERRITORY_COLORS:
         polygons = []
         sources = []
+        omitted_split_states = []
+        reference_markers = split_state_markers.get(territory, [])
 
         if territory == "Canada":
             for feature in canada_features:
@@ -238,6 +296,9 @@ def main():
         else:
             state_abbrs = TERRITORY_TO_US_STATES.get(territory, [])
             for abbr in state_abbrs:
+                if abbr in split_state_lookup:
+                    omitted_split_states.append(abbr)
+                    continue
                 # Keep AK/HI as markers only to avoid map distortion
                 if territory == "Pacific Northwest" and abbr in {"AK", "HI"}:
                     continue
@@ -256,6 +317,8 @@ def main():
                 "active_assets": int(asset_counts.get(territory, 0)),
                 "source_regions": sources,
                 "outlier_markers": outlier_markers.get(territory, []),
+                "reference_markers": reference_markers,
+                "omitted_split_states": omitted_split_states,
             },
             "geometry": {
                 "type": "MultiPolygon",
@@ -267,6 +330,11 @@ def main():
             f"{territory}: regions={len(sources)} polygons={len(polygons)} "
             f"appointments={appt_counts.get(territory, 0)} "
             f"active_assets={asset_counts.get(territory, 0)}"
+            + (
+                f" omitted_split_states={','.join(omitted_split_states)}"
+                if omitted_split_states
+                else ""
+            )
         )
 
     geojson = {"type": "FeatureCollection", "features": features}

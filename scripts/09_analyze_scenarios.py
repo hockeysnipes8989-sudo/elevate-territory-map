@@ -241,6 +241,9 @@ def main() -> None:
         best_idx = summary["economic_total_with_overhead_usd"].idxmin()
         best_row = summary.loc[best_idx]
     best_hires = int(best_row["scenario_hires"])
+    observed_best_idx = summary["economic_total_with_overhead_usd"].idxmin()
+    observed_best_row = summary.loc[observed_best_idx]
+    observed_best_hires = int(observed_best_row["scenario_hires"])
 
     best_placements = placements[placements["scenario_hires"] == best_hires].copy()
     if best_placements.empty:
@@ -283,6 +286,10 @@ def main() -> None:
         "selection_mode": selection_mode,
         "full_cost_model_active": full_cost_model_active,
         "best_total_cost_with_overhead_usd": float(best_row["economic_total_with_overhead_usd"]),
+        "lowest_observed_cost_hires": observed_best_hires,
+        "lowest_observed_cost_with_overhead_usd": float(
+            observed_best_row["economic_total_with_overhead_usd"]
+        ),
         "baseline_n0_cost_with_overhead_usd": base_cost,
         "best_savings_vs_n0_usd": float(base_cost - best_row["economic_total_with_overhead_usd"]),
         "best_savings_vs_n0_pct": float(
@@ -492,7 +499,16 @@ def main() -> None:
     )
     lines.append("3. Service contract revenue assumes each new installation generates an annual contract.")
     lines.append("4. Estimates are **Year 1 only** — multi-year NPV would require discount rate assumptions.")
-    lines.append("5. The MILP optimizer recommendation (N=0) is unchanged — this analysis is supplementary.")
+    lines.append(
+        f"5. Recommendation follows the current selection rule: N={best_hires} is the "
+        "lowest-cost scenario among the scenarios eligible for recommendation."
+    )
+    if selection_mode == "proven_optimal_only" and observed_best_hires != best_hires:
+        lines.append(
+            f"6. N={observed_best_hires} has the lowest observed cost in this run, but it "
+            "was not proven optimal before the solver stopped, so it is reported as "
+            "informational only."
+        )
 
     with open(markdown_out, "w") as f:
         f.write("\n".join(lines))

@@ -25,6 +25,17 @@ def save_cache(cache):
         json.dump(cache, f, indent=2, sort_keys=True)
 
 
+def prune_malformed_cache_entries(cache):
+    """Drop malformed duplicate-country cache keys like 'Regina, Canada, Canada'."""
+    removed = []
+    for key in list(cache.keys()):
+        parts = [part.strip() for part in str(key).split(",")]
+        if len(parts) == 3 and parts[1].casefold() == "canada" and parts[2].casefold() == "canada":
+            cache.pop(key, None)
+            removed.append(key)
+    return removed
+
+
 def apply_overrides(cache):
     """Apply deterministic geocode overrides from config."""
     applied = 0
@@ -64,6 +75,9 @@ def geocode_key(key, geolocator, cache, max_retries=3):
 def main():
     geolocator = Nominatim(user_agent=config.GEOCODE_USER_AGENT)
     cache = load_cache()
+    removed_bad_keys = prune_malformed_cache_entries(cache)
+    if removed_bad_keys:
+        print(f"Removed malformed cache keys: {len(removed_bad_keys)}")
     overrides_applied = apply_overrides(cache)
     if overrides_applied:
         print(f"Applied geocode overrides: {overrides_applied}")
