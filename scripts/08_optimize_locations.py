@@ -58,6 +58,8 @@ def build_demand_nodes(demand: pd.DataFrame) -> pd.DataFrame:
     """Aggregate appointments into demand nodes by state + skill class."""
     demand = demand.copy()
     demand["state_norm"] = demand["state_norm"].map(normalize_state)
+    # duration_hours is the model's calendar-window workload measure. It is not
+    # intended to represent exact hands-on labor or weekday-only work time.
     demand["duration_hours"] = pd.to_numeric(demand["duration_hours"], errors="coerce").fillna(8.0)
     dropped_mask = demand["state_norm"].isna() | (demand["state_norm"] == "")
     dropped_count = int(dropped_mask.sum())
@@ -178,6 +180,9 @@ def solve_scenario(
 
     total_demand_hours = float(nodes["demand_hours"].sum())
     total_availability = float(tech["availability_fte"].sum())
+    # The solver normalizes capacity against the same appointment-duration
+    # demand pool used on the workload side. The resulting utilization output is
+    # a modeled load ratio, not a literal payroll or timesheet utilization rate.
     hours_per_unit = total_demand_hours / max(total_availability * target_utilization, 1e-6)
 
     tech["capacity_hours"] = tech["availability_fte"] * hours_per_unit
@@ -465,7 +470,8 @@ def solve_scenario(
     existing_df = pd.DataFrame(existing_rows)
     new_df = pd.DataFrame(new_rows)
 
-    # Utilization by tech.
+    # Legacy "utilization" output by tech. This is assigned modeled workload
+    # divided by modeled capacity under the same calendar-window framework.
     hours_by_tech = (
         existing_df.groupby("tech_id")["assigned_hours"].sum().to_dict() if not existing_df.empty else {}
     )
@@ -562,7 +568,16 @@ def main() -> None:
     )
     parser.add_argument("--min-new-hires", type=int, default=0)
     parser.add_argument("--max-new-hires", type=int, default=4)
-    parser.add_argument("--target-utilization", type=float, default=0.85)
+    parser.add_argument(
+        "--target-utilization",
+        type=float,
+        default=0.85,
+        help=(
+            "Modeled load target used to normalize technician capacity against "
+            "the appointment-duration demand pool. This is not a literal "
+            "weekday payroll-utilization target."
+        ),
+    )
     parser.add_argument(
         "--out-of-region-penalty",
         type=float,
@@ -740,6 +755,23 @@ def main() -> None:
         "hire_cost_for_optimization_period": hire_cost_for_period,
         "hire_cost_scope": "incremental_new_hires_only",
         "hire_cost_input_mode": "direct_fixed_value",
+        "workload_time_basis": (
+            "Appointment duration_hours are treated as calendar-window workload, "
+            "not exact hands-on labor time."
+        ),
+        "capacity_basis": (
+            "Technician capacity is normalized against total modeled demand "
+            "hours using availability_fte and target_utilization."
+        ),
+        "utilization_metric_note": (
+            "Legacy utilization fields are modeled load ratios under the "
+            "calendar-window demand framework, not timesheet or Monday-through-"
+            "Friday labor utilization percentages."
+        ),
+        "target_utilization_note": (
+            "target_utilization is the normalization target for the modeled "
+            "load ratio, not a literal payroll-utilization benchmark."
+        ),
         "contractor_assignment_scope": contractor_scope,
         "full_cost_model": True,
         "flight_cost_model": "BTS Q2 2025 lookup × corporate premium",

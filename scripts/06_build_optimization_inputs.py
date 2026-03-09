@@ -357,6 +357,9 @@ def build_demand_appointments(
     demand["scheduled_start"] = pd.to_datetime(demand["Scheduled Start"], errors="coerce")
     demand["scheduled_end"] = pd.to_datetime(demand["Scheduled End"], errors="coerce")
 
+    # Keep appointment duration in calendar-window hours because that is the
+    # workload basis used by the current optimization model. This is not a pure
+    # hands-on labor measure or a timesheet-style hours-worked field.
     duration_hours = pd.to_numeric(demand["Duration Hours"], errors="coerce")
     duration_days = pd.to_numeric(demand["Duration Days"], errors="coerce")
     duration_hours = duration_hours.fillna(duration_days * 24)

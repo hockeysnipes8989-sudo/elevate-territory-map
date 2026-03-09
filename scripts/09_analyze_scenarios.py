@@ -416,6 +416,31 @@ def main() -> None:
         "assumptions": assumptions,
         "install_model_assumptions": install_model.assumptions,
         "install_model_source": install_model.source_metadata,
+        "utilization_metric": {
+            "legacy_field_names": [
+                "utilization",
+                "mean_existing_utilization",
+                "max_existing_utilization",
+                "scenario_tech_utilization.csv",
+            ],
+            "workload_basis": (
+                "The optimizer uses appointment duration_hours as calendar-window "
+                "workload, not pure hands-on labor time."
+            ),
+            "capacity_basis": (
+                "Technician capacity is normalized against that same demand pool "
+                "using availability_fte and target_utilization."
+            ),
+            "interpretation": (
+                "These utilization outputs are modeled load ratios / calendar-"
+                "based capacity proxies, not payroll-style or weekday-only labor "
+                "utilization percentages."
+            ),
+            "future_note": (
+                "A separate operational utilization metric could be added later "
+                "if cleaner labor, travel, or timesheet data becomes available."
+            ),
+        },
         "capacity_model_time_unit": config.PATIENT_SIM_CAPACITY_TIME_UNIT,
         "weighted_avg_install_calendar_days": weighted_avg_install_calendar_days,
         "weighted_avg_install_revenue_usd": weighted_avg_install_revenue_usd,
@@ -495,10 +520,28 @@ def main() -> None:
         "",
         "## Capacity Model",
         "",
+        (
+            "- Utilization framing: **legacy utilization fields are modeled load "
+            "ratios under a calendar-window demand framework, not literal "
+            "timesheet or Monday-through-Friday labor utilization.**"
+        ),
+        (
+            "- Workload basis: **appointment `duration_hours` are treated as "
+            "calendar-window workload, not pure hands-on labor time.**"
+        ),
+        (
+            "- Capacity basis: **technician capacity is normalized against that "
+            "same demand pool using `availability_fte` and the target "
+            "utilization setting.**"
+        ),
         f"- Freed-capacity utilization factor: **{util_factor:.0%}**",
         f"- Weighted average install calendar days: **{weighted_avg_install_calendar_days:,.2f}**",
         f"- Weighted average install revenue: **${weighted_avg_install_revenue_usd:,.0f}**",
         f"- Weighted average install profit per install: **${weighted_avg_install_profit_per_install_usd:,.0f}**",
+        (
+            "- File note: **`scenario_tech_utilization.csv` keeps the legacy name "
+            "for compatibility, but its values are modeled load ratios.**"
+        ),
         "",
         "## Historical Mix (Events)",
         "",

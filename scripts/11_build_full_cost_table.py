@@ -199,12 +199,14 @@ def main() -> None:
     n_appts = len(demand_prepared)
     print(f"  Demand: {n_appts} appointments across {n_nodes} nodes.")
 
-    # Compute node-level average duration for duration-scaled hotel costs
+    # Compute node-level average duration for duration-scaled hotel costs.
+    # duration_hours is treated as calendar-window appointment time in this
+    # model, which matches the current optimization workload basis.
     demand_prepared["duration_hours"] = pd.to_numeric(
         demand_prepared["duration_hours"], errors="coerce"
     ).fillna(24.0 * config.HOTEL_AVG_NIGHTS)  # fallback: avg Navan stay
     node_avg_duration = demand_prepared.groupby("node_id")["duration_hours"].mean()
-    # Convert hours to days: duration_hours uses calendar hours (24h = 1 day)
+    # Convert calendar-window hours to days: 24 hours = 1 calendar day.
     node_avg_days: dict[str, float] = (node_avg_duration / 24.0).to_dict()
     print(f"  Node avg duration range: {min(node_avg_days.values()):.2f} – {max(node_avg_days.values()):.2f} days")
 

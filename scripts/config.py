@@ -146,6 +146,9 @@ OVERNIGHT_DRIVE_THRESHOLD_MI = 300.0
 HOTEL_AVG_USD = round(HOTEL_NIGHTLY_RATE_USD * HOTEL_AVG_NIGHTS)  # $398 ≈ $399
 
 # Realistic installation estimate parameters (Step 09 capacity-freed analysis).
+# The freed time here comes from the repo's calendar-window demand model, so it
+# should be read as modeled capacity available, not literal payroll-utilization
+# time that can be re-booked one-for-one.
 # 30% of freed calendar time realistically converts to installations.
 # Conservative estimate accounting for: scheduling friction, non-installation
 # tasks (phone coverage, training, admin), sales pipeline constraints

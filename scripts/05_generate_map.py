@@ -1317,8 +1317,8 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names,
         <div class="sim-kpi kpi-clickable" data-kpi="marginal-cost"><div class="label">Marginal Cost Change</div><div class="value" id="kpi-marginal">-</div></div>
         <div class="sim-kpi kpi-clickable" data-kpi="unmet" id="kpi-unmet-card"><div class="label">Unmet Appointments</div><div class="value" id="kpi-unmet">-</div></div>
         <div class="sim-kpi kpi-clickable" data-kpi="hire-payroll"><div class="label">Annual Hire Payroll</div><div class="value" id="kpi-hire-cost">-</div></div>
-        <div class="sim-kpi kpi-clickable" data-kpi="mean-util"><div class="label">Mean Utilization</div><div class="value" id="kpi-mean-util">-</div></div>
-        <div class="sim-kpi kpi-clickable" data-kpi="max-util"><div class="label">Max Utilization</div><div class="value" id="kpi-max-util">-</div></div>
+        <div class="sim-kpi kpi-clickable" data-kpi="mean-util"><div class="label">Mean Load Ratio</div><div class="value" id="kpi-mean-util">-</div></div>
+        <div class="sim-kpi kpi-clickable" data-kpi="max-util"><div class="label">Peak Load Ratio</div><div class="value" id="kpi-max-util">-</div></div>
       </div>
       <div style="border-top: 2px solid #163b59; margin: 10px 0 8px 0;"></div>
       <div style="font-size: 12px; font-weight: 700; margin-bottom: 2px;">Freed Capacity &amp; Profit Potential</div>
@@ -1335,7 +1335,7 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names,
       <div id="sim-recs">No recommendations.</div>
       <div id="sim-tech-legend-title" style="display:none;">Territory Assignments</div>
       <div id="sim-tech-legend" style="display:none;"></div>
-      <div id="sim-footnote">Shows N=0..4 scenario outputs from optimization pipeline. Click any card for details.</div>
+      <div id="sim-footnote">Shows N=0..4 scenario outputs from the optimization pipeline. Load-ratio KPIs use the model's calendar-window capacity proxy, not literal timesheet utilization. Click any card for details.</div>
     </div>
     <div id="kpi-modal-overlay">
       <div id="kpi-modal">
@@ -1568,12 +1568,12 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names,
           body: "<p><b>What:</b> Total burdened annual cost for all new hires in this scenario.</p><p><b>Formula:</b> N new hires &times; $146,640/hire (burdened company planning cost)</p><p><b>Interpretation:</b> This is the fully-loaded cost including salary, benefits, equipment, and overhead \u2014 not take-home pay. It's the incremental payroll cost of expanding the workforce.</p>"
         }},
         "mean-util": {{
-          title: "Mean Utilization (Existing Techs)",
-          body: "<p><b>What:</b> Average utilization rate across all existing technicians with non-zero capacity.</p><p><b>Formula:</b> Mean of (assigned hours / capacity hours) for each existing tech</p><p><b>Interpretation:</b> Target is 0.850 (85%). At N=0 it's ~0.857 \u2014 the workforce is tightly loaded. Adding hires reduces existing-tech utilization by offloading appointments, freeing capacity for installations.</p>"
+          title: "Mean Load Ratio (Existing Techs)",
+          body: "<p><b>What:</b> Average modeled load ratio across existing technicians with non-zero modeled capacity.</p><p><b>Formula:</b> Mean of (assigned hours / capacity hours) for each existing tech</p><p><b>Interpretation:</b> Both assigned hours and capacity hours come from the model's calendar-window demand framework. This is a capacity-usage proxy, not a literal payroll or Monday-through-Friday utilization percentage.</p>"
         }},
         "max-util": {{
-          title: "Max Utilization (Existing Techs)",
-          body: "<p><b>What:</b> The highest utilization rate among all existing technicians.</p><p><b>Formula:</b> Max of (assigned hours / capacity hours) across existing techs</p><p><b>Interpretation:</b> Values near 1.000 indicate at least one tech is at full capacity with no scheduling buffer. At N=0, max util is 0.9999 \u2014 one tech is essentially maxed out.</p>"
+          title: "Peak Load Ratio (Existing Techs)",
+          body: "<p><b>What:</b> The highest modeled load ratio among all existing technicians.</p><p><b>Formula:</b> Max of (assigned hours / capacity hours) across existing techs</p><p><b>Interpretation:</b> Values near 1.000 mean at least one tech is near the top of the model's normalized capacity range. This is still a modeled load ratio, not a literal timesheet utilization reading.</p>"
         }},
         "installs": {{
           title: "Install Units Enabled",
