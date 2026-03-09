@@ -60,6 +60,7 @@ MAP_OUTPUT = os.path.join(DOCS_DIR, "index.html")
 # ---------------------------------------------------------------------------
 # Excel sheet names
 # ---------------------------------------------------------------------------
+APPTS_RAW_SHEET = "report1770130594436"
 APPTS_DISPATCH_SHEET = "Derived Fields"
 APPTS_REPORT_RESOURCES_SHEET = "Resources"
 INSTALL_BASE_SHEET = "report1769446081737"
@@ -144,36 +145,116 @@ OVERNIGHT_DRIVE_THRESHOLD_MI = 300.0
 # Legacy reference (fly-trip average only — use HOTEL_NIGHTLY_RATE_USD × nights instead)
 HOTEL_AVG_USD = round(HOTEL_NIGHTLY_RATE_USD * HOTEL_AVG_NIGHTS)  # $398 ≈ $399
 
-# Revenue-from-freed-capacity analysis (Step 09).
-# Three installation revenue scenarios — patient simulator installations only.
-# Learning Space (AVS/LS) installations excluded per Shannon (too variable $6.5K–$106K).
-REVENUE_PER_INSTALLATION_CONSERVATIVE_USD = 50_000    # Small patient sims (Aria, Apollo)
-REVENUE_PER_INSTALLATION_MODERATE_USD = 120_000       # Mid-range patient sims (Lucina, Evo)
-REVENUE_PER_INSTALLATION_AGGRESSIVE_USD = 250_000     # Large patient sims (HPS full suite)
-
-# Average annual recurring service contract revenue per installed system.
-# Based on UIUC Service Contract pricing: Apex $7K-$24K, Peak $2K-$8.5K.
-# $7K is a conservative fleet-weighted estimate skewed toward Peak-tier.
-AVG_ANNUAL_SERVICE_CONTRACT_USD = 7_000
-
-# Installation profit margin: 40% gross margin confirmed by Shannon Drew (VP Service).
-# Company targets 60% but doesn't always hit it; 40% is the conservative floor.
-INSTALLATION_PROFIT_MARGIN_CONSERVATIVE = 0.40
-INSTALLATION_PROFIT_MARGIN_MODERATE = 0.40
-INSTALLATION_PROFIT_MARGIN_AGGRESSIVE = 0.40
-
-# Service/software contracts have higher margins than hardware sales.
-# Medical device recurring revenue typically 60-80% margin.
-SERVICE_CONTRACT_PROFIT_MARGIN = 0.70
-
 # Realistic installation estimate parameters (Step 09 capacity-freed analysis).
-TRAVEL_DAYS_PER_INSTALLATION = 1.0            # Travel overhead per installation (days)
 # 30% of freed calendar time realistically converts to installations.
 # Conservative estimate accounting for: scheduling friction, non-installation
 # tasks (phone coverage, training, admin), sales pipeline constraints
 # (installations require customers who have already purchased), ramp-up time,
 # and general real-world overhead. Previous value was 0.75.
 FREED_CAPACITY_UTILIZATION_FACTOR = 0.30
+PATIENT_SIM_CAPACITY_TIME_UNIT = "calendar_days"
+
+# Patient simulator install upside model (Step 09).
+# These are provisional planning assumptions and should stay centralized so the
+# scenario outputs remain easy to audit and update later.
+PATIENT_SIM_EXCLUDE_HPS_FROM_FUTURE_MIX = True
+PATIENT_SIM_RECENCY_WEIGHTING_ENABLED = False
+PATIENT_SIM_RECENCY_HALFLIFE_YEARS = 1.5
+PATIENT_SIM_FORWARD_MIX_MANUAL_MULTIPLIERS = {}
+
+PATIENT_SIM_FAMILY_ASSUMPTIONS = {
+    "Apollo": {
+        "install_revenue_usd": 50_000,
+        "install_margin": 0.40,
+        "install_calendar_days_override": None,
+        "revenue_range_low_usd": 40_000,
+        "revenue_range_high_usd": 60_000,
+        "revenue_source_note": (
+            "Provisional planning estimate from user-provided public ballpark "
+            "range for the combined Apollo family (APP + APN + generic Apollo); "
+            "replace with finance-approved value when available."
+        ),
+    },
+    "Lucina": {
+        "install_revenue_usd": 80_000,
+        "install_margin": 0.40,
+        "install_calendar_days_override": None,
+        "revenue_range_low_usd": 67_000,
+        "revenue_range_high_usd": 90_000,
+        "revenue_source_note": (
+            "Provisional planning estimate from user-provided public ballpark "
+            "range for the Lucina family (MFS + Lucina); replace with "
+            "finance-approved value when available."
+        ),
+    },
+    "Juno": {
+        "install_revenue_usd": 19_000,
+        "install_margin": 0.40,
+        "install_calendar_days_override": None,
+        "revenue_range_low_usd": 15_000,
+        "revenue_range_high_usd": 22_000,
+        "revenue_source_note": (
+            "Provisional planning estimate from user-provided public ballpark "
+            "range for Juno; replace with finance-approved value when available."
+        ),
+    },
+    "Ares": {
+        "install_revenue_usd": 33_000,
+        "install_margin": 0.40,
+        "install_calendar_days_override": None,
+        "revenue_range_low_usd": 30_000,
+        "revenue_range_high_usd": 36_000,
+        "revenue_source_note": (
+            "Provisional planning estimate from user-provided public ballpark "
+            "range for Ares; replace with finance-approved value when available."
+        ),
+    },
+    "Aria": {
+        "install_revenue_usd": 38_000,
+        "install_margin": 0.40,
+        "install_calendar_days_override": None,
+        "revenue_range_low_usd": 32_000,
+        "revenue_range_high_usd": 43_000,
+        "revenue_source_note": (
+            "Provisional planning estimate from user-provided public ballpark "
+            "range for Aria; replace with finance-approved value when available."
+        ),
+    },
+    "Evo": {
+        "install_revenue_usd": 45_000,
+        "install_margin": 0.40,
+        "install_calendar_days_override": None,
+        "revenue_range_low_usd": 40_000,
+        "revenue_range_high_usd": 50_000,
+        "revenue_source_note": (
+            "Provisional planning estimate near Apollo/Aria per user direction "
+            "until a finance-approved Evo value is available."
+        ),
+    },
+    "Luna": {
+        "install_revenue_usd": 46_000,
+        "install_margin": 0.40,
+        "install_calendar_days_override": None,
+        "revenue_range_low_usd": 46_000,
+        "revenue_range_high_usd": 46_000,
+        "revenue_source_note": (
+            "Provisional planning estimate from user direction for Luna; replace "
+            "with finance-approved value when available."
+        ),
+    },
+    "HPS": {
+        "install_revenue_usd": None,
+        "install_margin": 0.40,
+        "install_calendar_days_override": None,
+        "revenue_range_low_usd": None,
+        "revenue_range_high_usd": None,
+        "revenue_source_note": (
+            "Excluded from the forward-looking mix by default. If HPS is later "
+            "reactivated, supply an explicit revenue value before using it in the "
+            "install upside model."
+        ),
+    },
+}
 
 # ---------------------------------------------------------------------------
 # Colors

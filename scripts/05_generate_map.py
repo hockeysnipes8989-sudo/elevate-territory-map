@@ -1322,9 +1322,9 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names,
       </div>
       <div style="border-top: 2px solid #163b59; margin: 10px 0 8px 0;"></div>
       <div style="font-size: 12px; font-weight: 700; margin-bottom: 2px;">Freed Capacity &amp; Profit Potential</div>
-      <div style="font-size: 9px; color: #666; margin-bottom: 6px;">Moderate scenario: $120K/install, 40% margin</div>
+      <div style="font-size: 9px; color: #666; margin-bottom: 6px;">Family-weighted patient-sim install-only model</div>
       <div id="sim-kpis-revenue" style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px;">
-        <div class="sim-kpi kpi-clickable" data-kpi="installs"><div class="label">Realistic Installations</div><div class="value" id="kpi-installs">-</div></div>
+        <div class="sim-kpi kpi-clickable" data-kpi="installs"><div class="label">Install Units Enabled</div><div class="value" id="kpi-installs">-</div></div>
         <div class="sim-kpi kpi-clickable" data-kpi="gross-rev"><div class="label">Gross Revenue Enabled</div><div class="value" id="kpi-gross-rev">-</div></div>
         <div class="sim-kpi kpi-clickable" data-kpi="profit"><div class="label">Est. Profit Enabled</div><div class="value" id="kpi-profit">-</div></div>
         <div class="sim-kpi kpi-clickable" data-kpi="net-value"><div class="label">Net Economic Value</div><div class="value" id="kpi-net-value">-</div></div>
@@ -1576,16 +1576,16 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names,
           body: "<p><b>What:</b> The highest utilization rate among all existing technicians.</p><p><b>Formula:</b> Max of (assigned hours / capacity hours) across existing techs</p><p><b>Interpretation:</b> Values near 1.000 indicate at least one tech is at full capacity with no scheduling buffer. At N=0, max util is 0.9999 \u2014 one tech is essentially maxed out.</p>"
         }},
         "installs": {{
-          title: "Realistic Installations Enabled",
-          body: "<p><b>What:</b> Estimated number of new installations that freed existing-tech time could support.</p><p><b>Formula:</b> (Freed duration days &times; 30% utilization factor) &divide; (avg install duration days + 1.0 travel day)</p><p><b>Interpretation:</b> This accounts for scheduling gaps, PTO, and travel overhead. It's what freed capacity <i>could enable</i>, not guaranteed bookings. N=0 shows 0 because no capacity is freed without hiring.</p>"
+          title: "Install Units Enabled",
+          body: "<p><b>What:</b> Estimated patient-simulator install units that freed existing-tech time could support.</p><p><b>Formula:</b> Freed calendar days available &divide; weighted-average install calendar days</p><p><b>Interpretation:</b> This uses the family-weighted patient-sim mix and calendar-day install effort assumptions. It is enabled capacity, not guaranteed bookings.</p>"
         }},
         "gross-rev": {{
           title: "Gross Revenue Enabled",
-          body: "<p><b>What:</b> Total MSRP gross revenue if all realistic installations were completed (moderate scenario: $120K/install).</p><p><b>Formula:</b> Realistic installations &times; $120,000 per install</p><p><b>Interpretation:</b> This is top-line revenue before any costs or margins. Shown for reference only \u2014 the profit figure below is more meaningful for business decisions.</p>"
+          body: "<p><b>What:</b> Total gross install revenue if all enabled patient-sim installs were completed.</p><p><b>Formula:</b> Install units enabled &times; weighted-average family revenue per install</p><p><b>Interpretation:</b> This is top-line revenue before margins. It reflects the configured forward-looking family mix, not a single flat install price.</p>"
         }},
         "profit": {{
           title: "Estimated Profit Enabled",
-          body: "<p><b>What:</b> Estimated profit from installations and service contracts, with configured margins applied.</p><p><b>Formula:</b> (Installs &times; $120K &times; 40% install margin) + (Installs &times; $7K &times; 70% service margin)</p><p><b>Interpretation:</b> Uses moderate scenario assumptions. Installation margin (40%) covers COGS, shipping, commissions, and warranty. Service contract margin (70%) reflects higher-margin recurring revenue.</p>"
+          body: "<p><b>What:</b> Estimated gross profit from installations only, with family-specific economics and margins applied.</p><p><b>Formula:</b> Sum of (family install units enabled &times; family revenue &times; family margin)</p><p><b>Interpretation:</b> This excludes recurring service-contract profit on purpose, so the upside view stays conservative and easier to defend.</p>"
         }},
         "net-value": {{
           title: "Net Economic Value",
@@ -1593,7 +1593,7 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names,
         }},
         "break-even": {{
           title: "Break-Even Installations",
-          body: "<p><b>What:</b> Minimum installations needed to recoup the net cost increase of hiring.</p><p><b>Formula:</b> Net Cost Increase &divide; ($120K &times; 40% + $7K &times; 70% = $52,900 profit per install)</p><p><b>Interpretation:</b> Lower break-even values mean fewer installations are needed to justify hiring. Compare this with realistic installations enabled to assess feasibility.</p>"
+          body: "<p><b>What:</b> Minimum install units needed to recoup the net cost increase of hiring.</p><p><b>Formula:</b> Net Cost Increase &divide; weighted-average install profit per unit</p><p><b>Interpretation:</b> Lower values mean fewer enabled install units are needed to justify the added payroll cost.</p>"
         }},
         "roi": {{
           title: "ROI (Return on Investment)",

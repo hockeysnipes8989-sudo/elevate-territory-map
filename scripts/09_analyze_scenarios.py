@@ -1,4 +1,4 @@
-"""Step 9: Summarize optimization scenarios and recommendations."""
+"""Step 9: Summarize optimization scenarios and patient-sim install upside."""
 
 from __future__ import annotations
 
@@ -13,12 +13,155 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(__file__))
 import config
+from install_mix_model import build_patient_sim_install_model
 
 
 def require_file(path: Path) -> None:
     """Raise clear error if file is missing."""
     if not path.exists():
         raise FileNotFoundError(f"Missing required file: {path}")
+
+
+def df_records(df: pd.DataFrame) -> list[dict]:
+    """Convert DataFrame rows to JSON-safe dicts."""
+    if df.empty:
+        return []
+    clean = df.copy()
+    clean = clean.replace({np.nan: None})
+    for col in clean.columns:
+        if np.issubdtype(clean[col].dtype, np.datetime64):
+            clean[col] = clean[col].apply(lambda v: None if pd.isna(v) else str(v))
+    return clean.to_dict(orient="records")
+
+
+def scalar_or_none(value: object) -> object:
+    """Convert pandas/numpy scalars into JSON-safe Python values."""
+    if value is None:
+        return None
+    if isinstance(value, pd.Timestamp):
+        return str(value)
+    if isinstance(value, (np.floating, float)):
+        return None if np.isnan(value) else float(value)
+    if isinstance(value, (np.integer, int)):
+        return int(value)
+    if isinstance(value, (np.bool_, bool)):
+        return bool(value)
+    return value
+
+
+def json_safe(value: object) -> object:
+    """Recursively replace NaN/NaT with None before writing JSON."""
+    if isinstance(value, dict):
+        return {key: json_safe(val) for key, val in value.items()}
+    if isinstance(value, list):
+        return [json_safe(item) for item in value]
+    return scalar_or_none(value)
+
+
+def markdown_table(df: pd.DataFrame, columns: list[str], headers: list[str]) -> list[str]:
+    """Render a simple markdown table from a DataFrame."""
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "|" + "|".join(["---"] * len(headers)) + "|",
+    ]
+    for _, row in df[columns].iterrows():
+        rendered = []
+        for value in row:
+            if value is None or (isinstance(value, float) and np.isnan(value)):
+                rendered.append("-")
+            elif isinstance(value, float):
+                rendered.append(f"{value:,.2f}")
+            else:
+                rendered.append(str(value))
+        lines.append("| " + " | ".join(rendered) + " |")
+    return lines
+
+
+def load_data_span_years(out_dir: Path) -> float:
+    """Load optimization data span years."""
+    input_summary_path = out_dir / "optimization_input_summary.json"
+    if input_summary_path.exists():
+        with open(input_summary_path) as f:
+            input_summary = json.load(f)
+        return float(input_summary.get("data_span_years", 1.0))
+    return 1.0
+
+
+def build_active_family_table(
+    forward_mix: pd.DataFrame,
+    family_economics: pd.DataFrame,
+) -> pd.DataFrame:
+    """Join active forward mix rows to per-family economics for weighted math."""
+    if forward_mix.empty or family_economics.empty:
+        return pd.DataFrame()
+
+    active_mix = forward_mix[forward_mix["forward_share"] > 0].copy()
+    if active_mix.empty:
+        return pd.DataFrame()
+
+    economics_cols = [
+        "family",
+        "install_revenue_usd",
+        "install_margin",
+        "install_calendar_days_used",
+        "install_calendar_days_source",
+        "revenue_source_note",
+    ]
+    return active_mix.merge(
+        family_economics[economics_cols],
+        on="family",
+        how="left",
+        validate="one_to_one",
+    )
+
+
+def build_scenario_family_breakdown(
+    summary: pd.DataFrame,
+    forward_mix: pd.DataFrame,
+    family_economics: pd.DataFrame,
+) -> pd.DataFrame:
+    """Allocate enabled installs, revenue, and profit by family per scenario."""
+    family_table = build_active_family_table(forward_mix, family_economics)
+    if family_table.empty:
+        return pd.DataFrame(
+            columns=[
+                "scenario_hires",
+                "family",
+                "forward_share",
+                "install_units_enabled",
+                "install_revenue_enabled_usd",
+                "install_profit_enabled_usd",
+                "install_calendar_days_used",
+                "install_revenue_usd",
+                "install_margin",
+            ]
+        )
+
+    records: list[dict] = []
+    for _, scenario_row in summary.iterrows():
+        installs_enabled = float(scenario_row.get("install_units_enabled", 0.0) or 0.0)
+        scenario_hires = int(scenario_row["scenario_hires"])
+        for _, family_row in family_table.iterrows():
+            family = family_row["family"]
+            share = float(family_row["forward_share"] or 0.0)
+            revenue_per_install = float(family_row["install_revenue_usd"])
+            margin = float(family_row["install_margin"])
+            calendar_days = float(family_row["install_calendar_days_used"])
+            family_installs = installs_enabled * share
+            records.append(
+                {
+                    "scenario_hires": scenario_hires,
+                    "family": family,
+                    "forward_share": share,
+                    "install_units_enabled": family_installs,
+                    "install_revenue_enabled_usd": family_installs * revenue_per_install,
+                    "install_profit_enabled_usd": family_installs * revenue_per_install * margin,
+                    "install_calendar_days_used": calendar_days,
+                    "install_revenue_usd": revenue_per_install,
+                    "install_margin": margin,
+                }
+            )
+    return pd.DataFrame.from_records(records)
 
 
 def main() -> None:
@@ -47,57 +190,58 @@ def main() -> None:
     with open(assumptions_path, "r") as f:
         assumptions = json.load(f)
 
-    input_summary_path = Path(args.output_dir) / "optimization_input_summary.json"
-    if input_summary_path.exists():
-        with open(input_summary_path) as f:
-            input_summary = json.load(f)
-        data_span_years = float(input_summary.get("data_span_years", 1.0))
-    else:
-        data_span_years = 1.0
+    data_span_years = load_data_span_years(out_dir)
     print(f"Data span: {data_span_years:.2f} years — all figures will be annualized")
 
-    # --- Block A: Compute avg calendar hours per installation ---
-    appts_path = Path(config.CLEAN_APPTS_CSV)
-    # Revenue model: patient simulator installations only (ISO).
-    # Learning Space (AVS ISO, AVS) excluded per Shannon — too variable ($6.5K–$106K).
-    # LS appointments remain in demand data for dispatch/utilization modeling.
-    installation_types = ["ISO"]
-    if appts_path.exists():
-        appts_df = pd.read_csv(appts_path)
-        install_rows = appts_df[appts_df["Service Type"].isin(installation_types)].copy()
-        # Use Duration Hours (calendar hours) to match the MILP's assigned_hours unit.
-        # Fallback to Duration Days * 24 if Duration Hours is missing (same as Step 06).
-        install_hours = pd.to_numeric(install_rows["Duration Hours"], errors="coerce")
-        install_hours = install_hours.fillna(install_rows["Duration Days"] * 24)
-        install_rows["calendar_hours"] = install_hours
-        if len(install_rows) > 0:
-            avg_calendar_hours_per_installation = float(install_rows["calendar_hours"].mean())
-            # Shannon confirmed patient sim on-site time is ~5 hours (4hr assembly + sub-1hr orientation).
-            # The data-derived avg_duration_days represents the full appointment calendar window
-            # (travel + setup + on-site + teardown), which is the correct unit for freed-capacity conversion.
-            avg_duration_days_per_installation = float(install_rows["Duration Days"].mean())
-            install_type_breakdown = {}
-            for stype in installation_types:
-                sub = install_rows[install_rows["Service Type"] == stype]
-                if len(sub) > 0:
-                    install_type_breakdown[stype] = {
-                        "count": int(len(sub)),
-                        "avg_calendar_hours": round(float(sub["calendar_hours"].mean()), 2),
-                        "avg_duration_days": round(float(sub["Duration Days"].mean()), 2),
-                        "share": round(len(sub) / len(install_rows), 4),
-                    }
-        else:
-            avg_calendar_hours_per_installation = float("nan")
-            avg_duration_days_per_installation = float("nan")
-            install_type_breakdown = {}
-    else:
-        avg_calendar_hours_per_installation = float("nan")
-        avg_duration_days_per_installation = float("nan")
-        install_type_breakdown = {}
+    install_model = build_patient_sim_install_model(
+        appointments_workbook=config.SERVICE_APPTS_DISPATCH,
+        demand_appointments_csv=str(out_dir / "demand_appointments.csv"),
+    )
+    history_rows = install_model.history_rows.copy()
+    historical_mix_events = install_model.historical_mix_events.copy()
+    historical_mix_units = install_model.historical_mix_units.copy()
+    forward_mix = install_model.forward_mix.copy()
+    family_economics = install_model.family_economics.copy()
 
-    # --- Annualize from full-period to per-year ---
-    # Step 08 used period-scaled hire cost, and travel/overhead span the full period.
-    # Divide all cost columns by data_span_years to get annual equivalents.
+    history_out = out_dir / "patient_sim_install_history_clean.csv"
+    historical_events_out = out_dir / "patient_sim_historical_mix_events.csv"
+    historical_units_out = out_dir / "patient_sim_historical_mix_units.csv"
+    forward_mix_out = out_dir / "patient_sim_forward_mix.csv"
+    family_econ_out = out_dir / "patient_sim_family_economics_assumptions.csv"
+
+    history_rows.to_csv(history_out, index=False)
+    historical_mix_events.to_csv(historical_events_out, index=False)
+    historical_mix_units.to_csv(historical_units_out, index=False)
+    forward_mix.to_csv(forward_mix_out, index=False)
+    family_economics.to_csv(family_econ_out, index=False)
+
+    active_family_table = build_active_family_table(forward_mix, family_economics)
+    if active_family_table.empty:
+        weighted_avg_install_calendar_days = float("nan")
+        weighted_avg_install_revenue_usd = float("nan")
+        weighted_avg_install_profit_per_install_usd = float("nan")
+        weighted_avg_install_margin = float("nan")
+    else:
+        weighted_avg_install_calendar_days = float(
+            (active_family_table["forward_share"] * active_family_table["install_calendar_days_used"]).sum()
+        )
+        weighted_avg_install_revenue_usd = float(
+            (active_family_table["forward_share"] * active_family_table["install_revenue_usd"]).sum()
+        )
+        weighted_avg_install_profit_per_install_usd = float(
+            (
+                active_family_table["forward_share"]
+                * active_family_table["install_revenue_usd"]
+                * active_family_table["install_margin"]
+            ).sum()
+        )
+        weighted_avg_install_margin = (
+            weighted_avg_install_profit_per_install_usd / weighted_avg_install_revenue_usd
+            if weighted_avg_install_revenue_usd > 0
+            else float("nan")
+        )
+
+    # Annualize from full-period to per-year.
     period_cost_cols = [
         "travel_cost_usd",
         "out_of_region_penalty_usd",
@@ -122,111 +266,75 @@ def main() -> None:
         (summary["savings_vs_n0_usd"] / base_cost) * 100.0,
         0.0,
     )
-    summary["marginal_savings_from_prev_usd"] = summary["economic_total_with_overhead_usd"].shift(
-        1
-    ) - summary["economic_total_with_overhead_usd"]
+    summary["marginal_savings_from_prev_usd"] = summary["economic_total_with_overhead_usd"].shift(1) - summary["economic_total_with_overhead_usd"]
     summary["marginal_savings_from_prev_usd"] = summary["marginal_savings_from_prev_usd"].fillna(0.0)
 
-    # --- Block B: Capacity freed columns ---
-    baseline_existing_hours = float(
-        util.loc[util["scenario_hires"] == 0, "assigned_hours"].sum()
-    )
+    baseline_existing_hours = float(util.loc[util["scenario_hires"] == 0, "assigned_hours"].sum())
     hours_freed_list = []
     for _, row in summary.iterrows():
         n = int(row["scenario_hires"])
-        existing_hours_at_n = float(
-            util.loc[util["scenario_hires"] == n, "assigned_hours"].sum()
-        )
+        existing_hours_at_n = float(util.loc[util["scenario_hires"] == n, "assigned_hours"].sum())
         hours_freed_list.append(baseline_existing_hours - existing_hours_at_n)
-    summary["hours_freed_existing_techs"] = hours_freed_list
+    summary["hours_freed_existing_techs"] = pd.Series(hours_freed_list, dtype="float64") / data_span_years
 
-    # Annualize capacity-freed metrics (computed from full-period assigned hours)
-    summary["hours_freed_existing_techs"] = summary["hours_freed_existing_techs"] / data_span_years
+    util_factor = float(config.FREED_CAPACITY_UTILIZATION_FACTOR)
+    summary["freed_calendar_days_total"] = summary["hours_freed_existing_techs"] / 24.0
+    summary["freed_calendar_days_available"] = summary["freed_calendar_days_total"] * util_factor
 
-    summary["theoretical_max_installations"] = np.where(
-        np.isnan(avg_calendar_hours_per_installation) | (avg_calendar_hours_per_installation == 0),
+    if np.isnan(weighted_avg_install_calendar_days) or weighted_avg_install_calendar_days <= 0:
+        summary["weighted_avg_install_calendar_days"] = np.nan
+        summary["theoretical_max_installations"] = np.nan
+        summary["install_units_enabled"] = np.nan
+    else:
+        summary["weighted_avg_install_calendar_days"] = weighted_avg_install_calendar_days
+        summary["theoretical_max_installations"] = (
+            summary["freed_calendar_days_total"] / weighted_avg_install_calendar_days
+        )
+        summary["install_units_enabled"] = (
+            summary["freed_calendar_days_available"] / weighted_avg_install_calendar_days
+        )
+
+    summary["realistic_installations_enabled"] = summary["install_units_enabled"]
+    summary["weighted_avg_install_revenue_usd"] = weighted_avg_install_revenue_usd
+    summary["weighted_avg_install_margin"] = weighted_avg_install_margin
+    summary["weighted_avg_install_profit_per_install_usd"] = weighted_avg_install_profit_per_install_usd
+    summary["install_revenue_enabled_usd"] = summary["install_units_enabled"] * weighted_avg_install_revenue_usd
+    summary["install_profit_enabled_usd"] = (
+        summary["install_units_enabled"] * weighted_avg_install_profit_per_install_usd
+    )
+    summary["net_cost_increase_usd"] = summary["economic_total_with_overhead_usd"] - base_cost
+    summary["net_economic_value_install_usd"] = (
+        summary["install_profit_enabled_usd"] - summary["net_cost_increase_usd"]
+    )
+    summary["roi_install_pct"] = np.where(
+        summary["net_cost_increase_usd"] > 0,
+        (summary["net_economic_value_install_usd"] / summary["net_cost_increase_usd"]) * 100.0,
         np.nan,
-        summary["hours_freed_existing_techs"] / avg_calendar_hours_per_installation,
+    )
+    summary["break_even_install_units"] = np.where(
+        (summary["net_cost_increase_usd"] > 0) & (weighted_avg_install_profit_per_install_usd > 0),
+        summary["net_cost_increase_usd"] / weighted_avg_install_profit_per_install_usd,
+        0.0,
     )
 
-    # Realistic installation estimate: convert freed calendar hours → days,
-    # apply utilization factor, divide by (avg duration days + travel overhead).
-    summary["freed_duration_days"] = summary["hours_freed_existing_techs"] / 24.0
+    # Compatibility aliases for existing outputs and map payload.
+    summary["gross_revenue_moderate_usd"] = summary["install_revenue_enabled_usd"]
+    summary["total_profit_enabled_moderate_usd"] = summary["install_profit_enabled_usd"]
+    summary["net_economic_value_moderate_usd"] = summary["net_economic_value_install_usd"]
+    summary["break_even_installations_moderate"] = summary["break_even_install_units"]
+    summary["roi_moderate_pct"] = summary["roi_install_pct"]
+    summary["break_even_installations"] = summary["break_even_install_units"]
 
-    travel_days = config.TRAVEL_DAYS_PER_INSTALLATION
-    util_factor = config.FREED_CAPACITY_UTILIZATION_FACTOR
-    effective_days_per_install = avg_duration_days_per_installation + travel_days
-
-    summary["realistic_installations_enabled"] = np.where(
-        np.isnan(avg_duration_days_per_installation) | (effective_days_per_install == 0),
-        np.nan,
-        (summary["freed_duration_days"] * util_factor) / effective_days_per_install,
-    )
-
-    # --- Block C: Revenue-from-freed-capacity analysis (profit-margin based) ---
-    revenue_scenarios = {
-        "conservative": (config.REVENUE_PER_INSTALLATION_CONSERVATIVE_USD,
-                         config.INSTALLATION_PROFIT_MARGIN_CONSERVATIVE),
-        "moderate": (config.REVENUE_PER_INSTALLATION_MODERATE_USD,
-                     config.INSTALLATION_PROFIT_MARGIN_MODERATE),
-        "aggressive": (config.REVENUE_PER_INSTALLATION_AGGRESSIVE_USD,
-                       config.INSTALLATION_PROFIT_MARGIN_AGGRESSIVE),
-    }
-    svc_margin = config.SERVICE_CONTRACT_PROFIT_MARGIN
-    service_contract_annual = config.AVG_ANNUAL_SERVICE_CONTRACT_USD
-
-    for label, (rev_per_install, margin) in revenue_scenarios.items():
-        # Net cost increase vs N=0 (positive = costs more to hire)
-        col_net_cost = f"net_cost_increase_{label}_usd"
-        summary[col_net_cost] = summary["economic_total_with_overhead_usd"] - base_cost
-
-        # Installation profit (realistic installs × revenue per install × margin)
-        col_install_profit = f"installation_profit_{label}_usd"
-        summary[col_install_profit] = (
-            summary["realistic_installations_enabled"] * rev_per_install * margin
-        )
-
-        # Service contract profit (realistic installs × annual contract × svc margin)
-        col_svc_profit = f"service_contract_profit_{label}_usd"
-        summary[col_svc_profit] = (
-            summary["realistic_installations_enabled"] * service_contract_annual * svc_margin
-        )
-
-        # Total profit enabled
-        col_total_profit = f"total_profit_enabled_{label}_usd"
-        summary[col_total_profit] = summary[col_install_profit] + summary[col_svc_profit]
-
-        # Net economic value = total profit - net cost increase
-        col_net_value = f"net_economic_value_{label}_usd"
-        summary[col_net_value] = summary[col_total_profit] - summary[col_net_cost]
-
-        # ROI = net economic value / net cost increase (only where cost > 0)
-        col_roi = f"roi_{label}_pct"
-        summary[col_roi] = np.where(
-            summary[col_net_cost] > 0,
-            (summary[col_net_value] / summary[col_net_cost]) * 100.0,
-            np.nan,
-        )
-
-        # Break-even installations for this scenario
-        col_be = f"break_even_installations_{label}"
-        profit_per_install = rev_per_install * margin + service_contract_annual * svc_margin
-        summary[col_be] = np.where(
-            (summary[col_net_cost] > 0) & (profit_per_install > 0),
-            summary[col_net_cost] / profit_per_install,
-            0.0,
-        )
-
-    # Gross revenue reference column (moderate scenario, for dashboard context)
-    summary["gross_revenue_moderate_usd"] = (
-        summary["realistic_installations_enabled"] * config.REVENUE_PER_INSTALLATION_MODERATE_USD
-    )
-
-    # Keep a unified break_even column using the moderate scenario
-    summary["break_even_installations"] = summary["break_even_installations_moderate"]
+    for label in ["conservative", "moderate", "aggressive"]:
+        summary[f"net_cost_increase_{label}_usd"] = summary["net_cost_increase_usd"]
+        summary[f"installation_profit_{label}_usd"] = summary["install_profit_enabled_usd"]
+        summary[f"service_contract_profit_{label}_usd"] = 0.0
+        summary[f"total_profit_enabled_{label}_usd"] = summary["install_profit_enabled_usd"]
+        summary[f"net_economic_value_{label}_usd"] = summary["net_economic_value_install_usd"]
+        summary[f"roi_{label}_pct"] = summary["roi_install_pct"]
+        summary[f"break_even_installations_{label}"] = summary["break_even_install_units"]
 
     if "solver_proven_optimal" in summary.columns:
-        # Use pd.to_numeric to handle string "0"/"1" values correctly before bool conversion.
         proven_mask = pd.to_numeric(summary["solver_proven_optimal"], errors="coerce").eq(1)
         proven = summary[proven_mask].copy()
     else:
@@ -278,78 +386,92 @@ def main() -> None:
         "num_over_95pct": int((util_best["utilization"] > 0.95).sum()) if not util_best.empty else 0,
     }
 
-    full_cost_model_active = bool(assumptions.get("full_cost_model", False))
+    scenario_family = build_scenario_family_breakdown(summary, forward_mix, family_economics)
+    scenario_family_out = out_dir / "scenario_install_upside_by_family.csv"
+    scenario_family.to_csv(scenario_family_out, index=False)
+
+    excluded_counts = (
+        history_rows["history_exclusion_reason"]
+        .dropna()
+        .value_counts()
+        .rename_axis("reason")
+        .reset_index(name="rows")
+    )
+
     report = {
         "data_span_years": data_span_years,
         "annualization_note": f"All figures annualized from {data_span_years:.2f}-year data period",
         "best_scenario_hires": best_hires,
         "selection_mode": selection_mode,
-        "full_cost_model_active": full_cost_model_active,
+        "full_cost_model_active": bool(assumptions.get("full_cost_model", False)),
         "best_total_cost_with_overhead_usd": float(best_row["economic_total_with_overhead_usd"]),
         "lowest_observed_cost_hires": observed_best_hires,
-        "lowest_observed_cost_with_overhead_usd": float(
-            observed_best_row["economic_total_with_overhead_usd"]
-        ),
+        "lowest_observed_cost_with_overhead_usd": float(observed_best_row["economic_total_with_overhead_usd"]),
         "baseline_n0_cost_with_overhead_usd": base_cost,
         "best_savings_vs_n0_usd": float(base_cost - best_row["economic_total_with_overhead_usd"]),
         "best_savings_vs_n0_pct": float(
             (base_cost - best_row["economic_total_with_overhead_usd"]) / base_cost * 100.0
-        )
-        if base_cost > 0
-        else 0.0,
+        ) if base_cost > 0 else 0.0,
         "utilization_metrics_best_scenario": util_metrics,
         "assumptions": assumptions,
-        "avg_calendar_hours_per_installation": round(avg_calendar_hours_per_installation, 2)
-        if not np.isnan(avg_calendar_hours_per_installation)
-        else None,
-        "avg_duration_days_per_installation": round(avg_duration_days_per_installation, 2)
-        if not np.isnan(avg_duration_days_per_installation)
-        else None,
-        "travel_days_per_installation": travel_days,
-        "freed_capacity_utilization_factor": util_factor,
-        "installation_type_breakdown": install_type_breakdown,
-        "revenue_scenarios": {
-            "conservative_per_install_usd": config.REVENUE_PER_INSTALLATION_CONSERVATIVE_USD,
-            "moderate_per_install_usd": config.REVENUE_PER_INSTALLATION_MODERATE_USD,
-            "aggressive_per_install_usd": config.REVENUE_PER_INSTALLATION_AGGRESSIVE_USD,
-            "conservative_margin": config.INSTALLATION_PROFIT_MARGIN_CONSERVATIVE,
-            "moderate_margin": config.INSTALLATION_PROFIT_MARGIN_MODERATE,
-            "aggressive_margin": config.INSTALLATION_PROFIT_MARGIN_AGGRESSIVE,
-            "service_contract_margin": svc_margin,
+        "install_model_assumptions": install_model.assumptions,
+        "install_model_source": install_model.source_metadata,
+        "capacity_model_time_unit": config.PATIENT_SIM_CAPACITY_TIME_UNIT,
+        "weighted_avg_install_calendar_days": weighted_avg_install_calendar_days,
+        "weighted_avg_install_revenue_usd": weighted_avg_install_revenue_usd,
+        "weighted_avg_install_margin": weighted_avg_install_margin,
+        "weighted_avg_install_profit_per_install_usd": weighted_avg_install_profit_per_install_usd,
+        "historical_mix": {
+            "clean_history_rows": int(len(history_rows)),
+            "included_history_component_rows": int(history_rows["include_in_history"].sum()),
+            "excluded_rows_by_reason": df_records(excluded_counts),
+            "events": df_records(historical_mix_events),
+            "units": df_records(historical_mix_units),
         },
-        "avg_annual_service_contract_usd": service_contract_annual,
-        "capacity_freed_all_scenarios": [
-            {
-                "scenario_hires": int(r["scenario_hires"]),
-                "hours_freed_existing_techs": round(float(r["hours_freed_existing_techs"]), 2),
-                "freed_duration_days": round(float(r["freed_duration_days"]), 2),
-                "theoretical_max_installations": round(float(r["theoretical_max_installations"]), 1)
-                if not np.isnan(r["theoretical_max_installations"])
-                else None,
-                "realistic_installations_enabled": round(float(r["realistic_installations_enabled"]), 1)
-                if not np.isnan(r["realistic_installations_enabled"])
-                else None,
-                "break_even_installations": round(float(r["break_even_installations"]), 1)
-                if not np.isnan(r["break_even_installations"])
-                else None,
-                "revenue_analysis": {
-                    lbl: {
-                        "installation_profit_usd": round(float(r[f"installation_profit_{lbl}_usd"]), 2),
-                        "service_contract_profit_usd": round(float(r[f"service_contract_profit_{lbl}_usd"]), 2),
-                        "total_profit_enabled_usd": round(float(r[f"total_profit_enabled_{lbl}_usd"]), 2),
-                        "net_cost_increase_usd": round(float(r[f"net_cost_increase_{lbl}_usd"]), 2),
-                        "net_economic_value_usd": round(float(r[f"net_economic_value_{lbl}_usd"]), 2),
-                        "roi_pct": round(float(r[f"roi_{lbl}_pct"]), 1)
-                        if not np.isnan(r[f"roi_{lbl}_pct"])
-                        else None,
-                        "break_even_installations": round(float(r[f"break_even_installations_{lbl}"]), 1),
-                    }
-                    for lbl in ["conservative", "moderate", "aggressive"]
-                },
-            }
-            for _, r in summary.iterrows()
-        ],
+        "forward_mix": {
+            "basis": "unit_equivalents",
+            "rows": df_records(forward_mix),
+        },
+        "family_economics": df_records(family_economics),
+        "capacity_freed_all_scenarios": [],
+        "legacy_tier_alias_mode": (
+            "Legacy conservative/moderate/aggressive install columns are compatibility "
+            "aliases to the single family-weighted install-only model."
+        ),
     }
+
+    for _, scenario_row in summary.iterrows():
+        scenario_hires = int(scenario_row["scenario_hires"])
+        family_breakdown = scenario_family[scenario_family["scenario_hires"] == scenario_hires].copy()
+        report["capacity_freed_all_scenarios"].append(
+            {
+                "scenario_hires": scenario_hires,
+                "hours_freed_existing_techs": float(scenario_row["hours_freed_existing_techs"]),
+                "freed_calendar_days_total": float(scenario_row["freed_calendar_days_total"]),
+                "freed_calendar_days_available": float(scenario_row["freed_calendar_days_available"]),
+                "theoretical_max_installations": (
+                    float(scenario_row["theoretical_max_installations"])
+                    if not np.isnan(scenario_row["theoretical_max_installations"])
+                    else None
+                ),
+                "install_units_enabled": (
+                    float(scenario_row["install_units_enabled"])
+                    if not np.isnan(scenario_row["install_units_enabled"])
+                    else None
+                ),
+                "install_revenue_enabled_usd": float(scenario_row["install_revenue_enabled_usd"]),
+                "install_profit_enabled_usd": float(scenario_row["install_profit_enabled_usd"]),
+                "net_cost_increase_usd": float(scenario_row["net_cost_increase_usd"]),
+                "net_economic_value_install_usd": float(scenario_row["net_economic_value_install_usd"]),
+                "roi_install_pct": (
+                    float(scenario_row["roi_install_pct"])
+                    if not np.isnan(scenario_row["roi_install_pct"])
+                    else None
+                ),
+                "break_even_install_units": float(scenario_row["break_even_install_units"]),
+                "family_breakdown": df_records(family_breakdown),
+            }
+        )
 
     summary_out = out_dir / "scenario_summary_enhanced.csv"
     recommended_out = out_dir / "recommended_hire_locations.csv"
@@ -359,156 +481,154 @@ def main() -> None:
     summary.to_csv(summary_out, index=False)
     recommended.to_csv(recommended_out, index=False)
     with open(report_out, "w") as f:
-        json.dump(report, f, indent=2)
+        json.dump(json_safe(report), f, indent=2, allow_nan=False)
 
-    cost_model_label = (
-        "Full cost model active (drive/fly + rental + hotel)"
-        if full_cost_model_active
-        else "Flight-cost-only model (no rental/hotel)"
-    )
     lines = [
         "# Optimization Scenario Analysis",
         "",
-        f"- Cost model: **{cost_model_label}**",
-        f"- Selection mode: **{selection_mode}**",
+        f"- Capacity model time unit: **{config.PATIENT_SIM_CAPACITY_TIME_UNIT}**",
         f"- Best scenario: **{best_hires}** new hires",
         f"- Baseline (N=0) cost with overhead: **${base_cost:,.2f}**",
         f"- Best scenario cost with overhead: **${best_row['economic_total_with_overhead_usd']:,.2f}**",
         f"- Savings vs N=0: **${report['best_savings_vs_n0_usd']:,.2f} ({report['best_savings_vs_n0_pct']:.2f}%)**",
-        "- Cost totals include annual burdened payroll for incremental new hires.",
-        f"- Data period: **{data_span_years:.1f} years** — all figures are annualized to per-year equivalents",
+        f"- Data period: **{data_span_years:.2f} years**",
         "",
-        "## Utilization (Best Scenario)",
-        f"- Mean existing-tech utilization: {util_metrics['mean_utilization']:.3f}",
-        f"- Max existing-tech utilization: {util_metrics['max_utilization']:.3f}",
-        f"- Existing techs above 95% utilization: {util_metrics['num_over_95pct']}",
+        "## Capacity Model",
         "",
-        "## Recommended New-Hire Bases (Best Scenario)",
+        f"- Freed-capacity utilization factor: **{util_factor:.0%}**",
+        f"- Weighted average install calendar days: **{weighted_avg_install_calendar_days:,.2f}**",
+        f"- Weighted average install revenue: **${weighted_avg_install_revenue_usd:,.0f}**",
+        f"- Weighted average install profit per install: **${weighted_avg_install_profit_per_install_usd:,.0f}**",
+        "",
+        "## Historical Mix (Events)",
+        "",
     ]
-    if recommended.empty:
-        lines.append("- No new-hire placements in best scenario.")
+    if historical_mix_events.empty:
+        lines.append("- No cleaned historical event mix available.")
     else:
-        for _, row in recommended.iterrows():
-            lines.append(
-                "- "
-                f"{row['city']}, {row['state']} ({row['airport_iata']}): "
-                f"hires={int(row['hires_allocated'])}, "
-                f"assigned_hours={row['assigned_hours']:.1f}, "
-                f"share={row['share_of_total_newhire_hours']:.2%}"
+        lines.extend(
+            markdown_table(
+                historical_mix_events,
+                ["family", "event_equivalent_count", "event_share"],
+                ["Family", "Event Eq. Count", "Event Share"],
             )
+        )
 
-    # --- Block D: Capacity Freed markdown section ---
-    lines.append("")
-    lines.append("## Capacity Freed by Hiring Scenario")
-    lines.append("")
-    if not np.isnan(avg_duration_days_per_installation):
-        type_counts = ", ".join(
-            f"{k}: {v['count']}" for k, v in install_type_breakdown.items()
-        )
-        lines.append(
-            f"- Avg duration days per installation: **{avg_duration_days_per_installation:.2f}** ({type_counts})"
-        )
-        lines.append(
-            f"- Travel overhead per installation: **{travel_days:.1f} day**"
-        )
-        lines.append(
-            f"- Practical utilization factor: **{util_factor:.0%}** (accounts for scheduling gaps, PTO, non-installation work)"
-        )
-        lines.append(
-            f"- Effective days per installation: **{effective_days_per_install:.2f}** ({avg_duration_days_per_installation:.2f} + {travel_days:.1f} travel)"
-        )
+    lines.extend(
+        [
+            "",
+            "## Historical Mix (Units)",
+            "",
+        ]
+    )
+    if historical_mix_units.empty:
+        lines.append("- No cleaned historical unit mix available.")
     else:
-        lines.append("- Avg duration days per installation: **N/A** (no installation data found)")
-    if not np.isnan(avg_calendar_hours_per_installation):
-        lines.append(
-            f"- Avg calendar hours per installation: **{avg_calendar_hours_per_installation:.1f}** (theoretical max reference)"
-        )
-    lines.append("")
-    lines.append("| Scenario | Days Freed | Usable Days | Realistic Installs | Theoretical Max | Break-Even (Mod) |")
-    lines.append("|----------|----------:|-----------:|-------------------:|----------------:|-----------------:|")
-    for _, r in summary.iterrows():
-        n = int(r["scenario_hires"])
-        df = r["freed_duration_days"]
-        ud = df * util_factor
-        ri = r["realistic_installations_enabled"]
-        tm = r["theoretical_max_installations"]
-        be = r["break_even_installations"]
-        ri_str = f"{ri:,.1f}" if not np.isnan(ri) else "N/A"
-        tm_str = f"{tm:,.0f}" if not np.isnan(tm) else "N/A"
-        be_str = f"{be:,.1f}" if not np.isnan(be) else "N/A"
-        lines.append(f"| N={n} | {df:,.1f} | {ud:,.1f} | {ri_str} | {tm_str} | {be_str} |")
-
-    # --- Revenue-from-Freed-Capacity Analysis ---
-    lines.append("")
-    lines.append("## Revenue-from-Freed-Capacity Analysis")
-    lines.append("")
-    lines.append("> **Framing note:** Below 15% volume reduction, the value of hiring should be")
-    lines.append("> understood as capacity for revenue, not cost savings. These estimates represent")
-    lines.append("> what freed technician time could enable, not guaranteed revenue.")
-    lines.append("")
-    lines.append("### Assumptions")
-    lines.append(
-        f"- Conservative: ${config.REVENUE_PER_INSTALLATION_CONSERVATIVE_USD:,}/install "
-        f"× {config.INSTALLATION_PROFIT_MARGIN_CONSERVATIVE:.0%} margin "
-        f"= ${config.REVENUE_PER_INSTALLATION_CONSERVATIVE_USD * config.INSTALLATION_PROFIT_MARGIN_CONSERVATIVE:,.0f} profit/install (small systems)"
-    )
-    lines.append(
-        f"- Moderate: ${config.REVENUE_PER_INSTALLATION_MODERATE_USD:,}/install "
-        f"× {config.INSTALLATION_PROFIT_MARGIN_MODERATE:.0%} margin "
-        f"= ${config.REVENUE_PER_INSTALLATION_MODERATE_USD * config.INSTALLATION_PROFIT_MARGIN_MODERATE:,.0f} profit/install (mid-range systems)"
-    )
-    lines.append(
-        f"- Aggressive: ${config.REVENUE_PER_INSTALLATION_AGGRESSIVE_USD:,}/install "
-        f"× {config.INSTALLATION_PROFIT_MARGIN_AGGRESSIVE:.0%} margin "
-        f"= ${config.REVENUE_PER_INSTALLATION_AGGRESSIVE_USD * config.INSTALLATION_PROFIT_MARGIN_AGGRESSIVE:,.0f} profit/install (large/HPS systems)"
-    )
-    lines.append(f"- Annual service contract: ${service_contract_annual:,}/system × {svc_margin:.0%} margin = ${service_contract_annual * svc_margin:,.0f} profit/system")
-    lines.append("- Profit margins applied to MSRP revenue (industry-typical net margins for installations, higher margins for recurring service contracts)")
-    lines.append("")
-    lines.append("### Profit Summary by Scenario")
-    lines.append("")
-    lines.append("| Hires | Realistic Installs | Scenario | Install Profit | Svc Contract Profit | Total Profit | Net Cost Increase | Net Economic Value | ROI | Break-Even Installs |")
-    lines.append("|------:|-------------------:|:---------|---------------:|--------------------:|-------------:|------------------:|-------------------:|----:|--------------------:|")
-    for _, r in summary.iterrows():
-        n = int(r["scenario_hires"])
-        ri = r["realistic_installations_enabled"]
-        ri_str = f"{ri:,.1f}" if not np.isnan(ri) else "N/A"
-        for lbl in ["conservative", "moderate", "aggressive"]:
-            ip = r[f"installation_profit_{lbl}_usd"]
-            sp = r[f"service_contract_profit_{lbl}_usd"]
-            tp = r[f"total_profit_enabled_{lbl}_usd"]
-            nc = r[f"net_cost_increase_{lbl}_usd"]
-            nv = r[f"net_economic_value_{lbl}_usd"]
-            roi = r[f"roi_{lbl}_pct"]
-            be = r[f"break_even_installations_{lbl}"]
-            roi_str = f"{roi:,.0f}%" if not np.isnan(roi) else "N/A"
-            lines.append(
-                f"| {n} | {ri_str} | {lbl} | ${ip:,.0f} | ${sp:,.0f} | ${tp:,.0f} | ${nc:,.0f} | ${nv:,.0f} | {roi_str} | {be:,.1f} |"
+        lines.extend(
+            markdown_table(
+                historical_mix_units,
+                ["family", "units_inferred", "unit_share"],
+                ["Family", "Units Inferred", "Unit Share"],
             )
-
-    lines.append("")
-    lines.append("### Caveats")
-    lines.append("1. Revenue figures represent **capacity enabled**, not guaranteed bookings — actual revenue depends on sales pipeline and market demand.")
-    lines.append(
-        "2. Profit margins are applied "
-        f"({config.INSTALLATION_PROFIT_MARGIN_CONSERVATIVE:.0%}/"
-        f"{config.INSTALLATION_PROFIT_MARGIN_MODERATE:.0%}/"
-        f"{config.INSTALLATION_PROFIT_MARGIN_AGGRESSIVE:.0%} on installations, "
-        f"{config.SERVICE_CONTRACT_PROFIT_MARGIN:.0%} on service contracts) "
-        "— actual margins vary by product line and deal structure."
-    )
-    lines.append("3. Service contract revenue assumes each new installation generates an annual contract.")
-    lines.append("4. Estimates are **Year 1 only** — multi-year NPV would require discount rate assumptions.")
-    lines.append(
-        f"5. Recommendation follows the current selection rule: N={best_hires} is the "
-        "lowest-cost scenario among the scenarios eligible for recommendation."
-    )
-    if selection_mode == "proven_optimal_only" and observed_best_hires != best_hires:
-        lines.append(
-            f"6. N={observed_best_hires} has the lowest observed cost in this run, but it "
-            "was not proven optimal before the solver stopped, so it is reported as "
-            "informational only."
         )
+
+    lines.extend(
+        [
+            "",
+            "## Forward Mix",
+            "",
+        ]
+    )
+    if forward_mix.empty:
+        lines.append("- No forward mix available.")
+    else:
+        lines.extend(
+            markdown_table(
+                forward_mix,
+                [
+                    "family",
+                    "historical_units",
+                    "forward_units_after_adjustments",
+                    "forward_share",
+                    "forward_mix_exclusion_reason",
+                ],
+                [
+                    "Family",
+                    "Historical Units",
+                    "Forward Units",
+                    "Forward Share",
+                    "Forward Exclusion",
+                ],
+            )
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Family Economics",
+            "",
+        ]
+    )
+    lines.extend(
+        markdown_table(
+            family_economics,
+            [
+                "family",
+                "install_revenue_usd",
+                "install_margin",
+                "install_calendar_days_used",
+                "install_calendar_days_source",
+                "revenue_source_note",
+            ],
+            [
+                "Family",
+                "Revenue",
+                "Margin",
+                "Calendar Days Used",
+                "Calendar-Day Source",
+                "Revenue Source Note",
+            ],
+        )
+    )
+
+    lines.extend(
+        [
+            "",
+            "## Scenario Install Upside",
+            "",
+        ]
+    )
+    scenario_summary_md = summary[
+        [
+            "scenario_hires",
+            "freed_calendar_days_available",
+            "install_units_enabled",
+            "install_revenue_enabled_usd",
+            "install_profit_enabled_usd",
+            "net_cost_increase_usd",
+            "net_economic_value_install_usd",
+            "break_even_install_units",
+        ]
+    ].copy()
+    scenario_summary_md = scenario_summary_md.rename(
+        columns={
+            "scenario_hires": "Scenario",
+            "freed_calendar_days_available": "Freed Calendar Days Available",
+            "install_units_enabled": "Install Units Enabled",
+            "install_revenue_enabled_usd": "Install Revenue Enabled",
+            "install_profit_enabled_usd": "Install Profit Enabled",
+            "net_cost_increase_usd": "Net Cost Increase",
+            "net_economic_value_install_usd": "Net Economic Value",
+            "break_even_install_units": "Break-Even Install Units",
+        }
+    )
+    lines.extend(
+        markdown_table(
+            scenario_summary_md,
+            list(scenario_summary_md.columns),
+            list(scenario_summary_md.columns),
+        )
+    )
 
     with open(markdown_out, "w") as f:
         f.write("\n".join(lines))
@@ -517,49 +637,20 @@ def main() -> None:
     print(f"Saved: {recommended_out}")
     print(f"Saved: {report_out}")
     print(f"Saved: {markdown_out}")
-    print(f"\n  Annualized from {data_span_years:.2f}-year data period")
-    print("\nTop-level report:")
-    print(json.dumps(report, indent=2))
+    print(f"Saved: {history_out}")
+    print(f"Saved: {historical_events_out}")
+    print(f"Saved: {historical_units_out}")
+    print(f"Saved: {forward_mix_out}")
+    print(f"Saved: {family_econ_out}")
+    print(f"Saved: {scenario_family_out}")
+    print("\nInstall-only patient-sim upside model:")
+    print(f"  Capacity time unit: {config.PATIENT_SIM_CAPACITY_TIME_UNIT}")
+    print(f"  Weighted avg install calendar days: {weighted_avg_install_calendar_days:,.2f}")
+    print(f"  Weighted avg install revenue: ${weighted_avg_install_revenue_usd:,.0f}")
+    print(f"  Weighted avg install profit/install: ${weighted_avg_install_profit_per_install_usd:,.0f}")
+    print(f"  HPS excluded from forward mix: {config.PATIENT_SIM_EXCLUDE_HPS_FROM_FUTURE_MIX}")
+    print(f"  History source: {install_model.source_metadata['source_kind']}")
     print("Step 9 complete.")
-
-    # --- Block E: Console capacity summary ---
-    print("\nCapacity Freed by Hiring Scenario:")
-    print(f"  Avg duration days per installation: {avg_duration_days_per_installation:.2f}")
-    print(f"  Travel overhead: {travel_days:.1f} day | Utilization factor: {util_factor:.0%}")
-    print(f"  Effective days per installation: {effective_days_per_install:.2f}")
-    print(f"  {'Scenario':<10} {'Days Freed':>11} {'Usable Days':>12} {'Realistic':>10} {'Theoretical':>12} {'Break-Even':>11}")
-    print(f"  {'-'*10} {'-'*11} {'-'*12} {'-'*10} {'-'*12} {'-'*11}")
-    for _, r in summary.iterrows():
-        n = int(r["scenario_hires"])
-        df = r["freed_duration_days"]
-        ud = df * util_factor
-        ri = r["realistic_installations_enabled"]
-        tm = r["theoretical_max_installations"]
-        be = r["break_even_installations"]
-        ri_str = f"{ri:,.1f}" if not np.isnan(ri) else "N/A"
-        tm_str = f"{tm:,.0f}" if not np.isnan(tm) else "N/A"
-        be_str = f"{be:,.1f}" if not np.isnan(be) else "N/A"
-        print(f"  N={n:<7} {df:>11,.1f} {ud:>12,.1f} {ri_str:>10} {tm_str:>12} {be_str:>11}")
-
-    # --- Block F: Console profit summary ---
-    print(f"\nRevenue-from-Freed-Capacity Analysis (profit-margin based):")
-    print(f"  Conservative=${config.REVENUE_PER_INSTALLATION_CONSERVATIVE_USD//1000:.0f}K×{config.INSTALLATION_PROFIT_MARGIN_CONSERVATIVE:.0%} | Moderate=${config.REVENUE_PER_INSTALLATION_MODERATE_USD//1000:.0f}K×{config.INSTALLATION_PROFIT_MARGIN_MODERATE:.0%} | Aggressive=${config.REVENUE_PER_INSTALLATION_AGGRESSIVE_USD//1000:.0f}K×{config.INSTALLATION_PROFIT_MARGIN_AGGRESSIVE:.0%}")
-    print(f"  Service contract: ${service_contract_annual:,}/system × {svc_margin:.0%} margin")
-    print()
-    print(f"  {'Scenario':<10} {'Installs':>9} {'Net Cost Incr':>14}    {'Conservative':>14} {'Moderate':>14} {'Aggressive':>14}    {'BE (Mod)':>9}")
-    print(f"  {'':<10} {'':>9} {'':>14}    {'--- Net Profit Value ---':^44}    {'':>9}")
-    print(f"  {'-'*10} {'-'*9} {'-'*14}    {'-'*14} {'-'*14} {'-'*14}    {'-'*9}")
-    for _, r in summary.iterrows():
-        n = int(r["scenario_hires"])
-        ri = r["realistic_installations_enabled"]
-        ri_str = f"{ri:,.1f}" if not np.isnan(ri) else "N/A"
-        nc = r["net_cost_increase_moderate_usd"]
-        nv_c = r["net_economic_value_conservative_usd"]
-        nv_m = r["net_economic_value_moderate_usd"]
-        nv_a = r["net_economic_value_aggressive_usd"]
-        be = r["break_even_installations"]
-        be_str = f"{be:,.1f}" if not np.isnan(be) else "N/A"
-        print(f"  N={n:<7} {ri_str:>9} {'${:>,.0f}'.format(nc):>14}    {'${:>,.0f}'.format(nv_c):>14} {'${:>,.0f}'.format(nv_m):>14} {'${:>,.0f}'.format(nv_a):>14}    {be_str:>9}")
 
 
 if __name__ == "__main__":
