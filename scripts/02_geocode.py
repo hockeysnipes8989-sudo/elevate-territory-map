@@ -72,6 +72,26 @@ def geocode_key(key, geolocator, cache, max_retries=3):
     return None
 
 
+def apply_account_coordinate_overrides(appts):
+    """Pin known account locations to exact coordinates."""
+    overrides = getattr(config, "ACCOUNT_EXACT_COORD_OVERRIDES", {})
+    if not overrides or "Account: Account Name" not in appts.columns:
+        return appts, 0
+
+    appts = appts.copy()
+    applied = 0
+    account_series = appts["Account: Account Name"].fillna("").astype(str).str.strip()
+    for account_name, coords in overrides.items():
+        mask = account_series.eq(str(account_name).strip())
+        count = int(mask.sum())
+        if not count:
+            continue
+        appts.loc[mask, "lat"] = float(coords["lat"])
+        appts.loc[mask, "lon"] = float(coords["lon"])
+        applied += count
+    return appts, applied
+
+
 def main():
     geolocator = Nominatim(user_agent=config.GEOCODE_USER_AGENT)
     cache = load_cache()
@@ -115,6 +135,9 @@ def main():
     # Apply geocoded coordinates to appointments
     appts["lat"] = appts["geocode_key"].map(lambda k: cache.get(k, {}).get("lat") if cache.get(k) else None)
     appts["lon"] = appts["geocode_key"].map(lambda k: cache.get(k, {}).get("lon") if cache.get(k) else None)
+    appts, override_count = apply_account_coordinate_overrides(appts)
+    if override_count:
+        print(f"Applied exact account coordinate overrides to {override_count} appointment row(s).")
 
     geocoded_count = appts["lat"].notna().sum()
     print(f"\nAppointments geocoded: {geocoded_count}/{len(appts)} ({geocoded_count/len(appts)*100:.1f}%)")

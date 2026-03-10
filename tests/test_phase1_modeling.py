@@ -25,6 +25,7 @@ def load_module(module_name: str, filename: str):
 step08 = load_module("step08_optimize", "08_optimize_locations.py")
 step11 = load_module("step11_costs", "11_build_full_cost_table.py")
 step06 = load_module("step06_inputs", "06_build_optimization_inputs.py")
+step02 = load_module("step02_geocode", "02_geocode.py")
 
 
 class PhaseOneModelingTests(unittest.TestCase):
@@ -205,6 +206,29 @@ class PhaseOneModelingTests(unittest.TestCase):
         )
         self.assertEqual(row["assignment_scope_states"], "MD;VA;WV;DC;DE")
         self.assertEqual(row["anchor_site_name"], "Morgan State University")
+
+    def test_account_coordinate_override_pins_morgan_state(self):
+        appts = pd.DataFrame(
+            [
+                {
+                    "Account: Account Name": "Morgan State University",
+                    "lat": 39.2908816,
+                    "lon": -76.610759,
+                },
+                {
+                    "Account: Account Name": "Other Account",
+                    "lat": 10.0,
+                    "lon": 20.0,
+                },
+            ]
+        )
+        updated, count = step02.apply_account_coordinate_overrides(appts)
+        self.assertEqual(count, 1)
+        row = updated.loc[
+            updated["Account: Account Name"] == "Morgan State University"
+        ].iloc[0]
+        self.assertAlmostEqual(float(row["lat"]), 39.3438)
+        self.assertAlmostEqual(float(row["lon"]), -76.5844)
 
     def test_state_set_limited_scope_blocks_out_of_region_assignments(self):
         anchored_tech = pd.Series(

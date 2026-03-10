@@ -462,6 +462,12 @@ GEOCODE_OVERRIDES = {
     "Clarkesville, GA, USA": {"lat": 34.6125971, "lon": -83.5248933},
 }
 
+# Exact account-level point overrides used when a known site should not inherit a
+# broader city geocode or centroid fallback.
+ACCOUNT_EXACT_COORD_OVERRIDES = {
+    "Morgan State University": {"lat": 39.3438, "lon": -76.5844},
+}
+
 # ---------------------------------------------------------------------------
 # Major US and Canadian airports (for travel optimization layer)
 # ---------------------------------------------------------------------------
