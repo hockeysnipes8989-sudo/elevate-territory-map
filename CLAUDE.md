@@ -31,6 +31,10 @@ This file is the working context handoff for future chats.
 - Step 08 now layers in airport-based operational zones:
   - standard employees/new hires: `0-1` free, `2` penalized, `3+` blocked
   - HTX contractors: softer penalty-only treatment, not full exemption
+- Step 05 now defaults to a **stakeholder** UI mode:
+  - keeps the scenario coverage dots, hire markers, and technician bases front and center
+  - hides the heavier diagnostic map layers and floating legend boxes
+  - supports `ELEVATE_MAP_UI_MODE=debug` for the old inspection-heavy layer set
 - AVS is treated as Learning Space for dispatch skill logic.
 - New hires cannot serve HPS nodes.
 - Step 09 uses the newer **patient-sim family mix** install-upside model.

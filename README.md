@@ -14,6 +14,11 @@ Interactive US/Canada service map plus a hiring and dispatch optimization pipeli
 5. Translates freed capacity into patient-simulator install upside.
 6. Publishes the scenario panel and map in `docs/index.html`.
 
+Step 05 now builds a **stakeholder-first** map by default:
+- visible by default: scenario coverage dots, selected-scenario hire markers, technician home bases
+- hidden from the stakeholder build: the heavier diagnostic layers and legend boxes
+- optional internal debug view: set `ELEVATE_MAP_UI_MODE=debug` before running `scripts/05_generate_map.py`
+
 ## Capacity / Utilization Framing
 
 This repo keeps the current Step 08 capacity math.

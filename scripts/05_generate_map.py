@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import pandas as pd
+import numpy as np
 import folium
 from collections import defaultdict
 
@@ -29,6 +30,64 @@ def classify_service_type(service_type):
         return "Install"
     else:
         return "Other"
+
+
+def get_map_ui_preset():
+    """Return the active stakeholder/debug UI preset."""
+    mode = str(getattr(config, "MAP_UI_MODE", "stakeholder")).strip().lower()
+    stakeholder = mode == "stakeholder"
+    return {
+        "mode": mode,
+        "show_active_assets": not stakeholder,
+        "show_nonactive_assets": not stakeholder,
+        "show_service_appointments": not stakeholder,
+        "show_territory_boundaries": not stakeholder,
+        "show_hub_radius": not stakeholder,
+        "show_airports": not stakeholder,
+        "show_layer_control": not stakeholder,
+        "show_legends": not stakeholder,
+        "panel_width_px": getattr(config, "MAP_PANEL_WIDTH_PX", 360),
+        "panel_radius_px": getattr(config, "MAP_PANEL_RADIUS_PX", 18),
+        "panel_shadow": getattr(
+            config, "MAP_PANEL_SHADOW", "0 18px 40px rgba(15, 23, 42, 0.16)"
+        ),
+        "card_radius_px": getattr(config, "MAP_CARD_RADIUS_PX", 14),
+        "font_family": getattr(
+            config,
+            "MAP_PANEL_FONT_FAMILY",
+            '"Public Sans", "Segoe UI", "Helvetica Neue", Arial, sans-serif',
+        ),
+        "coverage_default_count": getattr(
+            config, "MAP_COVERAGE_ASSIGNMENTS_DEFAULT_COUNT", 6
+        ),
+        "tech_marker_colors": getattr(config, "MAP_TECH_MARKER_COLORS", {}),
+        "new_hire_marker_color": getattr(config, "MAP_NEW_HIRE_MARKER_COLOR", "#C5662D"),
+        "airport_marker_color": getattr(config, "MAP_AIRPORT_MARKER_COLOR", "#6B7280"),
+        "airport_marker_fill": getattr(config, "MAP_AIRPORT_MARKER_FILL", "#F8FAFC"),
+        "airport_marker_border": getattr(config, "MAP_AIRPORT_MARKER_BORDER", "#CBD5E1"),
+        "assignment_dot_radius": getattr(
+            config,
+            "MAP_ASSIGNMENT_DOT_STAKEHOLDER_RADIUS"
+            if stakeholder
+            else "MAP_ASSIGNMENT_DOT_DEBUG_RADIUS",
+            getattr(config, "TERRITORY_DOT_RADIUS", 6),
+        ),
+        "assignment_dot_opacity": getattr(
+            config,
+            "MAP_ASSIGNMENT_DOT_STAKEHOLDER_OPACITY"
+            if stakeholder
+            else "MAP_ASSIGNMENT_DOT_DEBUG_OPACITY",
+            getattr(config, "TERRITORY_DOT_OPACITY", 0.85),
+        ),
+        "assignment_dot_stroke": getattr(config, "MAP_ASSIGNMENT_DOT_STROKE", "#FFFFFF"),
+        "territory_palette": list(
+            getattr(
+                config,
+                "STAKEHOLDER_TERRITORY_PALETTE" if stakeholder else "TECH_TERRITORY_PALETTE",
+                getattr(config, "TECH_TERRITORY_PALETTE", []),
+            )
+        ),
+    }
 
 
 def exclude_inactive_technicians(techs):
@@ -352,7 +411,7 @@ def add_service_appointments(m, appts, layer_name, show=True):
     return fg
 
 
-def add_technician_markers(m, techs, layer_name):
+def add_technician_markers(m, techs, layer_name, ui_preset):
     """Add technician home base markers."""
     fg = folium.FeatureGroup(name=layer_name, show=True)
 
@@ -382,17 +441,19 @@ def add_technician_markers(m, techs, layer_name):
         if num_techs == 1:
             row = group.iloc[0]
             status = str(row.get("status", "active")).lower()
-            color = config.TECH_COLORS.get(status, "blue")
-            icon_name = "star" if status == "special" else "user"
+            color = ui_preset["tech_marker_colors"].get(
+                status, ui_preset["tech_marker_colors"].get("active", "#2E6F5E")
+            )
             tooltip = f"{row['name']} ({status})"
         else:
             status_counts = group["status"].value_counts().to_dict()
             if len(status_counts) == 1:
                 only_status = next(iter(status_counts.keys()))
-                color = config.TECH_COLORS.get(only_status, "blue")
+                color = ui_preset["tech_marker_colors"].get(
+                    only_status, ui_preset["tech_marker_colors"].get("mixed", "#51606E")
+                )
             else:
-                color = "blue"
-            icon_name = "users"
+                color = ui_preset["tech_marker_colors"].get("mixed", "#51606E")
             tooltip = f"{location} ({num_techs} techs)"
 
         roster_lines = []
@@ -415,20 +476,42 @@ def add_technician_markers(m, techs, layer_name):
             "</div>"
         )
 
+        diameter = 24 if num_techs == 1 else 30
+        label = str(num_techs)
+        marker_html = (
+            "<div style=\""
+            f"width:{diameter}px;height:{diameter}px;border-radius:999px;"
+            f"background:{color};border:2px solid #ffffff;color:#ffffff;"
+            "display:flex;align-items:center;justify-content:center;"
+            f"font:700 {11 if num_techs == 1 else 12}px {ui_preset['font_family']};"
+            "box-shadow:0 6px 14px rgba(15,23,42,0.22);"
+            "\">"
+            f"{label}"
+            "</div>"
+        )
+
         folium.Marker(
             location=[lat, lon],
             popup=folium.Popup(popup_html, max_width=360),
             tooltip=tooltip,
-            icon=folium.Icon(color=color, icon=icon_name, prefix="fa"),
+            icon=folium.DivIcon(
+                html=marker_html,
+                icon_size=(diameter, diameter),
+                icon_anchor=(diameter // 2, diameter // 2),
+                class_name="elevate-tech-marker",
+            ),
         ).add_to(fg)
 
     fg.add_to(m)
     return fg
 
 
-def add_airport_layer(m):
+def add_airport_layer(m, ui_preset, show=True):
     """Add major airport hub markers as a toggleable layer."""
-    fg = folium.FeatureGroup(name=f"Major Airport Hubs ({len(config.MAJOR_AIRPORTS)})", show=True)
+    fg = folium.FeatureGroup(
+        name=f"Major Airport Hubs ({len(config.MAJOR_AIRPORTS)})",
+        show=show,
+    )
 
     for airport in config.MAJOR_AIRPORTS:
         popup_html = (
@@ -436,11 +519,29 @@ def add_airport_layer(m):
             f"{airport['city']}<br>"
             f"<span style='color:#666;font-size:11px;'>Major service hub</span>"
         )
+        marker_html = (
+            "<div style=\""
+            "width:16px;height:16px;border-radius:999px;"
+            f"background:{ui_preset['airport_marker_fill']};"
+            f"border:1.5px solid {ui_preset['airport_marker_border']};"
+            f"box-shadow:0 3px 8px rgba(15,23,42,0.12);"
+            "display:flex;align-items:center;justify-content:center;"
+            f"color:{ui_preset['airport_marker_color']};"
+            "font-size:9px;font-weight:700;opacity:0.92;"
+            "\">"
+            "A"
+            "</div>"
+        )
         folium.Marker(
             location=[airport["lat"], airport["lon"]],
             popup=folium.Popup(popup_html, max_width=220),
             tooltip=f"{airport['code']}: {airport['name']}",
-            icon=folium.Icon(color="darkblue", icon="plane", prefix="fa"),
+            icon=folium.DivIcon(
+                html=marker_html,
+                icon_size=(16, 16),
+                icon_anchor=(8, 8),
+                class_name="elevate-airport-marker",
+            ),
         ).add_to(fg)
 
     fg.add_to(m)
@@ -588,6 +689,28 @@ def load_simulation_data():
             - summary_df["economic_total_with_overhead_usd"]
         ).fillna(0.0)
 
+    summary_df = summary_df.sort_values("scenario_hires").reset_index(drop=True)
+    if (summary_df["scenario_hires"] == 0).any():
+        baseline_cost = float(
+            summary_df.loc[
+                summary_df["scenario_hires"] == 0, "economic_total_with_overhead_usd"
+            ].iloc[0]
+        )
+    else:
+        baseline_cost = float(summary_df["economic_total_with_overhead_usd"].iloc[0])
+    summary_df["annual_cost_delta_vs_n0_usd"] = (
+        summary_df["economic_total_with_overhead_usd"] - baseline_cost
+    )
+    summary_df["annual_cost_delta_vs_n0_pct"] = np.where(
+        baseline_cost != 0,
+        (summary_df["annual_cost_delta_vs_n0_usd"] / baseline_cost) * 100.0,
+        0.0,
+    )
+    summary_df["incremental_cost_vs_prior_usd"] = (
+        summary_df["economic_total_with_overhead_usd"]
+        - summary_df["economic_total_with_overhead_usd"].shift(1)
+    ).fillna(0.0)
+
     if "unmet_appointments" not in summary_df.columns:
         summary_df["unmet_appointments"] = 0.0
     if "hire_cost_usd" not in summary_df.columns:
@@ -667,21 +790,25 @@ def load_simulation_data():
                 "economic_total_with_overhead_usd": float(
                     row.get("economic_total_with_overhead_usd", 0)
                 ),
-                "savings_vs_n0_usd": float(row.get("savings_vs_n0_usd", 0)),
-                "savings_vs_n0_pct": float(row.get("savings_vs_n0_pct", 0)),
-                "marginal_savings_from_prev_usd": float(
-                    row.get("marginal_savings_from_prev_usd", 0)
+                "annual_cost_delta_vs_n0_usd": float(
+                    row.get("annual_cost_delta_vs_n0_usd", 0)
+                ),
+                "annual_cost_delta_vs_n0_pct": float(
+                    row.get("annual_cost_delta_vs_n0_pct", 0)
+                ),
+                "incremental_cost_vs_prior_usd": float(
+                    row.get("incremental_cost_vs_prior_usd", 0)
                 ),
                 "unmet_appointments": float(row.get("unmet_appointments", 0)),
                 "hire_cost_usd": float(row.get("hire_cost_usd", 0)),
                 "mean_existing_utilization": float(row.get("mean_existing_utilization", 0)),
                 "max_existing_utilization": float(row.get("max_existing_utilization", 0)),
-                "realistic_installations_enabled": safe_float(row, "realistic_installations_enabled"),
-                "total_profit_enabled_moderate_usd": safe_float(row, "total_profit_enabled_moderate_usd"),
-                "gross_revenue_moderate_usd": safe_float(row, "gross_revenue_moderate_usd"),
-                "net_economic_value_moderate_usd": safe_float(row, "net_economic_value_moderate_usd"),
-                "break_even_installations_moderate": safe_float(row, "break_even_installations_moderate"),
-                "roi_moderate_pct": safe_float(row, "roi_moderate_pct"),
+                "install_units_enabled": safe_float(row, "install_units_enabled"),
+                "install_revenue_enabled_usd": safe_float(row, "install_revenue_enabled_usd"),
+                "install_profit_enabled_usd": safe_float(row, "install_profit_enabled_usd"),
+                "net_economic_value_install_usd": safe_float(row, "net_economic_value_install_usd"),
+                "break_even_install_units": safe_float(row, "break_even_install_units"),
+                "roi_install_pct": safe_float(row, "roi_install_pct"),
             },
             "placements": placement_records,
         }
@@ -881,11 +1008,11 @@ def resolve_appointment_assignments(territory_data):
     return result
 
 
-def build_tech_color_map(territory_data):
+def build_tech_color_map(territory_data, palette):
     """Assign a unique color from TECH_TERRITORY_PALETTE to each assignee."""
     tech_master = territory_data["tech_master"]
     newhires_df = territory_data["newhires"]
-    palette = config.TECH_TERRITORY_PALETTE
+    palette = palette or config.TECH_TERRITORY_PALETTE
 
     # Existing techs with availability > 0, sorted alphabetically
     active_techs = tech_master[
@@ -912,7 +1039,7 @@ def build_tech_color_map(territory_data):
     return color_map
 
 
-def add_territory_assignment_layers(m, assignment_map, territory_data, tech_color_map):
+def add_territory_assignment_layers(m, assignment_map, territory_data, tech_color_map, ui_preset):
     """Add per-scenario territory dot layers to the map.
 
     Returns {scenario_str: {"dots_layer": js_name, "tech_stats": {...}}}.
@@ -999,12 +1126,14 @@ def add_territory_assignment_layers(m, assignment_map, territory_data, tech_colo
                 )
                 folium.CircleMarker(
                     location=[lat, lon],
-                    radius=config.TERRITORY_DOT_RADIUS,
-                    color=color,
+                    radius=ui_preset["assignment_dot_radius"],
+                    color=ui_preset["assignment_dot_stroke"],
                     fill=True,
                     fill_color=color,
-                    fill_opacity=config.TERRITORY_DOT_OPACITY,
-                    weight=1,
+                    fill_opacity=ui_preset["assignment_dot_opacity"],
+                    weight=1.1,
+                    opacity=0.95,
+                    stroke=True,
                     popup=folium.Popup(popup_html, max_width=300),
                     tooltip=f"{tech_name}: {detail.get('account', '')}",
                 ).add_to(dots_fg)
@@ -1069,19 +1198,18 @@ def add_territory_assignment_layers(m, assignment_map, territory_data, tech_colo
     return result
 
 
-def add_simulation_layers(m, simulation_payload):
+def add_simulation_layers(m, simulation_payload, ui_preset):
     """Add one marker layer per simulation scenario and return layer JS names."""
     if not simulation_payload:
         return {}
 
     scenario_layers = {}
-    scenario_colors = ["#4a4e69", "#2a9d8f", "#f4a261", "#e76f51", "#c1121f"]
     ordered_keys = sorted(simulation_payload.keys(), key=lambda x: int(x))
     default_key = "0" if "0" in simulation_payload else ordered_keys[0]
 
     for key in ordered_keys:
         scenario = int(key)
-        color = scenario_colors[min(scenario, len(scenario_colors) - 1)]
+        color = ui_preset["new_hire_marker_color"]
         fg = folium.FeatureGroup(
             name=f"Simulation Scenario N={scenario}",
             show=(key == default_key),
@@ -1099,8 +1227,8 @@ def add_simulation_layers(m, simulation_payload):
                 f"background:{color};border:2px solid #fff;color:#fff;"
                 f"display:flex;align-items:center;justify-content:center;"
                 f"font-size:{font_size}px;font-weight:700;"
-                "box-shadow:0 3px 10px rgba(0,0,0,0.35);"
-                "\">&#9733;</div>"
+                "box-shadow:0 10px 18px rgba(15,23,42,0.28);"
+                "\">&#10010;</div>"
             )
             popup_html = (
                 f"<b>Scenario N={scenario}</b><br>"
@@ -1121,232 +1249,587 @@ def add_simulation_layers(m, simulation_payload):
     return scenario_layers
 
 
-def add_simulation_panel(m, simulation_payload, scenario_layer_names,
-                         territory_layer_names=None, tech_color_map=None):
-    """Inject scenario controls and KPI cards into the map page."""
-    if not simulation_payload or not scenario_layer_names:
-        return
+def build_simulation_kpi_explanations():
+    """Return the current KPI explanation copy for the map UI."""
+    return {
+        "total-cost": {
+            "title": "Total Cost",
+            "body": (
+                "<p><b>What:</b> The model's annual cost for this scenario.</p>"
+                "<p><b>Formula:</b> Travel Cost + Time-Zone Penalties + Hire Payroll + "
+                "Configured Overhead + Any Unmet-Appointment Penalties</p>"
+                "<p><b>Interpretation:</b> Lower is better in the core cost-first optimization. "
+                "This is the number the solver is minimizing before the install-upside view is applied.</p>"
+            ),
+        },
+        "cost-change": {
+            "title": "Annual Cost Delta vs N=0",
+            "body": (
+                "<p><b>What:</b> The difference between this scenario's total cost and the N=0 baseline.</p>"
+                "<p><b>Formula:</b> Total Cost(this scenario) - Total Cost(N=0)</p>"
+                "<p><b>Interpretation:</b> Negative means this scenario is cheaper than N=0. "
+                "Positive means it is more expensive than the no-hire baseline.</p>"
+            ),
+        },
+        "marginal-cost": {
+            "title": "Incremental Cost vs Prior Scenario",
+            "body": (
+                "<p><b>What:</b> The cost change from moving from the previous hire level to this one.</p>"
+                "<p><b>Formula:</b> Total Cost(this scenario) - Total Cost(previous scenario)</p>"
+                "<p><b>Interpretation:</b> Negative means this step is cheaper than the previous scenario. "
+                "Positive means the added hire increases total cost.</p>"
+            ),
+        },
+        "unmet": {
+            "title": "Unmet Appointments",
+            "body": (
+                "<p><b>What:</b> Service appointments that the model could not feasibly assign.</p>"
+                "<p><b>Interpretation:</b> Zero means the scenario covers the full modeled demand. "
+                "A positive value means coverage, skill, or feasibility constraints left some work unserved.</p>"
+            ),
+        },
+        "hire-payroll": {
+            "title": "Incremental Hire Payroll",
+            "body": (
+                "<p><b>What:</b> The burdened annual payroll cost for the new hires in this scenario.</p>"
+                "<p><b>Interpretation:</b> This is the company planning cost of the added headcount, "
+                "not employee take-home pay.</p>"
+            ),
+        },
+        "mean-util": {
+            "title": "Mean Load Ratio",
+            "body": (
+                "<p><b>What:</b> Average modeled load ratio across existing technicians.</p>"
+                "<p><b>Formula:</b> Mean of assigned hours / capacity hours for existing techs</p>"
+                "<p><b>Interpretation:</b> This is a calendar-based capacity proxy, not literal "
+                "timesheet or weekday payroll utilization.</p>"
+            ),
+        },
+        "max-util": {
+            "title": "Peak Load Ratio",
+            "body": (
+                "<p><b>What:</b> The highest modeled load ratio among existing technicians.</p>"
+                "<p><b>Interpretation:</b> Values near 1.000 mean at least one tech is near the top "
+                "of the model's normalized capacity range.</p>"
+            ),
+        },
+        "installs": {
+            "title": "Install Units Enabled",
+            "body": (
+                "<p><b>What:</b> Estimated patient-sim install units that freed capacity could support.</p>"
+                "<p><b>Formula:</b> Freed calendar days available / weighted-average install calendar days</p>"
+                "<p><b>Interpretation:</b> This is a family-weighted patient-sim install-only capacity view, "
+                "not guaranteed bookings.</p>"
+            ),
+        },
+        "install-revenue": {
+            "title": "Install Revenue Enabled",
+            "body": (
+                "<p><b>What:</b> Estimated top-line install revenue if all enabled patient-sim installs were completed.</p>"
+                "<p><b>Formula:</b> Install units enabled × weighted-average family install revenue</p>"
+                "<p><b>Interpretation:</b> This uses the current forward-looking patient-sim family mix, "
+                "not the old generic bucket model.</p>"
+            ),
+        },
+        "install-profit": {
+            "title": "Install Profit Enabled",
+            "body": (
+                "<p><b>What:</b> Estimated install gross profit from those enabled patient-sim installs.</p>"
+                "<p><b>Formula:</b> Install units enabled × weighted-average family install profit</p>"
+                "<p><b>Interpretation:</b> This intentionally stays install-only and does not add recurring "
+                "service-contract profit to the headline map KPIs.</p>"
+            ),
+        },
+        "net-value": {
+            "title": "Net Economic Value",
+            "body": (
+                "<p><b>What:</b> Install profit enabled minus the net cost increase of hiring.</p>"
+                "<p><b>Formula:</b> Install Profit Enabled - Net Cost Increase vs N=0</p>"
+                "<p><b>Interpretation:</b> Positive means the install-upside view outweighs the added cost. "
+                "Negative means it does not.</p>"
+            ),
+        },
+        "break-even": {
+            "title": "Break-Even Units",
+            "body": (
+                "<p><b>What:</b> The install units needed to recover the net cost increase of hiring.</p>"
+                "<p><b>Formula:</b> Net Cost Increase / weighted-average install profit per unit</p>"
+                "<p><b>Interpretation:</b> Lower is better because fewer installs are needed to justify the hire cost.</p>"
+            ),
+        },
+        "roi": {
+            "title": "ROI",
+            "body": (
+                "<p><b>What:</b> Net economic value as a percent of the scenario's net cost increase.</p>"
+                "<p><b>Formula:</b> Net Economic Value / Net Cost Increase × 100%</p>"
+                "<p><b>Interpretation:</b> Higher means the install-upside view produces more value per dollar "
+                "of added hiring cost.</p>"
+            ),
+        },
+    }
 
-    map_var = m.get_name()
-    ordered_keys = sorted(simulation_payload.keys(), key=lambda x: int(x))
-    default_key = "0" if "0" in simulation_payload else ordered_keys[0]
 
-    # Build JS object with layer variable names and resolve them at runtime.
-    layer_entries = []
-    for key in ordered_keys:
-        layer_entries.append(f'"{key}": "{scenario_layer_names[key]}"')
-    layer_js = "{\n" + ",\n".join(layer_entries) + "\n}"
-    payload_js = json.dumps(simulation_payload)
-
-    # Territory layer JS maps
-    territory_dots_entries = []
-    tech_colors_js = json.dumps(tech_color_map) if tech_color_map else "{}"
-    if territory_layer_names:
-        for key in ordered_keys:
-            info = territory_layer_names.get(key)
-            if info:
-                territory_dots_entries.append(f'"{key}": "{info["dots_layer"]}"')
-    territory_dots_js = "{\n" + ",\n".join(territory_dots_entries) + "\n}" if territory_dots_entries else "{}"
-
-    panel_html = """
+def build_simulation_panel_css(ui_preset):
+    """Return the panel CSS for the simulation UI."""
+    return f"""
     <style>
-      #sim-panel {
+      @import url('https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&display=swap');
+      #sim-panel {{
         position: fixed;
-        top: 72px;
-        left: 12px;
+        top: 16px;
+        left: 16px;
         z-index: 1200;
-        width: 320px;
-        max-height: calc(100vh - 110px);
+        width: {int(ui_preset["panel_width_px"])}px;
+        max-height: calc(100vh - 32px);
         overflow-y: auto;
-        background: rgba(255, 255, 255, 0.96);
-        border: 1px solid #cfcfcf;
-        border-radius: 10px;
-        box-shadow: 0 3px 12px rgba(0,0,0,0.22);
-        padding: 12px;
-        font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-      }
-      #sim-panel h3 {
-        margin: 0 0 8px 0;
-        font-size: 14px;
-      }
-      #sim-subtitle {
-        margin: 0 0 10px 0;
-        color: #4d4d4d;
-        font-size: 11px;
-      }
-      #sim-buttons {
-        display: flex;
-        gap: 6px;
-        flex-wrap: wrap;
-        margin-bottom: 10px;
-      }
-      .sim-btn {
-        border: 1px solid #9aa0a6;
-        background: #fff;
-        color: #222;
-        padding: 4px 8px;
-        border-radius: 14px;
-        font-size: 12px;
-        cursor: pointer;
-      }
-      .sim-btn.active {
-        background: #163b59;
-        border-color: #163b59;
-        color: #fff;
-      }
-      #sim-kpis {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 6px;
-        margin-bottom: 10px;
-      }
-      .sim-kpi {
-        background: #f7f8fa;
-        border: 1px solid #e2e5e9;
-        border-radius: 8px;
-        padding: 6px 8px;
-      }
-      .sim-kpi .label {
-        font-size: 10px;
-        color: #5f6368;
-      }
-      .sim-kpi .value {
-        margin-top: 3px;
-        font-weight: 700;
-        font-size: 12px;
-      }
-      #sim-recs-title {
-        margin: 0 0 6px 0;
-        font-size: 12px;
-        font-weight: 700;
-      }
-      #sim-recs {
-        border: 1px solid #e2e5e9;
-        border-radius: 8px;
-        background: #fbfbfc;
-        padding: 6px 8px;
-        font-size: 11px;
-      }
-      .sim-rec-row {
-        margin: 0 0 5px 0;
-        padding-bottom: 5px;
-        border-bottom: 1px dashed #e1e4e8;
-      }
-      .sim-rec-row:last-child {
-        margin-bottom: 0;
-        padding-bottom: 0;
-        border-bottom: none;
-      }
-      #sim-footnote {
-        margin-top: 8px;
-        font-size: 10px;
-        color: #666;
-      }
-      #sim-tech-legend {
-        max-height: 180px;
-        overflow-y: auto;
-        font-size: 10px;
-        margin-top: 8px;
-        border: 1px solid #e2e5e9;
-        border-radius: 8px;
-        background: #fbfbfc;
-        padding: 6px 8px;
-      }
-      #sim-tech-legend-title {
-        margin: 8px 0 0 0;
-        font-size: 12px;
-        font-weight: 700;
-      }
-      .tech-legend-row {
-        display: flex;
-        align-items: center;
-        gap: 5px;
-        padding: 2px 0;
-      }
-      .tech-legend-dot {
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-        flex-shrink: 0;
-      }
-      #sim-panel-toggle {
+        background: rgba(255, 255, 255, 0.94);
+        border: 1px solid rgba(15, 23, 42, 0.08);
+        border-radius: {int(ui_preset["panel_radius_px"])}px;
+        box-shadow: {ui_preset["panel_shadow"]};
+        backdrop-filter: blur(8px);
+        padding: 16px;
+        font-family: {ui_preset["font_family"]};
+        color: #0f172a;
+      }}
+      #sim-panel-toggle {{
         display: none;
         position: fixed;
-        top: 72px;
-        left: 12px;
+        top: 14px;
+        left: 14px;
         z-index: 1250;
-        border: 1px solid #9aa0a6;
-        border-radius: 14px;
-        background: #fff;
-        padding: 4px 10px;
+        border: 1px solid rgba(15, 23, 42, 0.12);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.96);
+        box-shadow: 0 8px 18px rgba(15, 23, 42, 0.12);
+        color: #0f172a;
+        padding: 8px 14px;
+        font: 600 12px {ui_preset["font_family"]};
+        cursor: pointer;
+      }}
+      .sim-header {{
+        margin-bottom: 18px;
+      }}
+      .sim-eyebrow {{
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #8b5e34;
+        margin-bottom: 6px;
+      }}
+      .sim-title {{
+        margin: 0;
+        font-size: 26px;
+        line-height: 1.1;
+        font-weight: 700;
+        color: #112033;
+      }}
+      #sim-subtitle {{
+        margin: 8px 0 0 0;
         font-size: 12px;
-      }
-      .kpi-clickable { cursor: pointer; transition: background 0.15s, border-color 0.15s; }
-      .kpi-clickable:hover { background: #eef1f5; border-color: #163b59; }
-      #kpi-modal-overlay {
-        display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-        background: rgba(0,0,0,0.35); z-index: 2000; justify-content: center; align-items: center;
-      }
-      #kpi-modal-overlay[style*="display: block"] { display: flex !important; }
-      #kpi-modal {
-        background: #fff; border-radius: 12px; padding: 20px 24px; max-width: 420px; width: 90%;
-        box-shadow: 0 8px 32px rgba(0,0,0,0.25); position: relative; font-size: 13px; line-height: 1.5;
-      }
-      #kpi-modal-title { font-size: 15px; font-weight: 700; margin-bottom: 10px; color: #163b59; }
-      #kpi-modal-body { color: #333; }
-      #kpi-modal-body p { margin: 6px 0; }
-      #kpi-modal-close {
-        position: absolute; top: 10px; right: 14px; font-size: 20px; cursor: pointer;
-        color: #888; background: none; border: none; line-height: 1;
-      }
-      #kpi-modal-close:hover { color: #333; }
-      @media (max-width: 900px) {
-        #sim-panel { display: none; width: 280px; }
-        #sim-panel.mobile-open { display: block; }
-        #sim-panel-toggle { display: block; }
-      }
+        color: #475569;
+      }}
+      .sim-section {{
+        margin-top: 16px;
+      }}
+      .sim-section:first-of-type {{
+        margin-top: 0;
+      }}
+      .sim-section-label {{
+        margin-bottom: 8px;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #64748b;
+      }}
+      .sim-section-heading {{
+        margin: 0;
+        font-size: 14px;
+        font-weight: 700;
+        color: #122236;
+      }}
+      .sim-section-caption {{
+        margin: 4px 0 0 0;
+        font-size: 11px;
+        color: #64748b;
+      }}
+      #sim-buttons {{
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 6px;
+      }}
+      .sim-btn {{
+        border: 1px solid rgba(15, 23, 42, 0.12);
+        background: #f8fafc;
+        color: #102235;
+        padding: 8px 0;
+        border-radius: 999px;
+        font: 600 12px {ui_preset["font_family"]};
+        cursor: pointer;
+        transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.15s;
+      }}
+      .sim-btn:hover {{
+        border-color: rgba(17, 32, 51, 0.32);
+        background: #f1f5f9;
+      }}
+      .sim-btn.active {{
+        background: #183b58;
+        border-color: #183b58;
+        color: #fff;
+      }}
+      .sim-card-grid {{
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        margin-top: 10px;
+      }}
+      .sim-kpi {{
+        background: #f8fafc;
+        border: 1px solid #e7edf3;
+        border-radius: {int(ui_preset["card_radius_px"])}px;
+        padding: 10px 11px;
+      }}
+      .kpi-clickable {{
+        cursor: pointer;
+        transition: background 0.15s, border-color 0.15s, transform 0.15s;
+      }}
+      .kpi-clickable:hover {{
+        background: #f1f5f9;
+        border-color: #cbd5e1;
+        transform: translateY(-1px);
+      }}
+      .sim-kpi .label {{
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: #64748b;
+      }}
+      .sim-kpi .value {{
+        margin-top: 6px;
+        font-size: 18px;
+        font-weight: 700;
+        line-height: 1.15;
+        color: #102235;
+      }}
+      .sim-list-box {{
+        margin-top: 10px;
+        background: #fbfdff;
+        border: 1px solid #e7edf3;
+        border-radius: {int(ui_preset["card_radius_px"])}px;
+        padding: 10px;
+      }}
+      .sim-empty {{
+        font-size: 12px;
+        color: #64748b;
+      }}
+      .sim-rec-row {{
+        padding: 10px 0;
+        border-top: 1px solid #edf2f7;
+      }}
+      .sim-rec-row:first-child {{
+        padding-top: 0;
+        border-top: none;
+      }}
+      .sim-rec-row:last-child {{
+        padding-bottom: 0;
+      }}
+      .sim-rec-top {{
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 6px;
+      }}
+      .sim-rec-city {{
+        font-size: 13px;
+        font-weight: 700;
+        color: #0f172a;
+      }}
+      .sim-airport-chip {{
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 42px;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: #eef2f7;
+        color: #475569;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+      }}
+      .sim-rec-stats {{
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+        font-size: 11px;
+        color: #475569;
+      }}
+      .sim-stat-label {{
+        display: block;
+        font-size: 10px;
+        color: #94a3b8;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+      }}
+      .sim-stat-value {{
+        display: block;
+        margin-top: 2px;
+        font-weight: 600;
+        color: #102235;
+      }}
+      .coverage-row {{
+        display: grid;
+        grid-template-columns: 12px 1fr;
+        gap: 10px;
+        align-items: start;
+        padding: 8px 0;
+        border-top: 1px solid #edf2f7;
+      }}
+      .coverage-row:first-child {{
+        padding-top: 0;
+        border-top: none;
+      }}
+      .coverage-row:last-child {{
+        padding-bottom: 0;
+      }}
+      .coverage-dot {{
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        margin-top: 2px;
+        border: 1px solid rgba(255, 255, 255, 0.9);
+        box-shadow: 0 1px 4px rgba(15, 23, 42, 0.18);
+      }}
+      .coverage-name {{
+        font-size: 12px;
+        font-weight: 700;
+        color: #102235;
+      }}
+      .coverage-meta {{
+        margin-top: 2px;
+        font-size: 11px;
+        color: #64748b;
+      }}
+      .sim-link-btn {{
+        margin-top: 8px;
+        border: none;
+        background: transparent;
+        padding: 0;
+        color: #183b58;
+        font: 600 12px {ui_preset["font_family"]};
+        cursor: pointer;
+      }}
+      .sim-link-btn:hover {{
+        color: #102235;
+      }}
+      #sim-footnote {{
+        margin-top: 16px;
+        padding-top: 12px;
+        border-top: 1px solid #edf2f7;
+        font-size: 11px;
+        line-height: 1.45;
+        color: #64748b;
+      }}
+      #kpi-modal-overlay {{
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(15, 23, 42, 0.34);
+        z-index: 2000;
+        justify-content: center;
+        align-items: center;
+        padding: 20px;
+      }}
+      #kpi-modal-overlay[style*="display: block"] {{
+        display: flex !important;
+      }}
+      #kpi-modal {{
+        width: min(520px, 100%);
+        background: #ffffff;
+        border-radius: 18px;
+        border: 1px solid rgba(15, 23, 42, 0.08);
+        box-shadow: 0 24px 60px rgba(15, 23, 42, 0.24);
+        padding: 22px 22px 18px 22px;
+        position: relative;
+        font: 400 13px/1.55 {ui_preset["font_family"]};
+        color: #334155;
+      }}
+      #kpi-modal-title {{
+        margin-bottom: 10px;
+        padding-right: 24px;
+        font-size: 17px;
+        font-weight: 700;
+        color: #102235;
+      }}
+      #kpi-modal-body p {{
+        margin: 0 0 10px 0;
+      }}
+      #kpi-modal-close {{
+        position: absolute;
+        top: 12px;
+        right: 14px;
+        border: none;
+        background: transparent;
+        color: #64748b;
+        font-size: 24px;
+        line-height: 1;
+        cursor: pointer;
+      }}
+      #kpi-modal-close:hover {{
+        color: #0f172a;
+      }}
+      @media (max-width: 900px) {{
+        #sim-panel {{
+          display: none;
+          width: min(calc(100vw - 24px), 340px);
+          top: 58px;
+          left: 12px;
+          max-height: calc(100vh - 70px);
+        }}
+        #sim-panel.mobile-open {{
+          display: block;
+        }}
+        #sim-panel-toggle {{
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+        }}
+      }}
     </style>
-    <button id="sim-panel-toggle" title="Show/hide simulation panel">Simulation</button>
+    """
+
+
+def build_simulation_panel_markup():
+    """Return the panel HTML shell."""
+    return """
+    <button id="sim-panel-toggle" title="Show or hide scenarios">Scenarios</button>
     <div id="sim-panel">
-      <h3>Simulation Scenarios</h3>
-      <p id="sim-subtitle">Cost-first optimization — all figures annualized.</p>
-      <div id="sim-buttons"></div>
-      <div id="sim-kpis">
-        <div class="sim-kpi kpi-clickable" data-kpi="total-cost"><div class="label">Total Cost</div><div class="value" id="kpi-total">-</div></div>
-        <div class="sim-kpi kpi-clickable" data-kpi="cost-change"><div class="label">Cost Change vs N=0</div><div class="value" id="kpi-savings">-</div></div>
-        <div class="sim-kpi kpi-clickable" data-kpi="marginal-cost"><div class="label">Marginal Cost Change</div><div class="value" id="kpi-marginal">-</div></div>
-        <div class="sim-kpi kpi-clickable" data-kpi="unmet" id="kpi-unmet-card"><div class="label">Unmet Appointments</div><div class="value" id="kpi-unmet">-</div></div>
-        <div class="sim-kpi kpi-clickable" data-kpi="hire-payroll"><div class="label">Annual Hire Payroll</div><div class="value" id="kpi-hire-cost">-</div></div>
-        <div class="sim-kpi kpi-clickable" data-kpi="mean-util"><div class="label">Mean Load Ratio</div><div class="value" id="kpi-mean-util">-</div></div>
-        <div class="sim-kpi kpi-clickable" data-kpi="max-util"><div class="label">Peak Load Ratio</div><div class="value" id="kpi-max-util">-</div></div>
+      <div class="sim-header">
+        <div class="sim-eyebrow">Elevate Healthcare</div>
+        <h2 class="sim-title">Service territory scenarios</h2>
+        <p id="sim-subtitle">Cost-first optimization &middot; annualized results</p>
       </div>
-      <div style="border-top: 2px solid #163b59; margin: 10px 0 8px 0;"></div>
-      <div style="font-size: 12px; font-weight: 700; margin-bottom: 2px;">Freed Capacity &amp; Profit Potential</div>
-      <div style="font-size: 9px; color: #666; margin-bottom: 6px;">Family-weighted patient-sim install-only model</div>
-      <div id="sim-kpis-revenue" style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px;">
-        <div class="sim-kpi kpi-clickable" data-kpi="installs"><div class="label">Install Units Enabled</div><div class="value" id="kpi-installs">-</div></div>
-        <div class="sim-kpi kpi-clickable" data-kpi="gross-rev"><div class="label">Gross Revenue Enabled</div><div class="value" id="kpi-gross-rev">-</div></div>
-        <div class="sim-kpi kpi-clickable" data-kpi="profit"><div class="label">Est. Profit Enabled</div><div class="value" id="kpi-profit">-</div></div>
-        <div class="sim-kpi kpi-clickable" data-kpi="net-value"><div class="label">Net Economic Value</div><div class="value" id="kpi-net-value">-</div></div>
-        <div class="sim-kpi kpi-clickable" data-kpi="break-even"><div class="label">Break-Even Installations</div><div class="value" id="kpi-break-even">-</div></div>
-        <div class="sim-kpi kpi-clickable" data-kpi="roi"><div class="label">ROI</div><div class="value" id="kpi-roi">-</div></div>
+
+      <div class="sim-section">
+        <div class="sim-section-label">Scenarios</div>
+        <div id="sim-buttons"></div>
       </div>
-      <div id="sim-recs-title">Recommended Bases</div>
-      <div id="sim-recs">No recommendations.</div>
-      <div id="sim-tech-legend-title" style="display:none;">Territory Assignments</div>
-      <div id="sim-tech-legend" style="display:none;"></div>
-      <div id="sim-footnote">Shows N=0..4 scenario outputs from the optimization pipeline. Load-ratio KPIs use the model's calendar-window capacity proxy, not literal timesheet utilization. Click any card for details.</div>
+
+      <div class="sim-section">
+        <h3 class="sim-section-heading">Cost &amp; Load</h3>
+        <div id="sim-kpis" class="sim-card-grid">
+          <div class="sim-kpi kpi-clickable" data-kpi="total-cost">
+            <div class="label">Total Cost</div>
+            <div class="value" id="kpi-total">&mdash;</div>
+          </div>
+          <div class="sim-kpi kpi-clickable" data-kpi="cost-change">
+            <div class="label">Annual Cost Delta vs N=0</div>
+            <div class="value" id="kpi-annual-delta">&mdash;</div>
+          </div>
+          <div class="sim-kpi kpi-clickable" data-kpi="marginal-cost">
+            <div class="label">Incremental Cost vs Prior Scenario</div>
+            <div class="value" id="kpi-incremental">&mdash;</div>
+          </div>
+          <div class="sim-kpi kpi-clickable" data-kpi="hire-payroll">
+            <div class="label">Incremental Hire Payroll</div>
+            <div class="value" id="kpi-hire-cost">&mdash;</div>
+          </div>
+          <div class="sim-kpi kpi-clickable" data-kpi="mean-util">
+            <div class="label">Mean Load Ratio</div>
+            <div class="value" id="kpi-mean-load">&mdash;</div>
+          </div>
+          <div class="sim-kpi kpi-clickable" data-kpi="max-util">
+            <div class="label">Peak Load Ratio</div>
+            <div class="value" id="kpi-peak-load">&mdash;</div>
+          </div>
+          <div class="sim-kpi kpi-clickable" data-kpi="unmet" id="kpi-unmet-card">
+            <div class="label">Unmet Appointments</div>
+            <div class="value" id="kpi-unmet">&mdash;</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sim-section">
+        <h3 class="sim-section-heading">Install Upside</h3>
+        <p class="sim-section-caption">Family-weighted patient-sim install-only view</p>
+        <div id="sim-kpis-revenue" class="sim-card-grid">
+          <div class="sim-kpi kpi-clickable" data-kpi="installs">
+            <div class="label">Install Units Enabled</div>
+            <div class="value" id="kpi-install-units">&mdash;</div>
+          </div>
+          <div class="sim-kpi kpi-clickable" data-kpi="install-revenue">
+            <div class="label">Install Revenue Enabled</div>
+            <div class="value" id="kpi-install-revenue">&mdash;</div>
+          </div>
+          <div class="sim-kpi kpi-clickable" data-kpi="install-profit">
+            <div class="label">Install Profit Enabled</div>
+            <div class="value" id="kpi-install-profit">&mdash;</div>
+          </div>
+          <div class="sim-kpi kpi-clickable" data-kpi="net-value">
+            <div class="label">Net Economic Value</div>
+            <div class="value" id="kpi-net-value">&mdash;</div>
+          </div>
+          <div class="sim-kpi kpi-clickable" data-kpi="break-even">
+            <div class="label">Break-Even Units</div>
+            <div class="value" id="kpi-break-even">&mdash;</div>
+          </div>
+          <div class="sim-kpi kpi-clickable" data-kpi="roi">
+            <div class="label">ROI</div>
+            <div class="value" id="kpi-roi">&mdash;</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sim-section">
+        <h3 class="sim-section-heading">Recommended Bases</h3>
+        <div id="sim-recs" class="sim-list-box">
+          <div class="sim-empty">No new-hire placements in this scenario.</div>
+        </div>
+      </div>
+
+      <div class="sim-section" id="sim-coverage-section" style="display:none;">
+        <h3 class="sim-section-heading">Coverage Assignments</h3>
+        <p class="sim-section-caption">Top assignees stay visible so the dot colors remain readable.</p>
+        <div id="sim-tech-legend" class="sim-list-box"></div>
+        <button id="sim-tech-toggle" class="sim-link-btn" style="display:none;">Show all</button>
+      </div>
+
+      <div id="sim-footnote">
+        Selected scenario results from the cost-first optimization. Load ratios are modeled
+        capacity proxies. Install cards show family-weighted patient-sim install-only upside.
+      </div>
     </div>
+
     <div id="kpi-modal-overlay">
       <div id="kpi-modal">
-        <button id="kpi-modal-close">&times;</button>
+        <button id="kpi-modal-close" aria-label="Close explanation">&times;</button>
         <div id="kpi-modal-title"></div>
         <div id="kpi-modal-body"></div>
       </div>
     </div>
     """
 
-    script_js = f"""
+
+def build_simulation_panel_script(
+    map_var,
+    payload_js,
+    layer_js,
+    territory_dots_js,
+    tech_colors_js,
+    ordered_keys,
+    default_key,
+    ui_preset,
+):
+    """Return the panel JavaScript."""
+    explanations_js = json.dumps(build_simulation_kpi_explanations())
+    return f"""
+    <script>
     (function() {{
       const mapVarName = "{map_var}";
       const scenarioData = {payload_js};
@@ -1355,113 +1838,194 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names,
       const techColors = {tech_colors_js};
       const orderedScenarios = {json.dumps(ordered_keys)};
       const defaultScenario = "{default_key}";
+      const coverageDefaultCount = {int(ui_preset["coverage_default_count"])};
+      const kpiExplanations = {explanations_js};
       const showUnmetKpi = orderedScenarios.some((s) =>
         Number(((scenarioData[s] || {{}}).kpis || {{}}).unmet_appointments || 0) > 0
       );
       const hasTerritory = Object.keys(territoryDotLayerNames).length > 0;
+      const coverageExpandedByScenario = {{}};
       let mapRef = null;
       let scenarioLayers = {{}};
       let territoryDotLayers = {{}};
 
       function money(v) {{
-        const n = Number(v || 0);
-        return "$" + n.toLocaleString(undefined, {{maximumFractionDigits: 0}});
+        const n = Math.abs(Number(v || 0));
+        return "$" + n.toLocaleString(undefined, {{ maximumFractionDigits: 0 }});
       }}
-      function pct(v) {{
+
+      function signedMoney(v) {{
         const n = Number(v || 0);
-        return n.toFixed(2) + "%";
+        if (n === 0) return "$0";
+        return (n > 0 ? "+" : "-") + money(n);
+      }}
+
+      function pct(v, digits) {{
+        const n = Number(v || 0);
+        return n.toFixed(digits === undefined ? 2 : digits) + "%";
+      }}
+
+      function signedPct(v, digits) {{
+        const n = Number(v || 0);
+        if (n === 0) return "0.00%";
+        return (n > 0 ? "+" : "-") + Math.abs(n).toFixed(digits === undefined ? 2 : digits) + "%";
       }}
 
       function renderButtons() {{
         const container = document.getElementById("sim-buttons");
+        if (!container) return;
         container.innerHTML = "";
         orderedScenarios.forEach((s) => {{
-          const b = document.createElement("button");
-          b.className = "sim-btn";
-          b.textContent = "N=" + s;
-          b.setAttribute("data-scenario", s);
-          b.onclick = () => showScenario(s);
-          container.appendChild(b);
+          const button = document.createElement("button");
+          button.className = "sim-btn";
+          button.textContent = "N=" + s;
+          button.setAttribute("data-scenario", s);
+          button.addEventListener("click", () => showScenario(s));
+          container.appendChild(button);
         }});
       }}
 
       function setActiveButton(scenario) {{
-        document.querySelectorAll(".sim-btn").forEach((b) => {{
-          b.classList.toggle("active", b.getAttribute("data-scenario") === scenario);
+        document.querySelectorAll(".sim-btn").forEach((button) => {{
+          button.classList.toggle("active", button.getAttribute("data-scenario") === scenario);
         }});
+      }}
+
+      function setSignedValueColor(element, value) {{
+        if (!element) return;
+        if (Number(value || 0) > 0) {{
+          element.style.color = "#b42318";
+        }} else if (Number(value || 0) < 0) {{
+          element.style.color = "#1f7a40";
+        }} else {{
+          element.style.color = "#102235";
+        }}
       }}
 
       function renderKpis(scenario) {{
         const item = scenarioData[scenario];
         if (!item) return;
         const k = item.kpis || {{}};
-        document.getElementById("kpi-total").textContent = money(k.economic_total_with_overhead_usd);
-        document.getElementById("kpi-savings").textContent = money(k.savings_vs_n0_usd) + " (" + pct(k.savings_vs_n0_pct) + ")";
-        document.getElementById("kpi-marginal").textContent = money(k.marginal_savings_from_prev_usd);
-        if (showUnmetKpi) {{
-          document.getElementById("kpi-unmet").textContent = Number(k.unmet_appointments || 0).toFixed(1);
-        }}
-        document.getElementById("kpi-hire-cost").textContent = money(k.hire_cost_usd);
-        document.getElementById("kpi-mean-util").textContent = Number(k.mean_existing_utilization || 0).toFixed(3);
-        document.getElementById("kpi-max-util").textContent = Number(k.max_existing_utilization || 0).toFixed(3);
 
-        // Revenue / profit KPIs
-        var installs = Number(k.realistic_installations_enabled || 0);
-        var hasInstalls = installs > 0;
-        document.getElementById("kpi-installs").textContent = hasInstalls ? installs.toFixed(1) : "\u2014";
-        document.getElementById("kpi-gross-rev").textContent = hasInstalls ? money(k.gross_revenue_moderate_usd) : "\u2014";
-        document.getElementById("kpi-profit").textContent = hasInstalls ? money(k.total_profit_enabled_moderate_usd) : "\u2014";
-        var netVal = Number(k.net_economic_value_moderate_usd || 0);
-        var netValEl = document.getElementById("kpi-net-value");
-        netValEl.textContent = hasInstalls ? money(netVal) : "\u2014";
-        netValEl.style.color = hasInstalls ? (netVal >= 0 ? "#1a7f37" : "#d1242f") : "";
-        var be = Number(k.break_even_installations_moderate || 0);
-        document.getElementById("kpi-break-even").textContent = hasInstalls ? be.toFixed(1) : "\u2014";
-        var roi = Number(k.roi_moderate_pct || 0);
-        document.getElementById("kpi-roi").textContent = (hasInstalls && roi) ? roi.toFixed(0) + "%" : "\u2014";
+        const totalEl = document.getElementById("kpi-total");
+        const annualDeltaEl = document.getElementById("kpi-annual-delta");
+        const incrementalEl = document.getElementById("kpi-incremental");
+        const hireEl = document.getElementById("kpi-hire-cost");
+        const meanLoadEl = document.getElementById("kpi-mean-load");
+        const peakLoadEl = document.getElementById("kpi-peak-load");
+        const unmetEl = document.getElementById("kpi-unmet");
+        const installUnitsEl = document.getElementById("kpi-install-units");
+        const installRevenueEl = document.getElementById("kpi-install-revenue");
+        const installProfitEl = document.getElementById("kpi-install-profit");
+        const netValueEl = document.getElementById("kpi-net-value");
+        const breakEvenEl = document.getElementById("kpi-break-even");
+        const roiEl = document.getElementById("kpi-roi");
+
+        totalEl.textContent = money(k.economic_total_with_overhead_usd);
+        annualDeltaEl.textContent = signedMoney(k.annual_cost_delta_vs_n0_usd) + " (" + signedPct(k.annual_cost_delta_vs_n0_pct, 2) + ")";
+        incrementalEl.textContent = signedMoney(k.incremental_cost_vs_prior_usd);
+        hireEl.textContent = money(k.hire_cost_usd);
+        meanLoadEl.textContent = Number(k.mean_existing_utilization || 0).toFixed(3);
+        peakLoadEl.textContent = Number(k.max_existing_utilization || 0).toFixed(3);
+
+        setSignedValueColor(annualDeltaEl, k.annual_cost_delta_vs_n0_usd);
+        setSignedValueColor(incrementalEl, k.incremental_cost_vs_prior_usd);
+
+        if (showUnmetKpi && unmetEl) {{
+          unmetEl.textContent = Number(k.unmet_appointments || 0).toFixed(1);
+        }}
+
+        const installUnits = Number(k.install_units_enabled || 0);
+        const hasInstallUpside = installUnits > 0;
+        installUnitsEl.textContent = hasInstallUpside ? installUnits.toFixed(1) : "—";
+        installRevenueEl.textContent = hasInstallUpside ? money(k.install_revenue_enabled_usd) : "—";
+        installProfitEl.textContent = hasInstallUpside ? money(k.install_profit_enabled_usd) : "—";
+        netValueEl.textContent = hasInstallUpside ? signedMoney(k.net_economic_value_install_usd) : "—";
+        breakEvenEl.textContent = hasInstallUpside ? Number(k.break_even_install_units || 0).toFixed(1) : "—";
+        roiEl.textContent = hasInstallUpside ? pct(k.roi_install_pct, 0) : "—";
+        setSignedValueColor(netValueEl, k.net_economic_value_install_usd);
       }}
 
       function renderRecommendations(scenario) {{
         const recWrap = document.getElementById("sim-recs");
+        if (!recWrap) return;
         const item = scenarioData[scenario];
         const recs = item ? (item.placements || []) : [];
         if (!recs.length) {{
-          recWrap.innerHTML = "No new-hire placements in this scenario.";
+          recWrap.innerHTML = '<div class="sim-empty">No new-hire placements in this scenario.</div>';
           return;
         }}
         recWrap.innerHTML = recs.map((r) => {{
           return `
             <div class="sim-rec-row">
-              <div><b>${{r.city}}, ${{r.state}}</b> (${{r.airport_iata}})</div>
-              <div>Hires: <b>${{Math.round(r.hires_allocated || 0)}}</b></div>
-              <div>Hours: ${{Number(r.assigned_hours || 0).toFixed(1)}}</div>
-              <div>Appointments: ${{Number(r.assigned_appointments || 0).toFixed(1)}}</div>
+              <div class="sim-rec-top">
+                <div class="sim-rec-city">${{r.city}}, ${{r.state}}</div>
+                <span class="sim-airport-chip">${{r.airport_iata}}</span>
+              </div>
+              <div class="sim-rec-stats">
+                <div>
+                  <span class="sim-stat-label">Hires</span>
+                  <span class="sim-stat-value">${{Math.round(r.hires_allocated || 0)}}</span>
+                </div>
+                <div>
+                  <span class="sim-stat-label">Hours</span>
+                  <span class="sim-stat-value">${{Number(r.assigned_hours || 0).toFixed(1)}}</span>
+                </div>
+                <div>
+                  <span class="sim-stat-label">Appointments</span>
+                  <span class="sim-stat-value">${{Number(r.assigned_appointments || 0).toFixed(1)}}</span>
+                </div>
+              </div>
             </div>`;
         }}).join("");
       }}
 
-      function renderTechLegend(scenario) {{
-        const titleEl = document.getElementById("sim-tech-legend-title");
-        const legendEl = document.getElementById("sim-tech-legend");
-        if (!titleEl || !legendEl || !hasTerritory) return;
-        const item = scenarioData[scenario];
-        const stats = item ? (item.tech_stats || {{}}) : {{}};
-        const entries = Object.entries(stats);
-        if (!entries.length) {{
-          titleEl.style.display = "none";
-          legendEl.style.display = "none";
+      function renderCoverageAssignments(scenario) {{
+        const sectionEl = document.getElementById("sim-coverage-section");
+        const listEl = document.getElementById("sim-tech-legend");
+        const toggleEl = document.getElementById("sim-tech-toggle");
+        if (!sectionEl || !listEl || !toggleEl) return;
+        if (!hasTerritory) {{
+          sectionEl.style.display = "none";
           return;
         }}
-        titleEl.style.display = "block";
-        legendEl.style.display = "block";
-        entries.sort((a, b) => (b[1].appointments || 0) - (a[1].appointments || 0));
-        legendEl.innerHTML = entries.map(([tid, s]) => {{
-          const color = techColors[tid] || "#888";
-          return `<div class="tech-legend-row">` +
-            `<span class="tech-legend-dot" style="background:${{color}};"></span>` +
-            `<span>${{s.name}} (${{s.appointments}})</span>` +
-            `</div>`;
+
+        const item = scenarioData[scenario];
+        const stats = item ? (item.tech_stats || {{}}) : {{}};
+        const entries = Object.entries(stats).sort(
+          (a, b) => Number(b[1].appointments || 0) - Number(a[1].appointments || 0)
+        );
+
+        if (!entries.length) {{
+          sectionEl.style.display = "none";
+          return;
+        }}
+
+        sectionEl.style.display = "block";
+        const expanded = !!coverageExpandedByScenario[scenario];
+        const visibleEntries = expanded ? entries : entries.slice(0, coverageDefaultCount);
+
+        listEl.innerHTML = visibleEntries.map(([techId, stat]) => {{
+          const color = techColors[techId] || "#64748b";
+          const base = stat.base ? String(stat.base) : "Base unavailable";
+          return `
+            <div class="coverage-row">
+              <span class="coverage-dot" style="background:${{color}};"></span>
+              <div>
+                <div class="coverage-name">${{stat.name}}</div>
+                <div class="coverage-meta">${{Number(stat.appointments || 0).toFixed(0)}} appointments &middot; ${{base}}</div>
+              </div>
+            </div>`;
         }}).join("");
+
+        if (entries.length > coverageDefaultCount) {{
+          toggleEl.style.display = "inline-block";
+          toggleEl.textContent = expanded
+            ? "Show fewer"
+            : `Show all ${{entries.length}} assignees`;
+        }} else {{
+          toggleEl.style.display = "none";
+        }}
       }}
 
       function showScenario(scenario) {{
@@ -1476,18 +2040,20 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names,
             mapRef.removeLayer(dotLayer);
           }}
         }});
-        const target = scenarioLayers[scenario];
-        if (target && !mapRef.hasLayer(target)) {{
-          mapRef.addLayer(target);
+
+        const targetLayer = scenarioLayers[scenario];
+        if (targetLayer && !mapRef.hasLayer(targetLayer)) {{
+          mapRef.addLayer(targetLayer);
         }}
         const dotTarget = territoryDotLayers[scenario];
         if (dotTarget && !mapRef.hasLayer(dotTarget)) {{
           mapRef.addLayer(dotTarget);
         }}
+
         setActiveButton(scenario);
         renderKpis(scenario);
         renderRecommendations(scenario);
-        renderTechLegend(scenario);
+        renderCoverageAssignments(scenario);
       }}
 
       function resolveLayers() {{
@@ -1495,32 +2061,68 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names,
         if (!mapRef) {{
           return orderedScenarios.length + 1;
         }}
+
         const resolved = {{}};
         let missing = 0;
-        orderedScenarios.forEach((s) => {{
-          const layerVar = scenarioLayerNames[s];
+        orderedScenarios.forEach((scenario) => {{
+          const layerVar = scenarioLayerNames[scenario];
           const layerObj = layerVar ? window[layerVar] : null;
           if (layerObj) {{
-            resolved[s] = layerObj;
+            resolved[scenario] = layerObj;
           }} else {{
             missing += 1;
           }}
         }});
         scenarioLayers = resolved;
-        // Resolve territory dot layers (no-op if empty)
-        orderedScenarios.forEach((s) => {{
-          const dotVar = territoryDotLayerNames[s];
-          if (dotVar && window[dotVar]) territoryDotLayers[s] = window[dotVar];
+
+        orderedScenarios.forEach((scenario) => {{
+          const dotVar = territoryDotLayerNames[scenario];
+          if (dotVar && window[dotVar]) {{
+            territoryDotLayers[scenario] = window[dotVar];
+          }}
         }});
+
         return missing;
       }}
 
       function wireMobileToggle() {{
-        const btn = document.getElementById("sim-panel-toggle");
+        const button = document.getElementById("sim-panel-toggle");
         const panel = document.getElementById("sim-panel");
-        if (!btn || !panel) return;
-        btn.addEventListener("click", () => {{
+        if (!button || !panel) return;
+        button.addEventListener("click", () => {{
           panel.classList.toggle("mobile-open");
+        }});
+      }}
+
+      function wireCoverageToggle() {{
+        const button = document.getElementById("sim-tech-toggle");
+        if (!button) return;
+        button.addEventListener("click", () => {{
+          const active = document.querySelector(".sim-btn.active");
+          if (!active) return;
+          const scenario = active.getAttribute("data-scenario");
+          coverageExpandedByScenario[scenario] = !coverageExpandedByScenario[scenario];
+          renderCoverageAssignments(scenario);
+        }});
+      }}
+
+      function wireKpiModal() {{
+        document.addEventListener("click", (event) => {{
+          const card = event.target.closest(".kpi-clickable");
+          if (card) {{
+            const kpiKey = card.getAttribute("data-kpi");
+            const info = kpiExplanations[kpiKey];
+            if (info) {{
+              document.getElementById("kpi-modal-title").textContent = info.title;
+              document.getElementById("kpi-modal-body").innerHTML = info.body;
+              document.getElementById("kpi-modal-overlay").style.display = "block";
+            }}
+            return;
+          }}
+          const overlay = document.getElementById("kpi-modal-overlay");
+          if (event.target === overlay || event.target.id === "kpi-modal-close") {{
+            overlay.style.display = "none";
+          }}
         }});
       }}
 
@@ -1533,98 +2135,77 @@ def add_simulation_panel(m, simulation_payload, scenario_layer_names,
         if (missing > 0) {{
           const recWrap = document.getElementById("sim-recs");
           if (recWrap) {{
-            recWrap.innerHTML = "Simulation layers unavailable in this map build.";
+            recWrap.innerHTML = '<div class="sim-empty">Scenario layers unavailable in this map build.</div>';
           }}
           return;
         }}
+
         renderButtons();
         const unmetCard = document.getElementById("kpi-unmet-card");
         if (unmetCard && !showUnmetKpi) {{
           unmetCard.style.display = "none";
         }}
         wireMobileToggle();
+        wireCoverageToggle();
+        wireKpiModal();
         showScenario(defaultScenario);
       }}
 
-      var kpiExplanations = {{
-        "total-cost": {{
-          title: "Total Cost",
-          body: "<p><b>What:</b> The total annual economic cost for this hiring scenario, including travel costs for all technicians, new-hire payroll, and configured canceled/voided overhead (currently $0).</p><p><b>Formula:</b> Travel Cost + Hire Payroll + Canceled/Voided Overhead</p><p><b>Interpretation:</b> Lower is better from a pure cost perspective. N=0 is the cheapest scenario because adding hires increases payroll faster than it reduces travel costs.</p>"
-        }},
-        "cost-change": {{
-          title: "Cost Change vs N=0",
-          body: "<p><b>What:</b> How much more (or less) this scenario costs compared to the N=0 baseline with no new hires.</p><p><b>Formula:</b> Total Cost(N=0) - Total Cost(this scenario)</p><p><b>Interpretation:</b> Negative values mean this scenario costs more than N=0. The optimizer minimizes cost, so all hiring scenarios show increased cost vs baseline.</p>"
-        }},
-        "marginal-cost": {{
-          title: "Marginal Cost Change",
-          body: "<p><b>What:</b> The incremental cost change from adding one more hire compared to the previous scenario (N-1).</p><p><b>Formula:</b> Total Cost(N-1) - Total Cost(N)</p><p><b>Interpretation:</b> Shows diminishing returns on travel savings. Each additional hire saves less on travel while adding a fixed $146,640 in payroll.</p>"
-        }},
-        "unmet": {{
-          title: "Unmet Appointments",
-          body: "<p><b>What:</b> Number of service appointments that could not be assigned to any technician in the optimal solution.</p><p><b>Formula:</b> Count of demand appointments with no feasible assignment</p><p><b>Interpretation:</b> Zero means all modeled appointments are served. Non-zero would indicate capacity or skill constraints preventing full coverage.</p>"
-        }},
-        "hire-payroll": {{
-          title: "Annual Hire Payroll",
-          body: "<p><b>What:</b> Total burdened annual cost for all new hires in this scenario.</p><p><b>Formula:</b> N new hires &times; $146,640/hire (burdened company planning cost)</p><p><b>Interpretation:</b> This is the fully-loaded cost including salary, benefits, equipment, and overhead \u2014 not take-home pay. It's the incremental payroll cost of expanding the workforce.</p>"
-        }},
-        "mean-util": {{
-          title: "Mean Load Ratio (Existing Techs)",
-          body: "<p><b>What:</b> Average modeled load ratio across existing technicians with non-zero modeled capacity.</p><p><b>Formula:</b> Mean of (assigned hours / capacity hours) for each existing tech</p><p><b>Interpretation:</b> Both assigned hours and capacity hours come from the model's calendar-window demand framework. This is a capacity-usage proxy, not a literal payroll or Monday-through-Friday utilization percentage.</p>"
-        }},
-        "max-util": {{
-          title: "Peak Load Ratio (Existing Techs)",
-          body: "<p><b>What:</b> The highest modeled load ratio among all existing technicians.</p><p><b>Formula:</b> Max of (assigned hours / capacity hours) across existing techs</p><p><b>Interpretation:</b> Values near 1.000 mean at least one tech is near the top of the model's normalized capacity range. This is still a modeled load ratio, not a literal timesheet utilization reading.</p>"
-        }},
-        "installs": {{
-          title: "Install Units Enabled",
-          body: "<p><b>What:</b> Estimated patient-simulator install units that freed existing-tech time could support.</p><p><b>Formula:</b> Freed calendar days available &divide; weighted-average install calendar days</p><p><b>Interpretation:</b> This uses the family-weighted patient-sim mix and calendar-day install effort assumptions. It is enabled capacity, not guaranteed bookings.</p>"
-        }},
-        "gross-rev": {{
-          title: "Gross Revenue Enabled",
-          body: "<p><b>What:</b> Total gross install revenue if all enabled patient-sim installs were completed.</p><p><b>Formula:</b> Install units enabled &times; weighted-average family revenue per install</p><p><b>Interpretation:</b> This is top-line revenue before margins. It reflects the configured forward-looking family mix, not a single flat install price.</p>"
-        }},
-        "profit": {{
-          title: "Estimated Profit Enabled",
-          body: "<p><b>What:</b> Estimated gross profit from installations only, with family-specific economics and margins applied.</p><p><b>Formula:</b> Sum of (family install units enabled &times; family revenue &times; family margin)</p><p><b>Interpretation:</b> This excludes recurring service-contract profit on purpose, so the upside view stays conservative and easier to defend.</p>"
-        }},
-        "net-value": {{
-          title: "Net Economic Value",
-          body: "<p><b>What:</b> Profit enabled minus the net cost increase of hiring. The bottom-line value of this scenario.</p><p><b>Formula:</b> Total Profit Enabled - Net Cost Increase vs N=0</p><p><b>Interpretation:</b> <span style='color:#1a7f37'>Green = positive</span> means the profit from freed capacity exceeds the cost of hiring. This is the key metric for justifying new hires from a revenue perspective.</p>"
-        }},
-        "break-even": {{
-          title: "Break-Even Installations",
-          body: "<p><b>What:</b> Minimum install units needed to recoup the net cost increase of hiring.</p><p><b>Formula:</b> Net Cost Increase &divide; weighted-average install profit per unit</p><p><b>Interpretation:</b> Lower values mean fewer enabled install units are needed to justify the added payroll cost.</p>"
-        }},
-        "roi": {{
-          title: "ROI (Return on Investment)",
-          body: "<p><b>What:</b> Net economic value as a percentage of net cost increase.</p><p><b>Formula:</b> (Net Economic Value &divide; Net Cost Increase) &times; 100%</p><p><b>Interpretation:</b> A 3,000%+ ROI means each dollar of incremental hiring cost could generate ~$30 in profit from freed capacity. High ROI reflects the low marginal cost of hiring relative to the high value of installation capacity.</p>"
-        }}
-      }};
-
-      document.addEventListener("click", function(e) {{
-        var card = e.target.closest(".kpi-clickable");
-        if (card) {{
-          var kpiKey = card.getAttribute("data-kpi");
-          var info = kpiExplanations[kpiKey];
-          if (info) {{
-            document.getElementById("kpi-modal-title").textContent = info.title;
-            document.getElementById("kpi-modal-body").innerHTML = info.body;
-            document.getElementById("kpi-modal-overlay").style.display = "block";
-          }}
-          return;
-        }}
-        var overlay = document.getElementById("kpi-modal-overlay");
-        if (e.target === overlay || e.target.id === "kpi-modal-close") {{
-          overlay.style.display = "none";
-        }}
-      }});
-
       initWhenReady(80);
     }})();
+    </script>
     """
 
+
+def add_simulation_panel(
+    m,
+    simulation_payload,
+    scenario_layer_names,
+    territory_layer_names=None,
+    tech_color_map=None,
+    ui_preset=None,
+):
+    """Inject scenario controls and KPI cards into the map page."""
+    if not simulation_payload or not scenario_layer_names:
+        return
+
+    ui_preset = ui_preset or get_map_ui_preset()
+    map_var = m.get_name()
+    ordered_keys = sorted(simulation_payload.keys(), key=lambda x: int(x))
+    default_key = "0" if "0" in simulation_payload else ordered_keys[0]
+
+    layer_entries = [f'"{key}": "{scenario_layer_names[key]}"' for key in ordered_keys]
+    layer_js = "{\n" + ",\n".join(layer_entries) + "\n}"
+    payload_js = json.dumps(simulation_payload)
+
+    territory_dots_entries = []
+    tech_colors_js = json.dumps(tech_color_map) if tech_color_map else "{}"
+    if territory_layer_names:
+        for key in ordered_keys:
+            info = territory_layer_names.get(key)
+            if info:
+                territory_dots_entries.append(f'"{key}": "{info["dots_layer"]}"')
+    territory_dots_js = (
+        "{\n" + ",\n".join(territory_dots_entries) + "\n}"
+        if territory_dots_entries
+        else "{}"
+    )
+
+    panel_html = (
+        build_simulation_panel_css(ui_preset)
+        + build_simulation_panel_markup()
+        + build_simulation_panel_script(
+            map_var,
+            payload_js,
+            layer_js,
+            territory_dots_js,
+            tech_colors_js,
+            ordered_keys,
+            default_key,
+            ui_preset,
+        )
+    )
     m.get_root().html.add_child(folium.Element(panel_html))
-    m.get_root().script.add_child(folium.Element(script_js))
 
 
 def add_simulation_unavailable_notice(m):
@@ -1643,6 +2224,7 @@ def add_simulation_unavailable_notice(m):
 
 def main():
     os.makedirs(config.DOCS_DIR, exist_ok=True)
+    ui_preset = get_map_ui_preset()
 
     print("Loading processed data...")
     appts = pd.read_csv(config.GEOCODED_APPTS_CSV)
@@ -1698,41 +2280,30 @@ def main():
         control_scale=True,
     )
 
-    # Add title
-    title_html = """
-    <div style="position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
-         z-index: 1000; background: white; padding: 8px 20px; border-radius: 6px;
-         box-shadow: 0 2px 6px rgba(0,0,0,0.3); font-size: 16px; font-weight: bold;">
-        Elevate Healthcare — Interactive Service Territory Map
-    </div>
-    """
-    m.get_root().html.add_child(folium.Element(title_html))
+    if ui_preset["show_active_assets"]:
+        print("Adding active contract choropleth...")
+        active_layer = add_active_contracts_choropleth(
+            m,
+            config.TERRITORIES_GEOJSON,
+            territory_summary,
+            layer_name=layer_active_name,
+        )
 
-    # Layer 1: Active Contract Simulators (choropleth)
-    print("Adding active contract choropleth...")
-    active_layer = add_active_contracts_choropleth(
-        m,
-        config.TERRITORIES_GEOJSON,
-        territory_summary,
-        layer_name=layer_active_name,
-    )
+        print("Adding matched install base markers...")
+        add_matched_install_markers(
+            m,
+            install_matched,
+            fg=active_layer,
+            layer_name=layer_active_name,
+        )
 
-    # Add matched install base point markers to the choropleth layer
-    print("Adding matched install base markers...")
-    add_matched_install_markers(
-        m,
-        install_matched,
-        fg=active_layer,
-        layer_name=layer_active_name,
-    )
-
-    # Layer 2: Non-active install base assets (matched to coordinates)
-    print("Adding non-active install markers...")
-    add_nonactive_install_markers(
-        m,
-        install_all=install_all_matched,
-        layer_name=layer_nonactive_name,
-    )
+    if ui_preset["show_nonactive_assets"]:
+        print("Adding non-active install markers...")
+        add_nonactive_install_markers(
+            m,
+            install_all=install_all_matched,
+            layer_name=layer_nonactive_name,
+        )
 
     # Pre-check: load territory assignment data (needed to decide show param for Layer 3)
     territory_data = None
@@ -1743,28 +2314,33 @@ def main():
 
     # Layer 3: Service Appointments
     # Hidden by default when territory viz is active (user can toggle on via LayerControl)
-    show_static_appts = territory_data is None
-    print("Adding service appointments...")
-    add_service_appointments(m, appts, layer_name=layer_appt_name, show=show_static_appts)
+    if ui_preset["show_service_appointments"]:
+        show_static_appts = territory_data is None
+        print("Adding service appointments...")
+        add_service_appointments(m, appts, layer_name=layer_appt_name, show=show_static_appts)
 
     # Layer 4: Technician Home Bases
     print("Adding technician markers...")
-    add_technician_markers(m, techs, layer_name=layer_tech_name)
+    add_technician_markers(m, techs, layer_name=layer_tech_name, ui_preset=ui_preset)
 
     # Layer 5: Territory Boundaries
-    print("Adding territory boundaries...")
-    add_territory_boundaries(m, config.TERRITORIES_GEOJSON, layer_name=layer_territory_name)
+    if ui_preset["show_territory_boundaries"]:
+        print("Adding territory boundaries...")
+        add_territory_boundaries(m, config.TERRITORIES_GEOJSON, layer_name=layer_territory_name)
 
     # Layer 6: Airport Hubs
-    print("Adding airport hubs...")
-    add_airport_layer(m)
+    if ui_preset["show_airports"]:
+        print("Adding airport hubs...")
+        add_airport_layer(m, ui_preset=ui_preset, show=True)
 
     # Layer 7: Hub Dispatch Radius Circles
-    print("Adding hub dispatch radius circles (300mi / 5hr drive)...")
-    add_hub_radius_circles(m)
+    if ui_preset["show_hub_radius"]:
+        print("Adding hub dispatch radius circles (300mi / 5hr drive)...")
+        add_hub_radius_circles(m)
 
     # Legends
-    add_service_type_legend(m, service_type_counts=service_type_counts)
+    if ui_preset["show_legends"]:
+        add_service_type_legend(m, service_type_counts=service_type_counts)
 
     # Simulation scenario UI/layers
     if getattr(config, "ENABLE_SIMULATION_UI", False):
@@ -1775,12 +2351,14 @@ def main():
             if territory_data:
                 print("  Resolving appointment-to-tech assignments...")
                 assignment_map = resolve_appointment_assignments(territory_data)
-                tech_color_map = build_tech_color_map(territory_data)
+                tech_color_map = build_tech_color_map(
+                    territory_data, ui_preset["territory_palette"]
+                )
                 total_assigned = sum(len(v) for v in assignment_map.values())
                 print(f"  Resolved {total_assigned} total appointment assignments across {len(assignment_map)} scenarios")
                 print("  Generating territory dot layers...")
                 territory_layer_info = add_territory_assignment_layers(
-                    m, assignment_map, territory_data, tech_color_map
+                    m, assignment_map, territory_data, tech_color_map, ui_preset
                 )
                 # Inject tech_stats into per-scenario payload entries for JS
                 for key, info in territory_layer_info.items():
@@ -1790,11 +2368,12 @@ def main():
             else:
                 print("  Territory assignment data not available; territory layers skipped.")
 
-            scenario_layer_names = add_simulation_layers(m, simulation_payload)
+            scenario_layer_names = add_simulation_layers(m, simulation_payload, ui_preset)
             add_simulation_panel(
                 m, simulation_payload, scenario_layer_names,
                 territory_layer_names=territory_layer_info,
                 tech_color_map=tech_color_map if territory_data else None,
+                ui_preset=ui_preset,
             )
             print(f"  Loaded scenarios: {', '.join(sorted(simulation_payload.keys(), key=lambda x: int(x) if x.isdigit() else 999))}")
         else:
@@ -1802,7 +2381,8 @@ def main():
             print("  Simulation outputs not found; panel disabled.")
 
     # Layer control
-    folium.LayerControl(collapsed=False).add_to(m)
+    if ui_preset["show_layer_control"]:
+        folium.LayerControl(collapsed=False).add_to(m)
 
     # Save
     m.save(config.MAP_OUTPUT)

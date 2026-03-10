@@ -297,6 +297,36 @@ TECH_COLORS = {
     "special": "orange",
 }
 
+# Stakeholder-facing map UI mode.
+# "stakeholder" keeps only the highest-value scenario storytelling layers.
+# "debug" preserves the broader internal inspection layers and controls.
+MAP_UI_MODE = os.environ.get("ELEVATE_MAP_UI_MODE", "stakeholder").strip().lower()
+if MAP_UI_MODE not in {"stakeholder", "debug"}:
+    MAP_UI_MODE = "stakeholder"
+
+MAP_PANEL_FONT_FAMILY = '"Public Sans", "Segoe UI", "Helvetica Neue", Arial, sans-serif'
+MAP_PANEL_WIDTH_PX = 360
+MAP_PANEL_RADIUS_PX = 18
+MAP_PANEL_SHADOW = "0 18px 40px rgba(15, 23, 42, 0.16)"
+MAP_CARD_RADIUS_PX = 14
+MAP_COVERAGE_ASSIGNMENTS_DEFAULT_COUNT = 6
+
+MAP_TECH_MARKER_COLORS = {
+    "active": "#2E6F5E",
+    "special": "#B46A2B",
+    "mixed": "#51606E",
+}
+MAP_NEW_HIRE_MARKER_COLOR = "#C5662D"
+MAP_AIRPORT_MARKER_COLOR = "#6B7280"
+MAP_AIRPORT_MARKER_FILL = "#F8FAFC"
+MAP_AIRPORT_MARKER_BORDER = "#CBD5E1"
+
+MAP_ASSIGNMENT_DOT_STROKE = "#FFFFFF"
+MAP_ASSIGNMENT_DOT_STAKEHOLDER_RADIUS = 5
+MAP_ASSIGNMENT_DOT_STAKEHOLDER_OPACITY = 0.72
+MAP_ASSIGNMENT_DOT_DEBUG_RADIUS = 6
+MAP_ASSIGNMENT_DOT_DEBUG_OPACITY = 0.85
+
 # Service appointment type colors
 SERVICE_TYPE_COLORS = {
     "PM": "blue",
@@ -371,6 +401,28 @@ TECH_TERRITORY_PALETTE = [
     "#e6beff",  # lt purple
     "#aa6e28",  # dk gold
     "#800000",  # maroon
+]
+STAKEHOLDER_TERRITORY_PALETTE = [
+    "#33658A",
+    "#3B7A57",
+    "#C06C2B",
+    "#8B4C70",
+    "#6C757D",
+    "#5E548E",
+    "#BC4749",
+    "#4D908E",
+    "#A98467",
+    "#577590",
+    "#7E9F5A",
+    "#CB997E",
+    "#6D597A",
+    "#9C6644",
+    "#8F5D5D",
+    "#6A994E",
+    "#5F0F40",
+    "#7F95D1",
+    "#3D405B",
+    "#6B705C",
 ]
 TERRITORY_DOT_RADIUS = 6            # CircleMarker radius for assignment dots
 TERRITORY_DOT_OPACITY = 0.85        # CircleMarker fill opacity
