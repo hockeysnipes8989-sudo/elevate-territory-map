@@ -17,6 +17,7 @@ import config
 from optimization_utils import (
     build_airports_df,
     country_from_state,
+    get_airport_operational_zone,
     nearest_airport_code,
     normalize_name,
     normalize_state,
@@ -173,6 +174,109 @@ def parse_model_hint(description: object, subject: object) -> str:
     return ",".join(sorted(set(families)))
 
 
+def lookup_airport_zone_fields(airport_code: object, airports_df: pd.DataFrame) -> dict:
+    """Return operational-zone fields for an airport code using the airport table."""
+    code = "" if airport_code is None else str(airport_code).strip().upper()
+    if code:
+        match = airports_df[airports_df["airport_code"] == code]
+        if not match.empty:
+            row = match.iloc[0]
+            return {
+                "operational_zone_label": row.get("operational_zone_label", "Unknown"),
+                "operational_zone_rank": row.get("operational_zone_rank"),
+                "utc_offset_standard": row.get("utc_offset_standard"),
+            }
+    fallback = get_airport_operational_zone(code)
+    return {
+        "operational_zone_label": fallback["label"],
+        "operational_zone_rank": fallback["rank"],
+        "utc_offset_standard": fallback["utc_offset_standard"],
+    }
+
+
+def assignment_scope_defaults(is_contractor: bool, contractor_scope: str) -> dict:
+    """Return per-tech assignment scope defaults."""
+    if not is_contractor:
+        return {
+            "assignment_scope_mode": config.ASSIGNMENT_SCOPE_MODE_NATIONAL,
+            "assignment_scope_state": "",
+        }
+    if contractor_scope == "texas_only":
+        return {
+            "assignment_scope_mode": config.ASSIGNMENT_SCOPE_MODE_STATE_LIMITED,
+            "assignment_scope_state": "TX",
+        }
+    return {
+        "assignment_scope_mode": config.ASSIGNMENT_SCOPE_MODE_NATIONAL,
+        "assignment_scope_state": "",
+    }
+
+
+def enrich_tech_policy_fields(
+    tech_master: pd.DataFrame,
+    airports_df: pd.DataFrame,
+    contractor_scope: str,
+) -> pd.DataFrame:
+    """Attach operational-zone and policy fields to tech_master rows."""
+    if tech_master.empty:
+        return tech_master.copy()
+
+    rows = []
+    for _, row in tech_master.iterrows():
+        enriched = row.to_dict()
+        employment_type = str(enriched.get("employment_type", "")).strip().lower()
+        is_contractor = employment_type == "contractor"
+        scope = assignment_scope_defaults(is_contractor, contractor_scope)
+        zone = lookup_airport_zone_fields(enriched.get("base_airport_iata"), airports_df)
+
+        enriched["contractor_assignment_scope"] = (
+            contractor_scope if is_contractor else enriched.get("contractor_assignment_scope", "")
+        )
+        enriched["assignment_scope_mode"] = scope["assignment_scope_mode"]
+        enriched["assignment_scope_state"] = scope["assignment_scope_state"]
+        enriched["travel_cost_policy"] = (
+            config.TRAVEL_COST_POLICY_CONTRACTOR if is_contractor else config.TRAVEL_COST_POLICY_EMPLOYEE
+        )
+        enriched["contractor_cost_multiplier"] = (
+            config.CONTRACTOR_COST_MULTIPLIER if is_contractor else 1.0
+        )
+        enriched["contractor_cost_cap_usd"] = (
+            config.CONTRACTOR_COST_CAP_USD if is_contractor else np.nan
+        )
+        enriched["contractor_dispatch_surcharge_usd"] = (
+            config.CONTRACTOR_DISPATCH_SURCHARGE_USD if is_contractor else 0.0
+        )
+        enriched["zone_policy"] = (
+            config.ZONE_POLICY_CONTRACTOR_SOFT if is_contractor else config.ZONE_POLICY_STANDARD
+        )
+        enriched["base_operational_zone_label"] = zone["operational_zone_label"]
+        enriched["base_operational_zone_rank"] = zone["operational_zone_rank"]
+        enriched["base_utc_offset_standard"] = zone["utc_offset_standard"]
+        rows.append(enriched)
+
+    return pd.DataFrame(rows).sort_values("tech_name").reset_index(drop=True)
+
+
+def enrich_candidate_zone_fields(
+    candidates: pd.DataFrame,
+    airports_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Attach operational-zone fields to candidate bases."""
+    if candidates.empty:
+        return candidates.copy()
+
+    rows = []
+    for _, row in candidates.iterrows():
+        enriched = row.to_dict()
+        zone = lookup_airport_zone_fields(enriched.get("airport_iata"), airports_df)
+        enriched["operational_zone_label"] = zone["operational_zone_label"]
+        enriched["operational_zone_rank"] = zone["operational_zone_rank"]
+        enriched["utc_offset_standard"] = zone["utc_offset_standard"]
+        rows.append(enriched)
+
+    return pd.DataFrame(rows)
+
+
 def build_tech_master(
     tech_path: str,
     airports_df: pd.DataFrame,
@@ -219,7 +323,11 @@ def build_tech_master(
                 + ", ".join(invalid_values)
             )
         print("  NOTE: using cached tech_master CSV fallback.")
-        return cached.sort_values("tech_name").reset_index(drop=True)
+        return enrich_tech_policy_fields(
+            cached.sort_values("tech_name").reset_index(drop=True),
+            airports_df,
+            contractor_scope,
+        )
 
     tech = None
 
@@ -330,7 +438,7 @@ def build_tech_master(
         )
 
     tech_master = pd.DataFrame(rows).sort_values("tech_name").reset_index(drop=True)
-    return tech_master
+    return enrich_tech_policy_fields(tech_master, airports_df, contractor_scope)
 
 
 def build_demand_appointments(
@@ -438,6 +546,12 @@ def build_demand_appointments(
     )
     demand["nearest_hub_airport"] = [x[0] for x in nearest]
     demand["nearest_hub_distance_km"] = [x[1] for x in nearest]
+    nearest_zone = demand["nearest_hub_airport"].apply(
+        lambda code: lookup_airport_zone_fields(code, airports_df)
+    )
+    demand["nearest_hub_operational_zone_label"] = [item["operational_zone_label"] for item in nearest_zone]
+    demand["nearest_hub_operational_zone_rank"] = [item["operational_zone_rank"] for item in nearest_zone]
+    demand["nearest_hub_utc_offset_standard"] = [item["utc_offset_standard"] for item in nearest_zone]
 
     output_cols = [
         "appointment_id",
@@ -460,6 +574,9 @@ def build_demand_appointments(
         "lon",
         "nearest_hub_airport",
         "nearest_hub_distance_km",
+        "nearest_hub_operational_zone_label",
+        "nearest_hub_operational_zone_rank",
+        "nearest_hub_utc_offset_standard",
         "required_hps",
         "required_ls",
         "required_patient",
@@ -556,7 +673,7 @@ def build_candidate_bases(
 
     candidates = pd.concat([major, demand_city], ignore_index=True)
     candidates = candidates.drop_duplicates(subset=["candidate_id"]).reset_index(drop=True)
-    return candidates
+    return enrich_candidate_zone_fields(candidates, airports_df)
 
 
 def main() -> None:
@@ -577,8 +694,8 @@ def main() -> None:
     parser.add_argument(
         "--contractor-assignment-scope",
         choices=["texas_only", "anywhere"],
-        default="texas_only",
-        help="Contractor assignment geography assumption.",
+        default="anywhere",
+        help="Legacy contractor geography override for generated tech policies.",
     )
     args = parser.parse_args()
 
@@ -646,6 +763,14 @@ def main() -> None:
             "hps_ls_required_appointments": int((demand["skill_class"] == "hps_ls").sum()),
         },
         "contractor_assignment_scope": args.contractor_assignment_scope,
+        "contractor_policy_defaults": {
+            "travel_cost_policy": config.TRAVEL_COST_POLICY_CONTRACTOR,
+            "zone_policy": config.ZONE_POLICY_CONTRACTOR_SOFT,
+            "contractor_cost_multiplier": config.CONTRACTOR_COST_MULTIPLIER,
+            "contractor_cost_cap_usd": config.CONTRACTOR_COST_CAP_USD,
+            "contractor_dispatch_surcharge_usd": config.CONTRACTOR_DISPATCH_SURCHARGE_USD,
+        },
+        "operational_zone_anchor": "airport_based",
         "data_span_days": int(data_span_days),
         "data_span_years": round(float(data_span_years), 4),
         "date_range_start": str(date_min.date()),

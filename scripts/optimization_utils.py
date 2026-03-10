@@ -8,6 +8,8 @@ from typing import Optional
 
 import pandas as pd
 
+import config
+
 
 US_STATE_ABBR = {
     "ALABAMA": "AL",
@@ -184,6 +186,19 @@ def nearest_airport_code(
     return str(subset.loc[idx, "airport_code"]), float(distances.loc[idx])
 
 
+def get_airport_operational_zone(airport_code: object) -> dict:
+    """Return broad operational zone metadata for an airport code."""
+    code = "" if airport_code is None else str(airport_code).strip().upper()
+    zone = config.AIRPORT_OPERATIONAL_ZONES.get(code)
+    if zone:
+        return dict(zone)
+    return {
+        "label": "Unknown",
+        "rank": None,
+        "utc_offset_standard": None,
+    }
+
+
 def build_airports_df(major_airports: list[dict]) -> pd.DataFrame:
     """Convert config.MAJOR_AIRPORTS list to dataframe."""
     rows = []
@@ -201,9 +216,11 @@ def build_airports_df(major_airports: list[dict]) -> pd.DataFrame:
                 "country": country_from_state(state_abbr),
                 "lat": float(ap.get("lat")),
                 "lon": float(ap.get("lon")),
+                "operational_zone_label": get_airport_operational_zone(ap.get("code"))["label"],
+                "operational_zone_rank": get_airport_operational_zone(ap.get("code"))["rank"],
+                "utc_offset_standard": get_airport_operational_zone(ap.get("code"))["utc_offset_standard"],
             }
         )
     df = pd.DataFrame(rows)
     df["city_norm"] = df["city_name"].map(normalize_name)
     return df
-

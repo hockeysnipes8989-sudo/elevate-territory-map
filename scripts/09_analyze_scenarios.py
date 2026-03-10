@@ -177,6 +177,7 @@ def main() -> None:
     summary_path = out_dir / "scenario_summary.csv"
     placements_path = out_dir / "scenario_placements.csv"
     util_path = out_dir / "scenario_tech_utilization.csv"
+    contractor_usage_path = out_dir / "scenario_contractor_usage.csv"
     assumptions_path = out_dir / "model_assumptions.json"
 
     require_file(summary_path)
@@ -187,6 +188,9 @@ def main() -> None:
     summary = pd.read_csv(summary_path).sort_values("scenario_hires").reset_index(drop=True)
     placements = pd.read_csv(placements_path)
     util = pd.read_csv(util_path)
+    contractor_usage = (
+        pd.read_csv(contractor_usage_path) if contractor_usage_path.exists() else pd.DataFrame()
+    )
     with open(assumptions_path, "r") as f:
         assumptions = json.load(f)
 
@@ -245,6 +249,7 @@ def main() -> None:
     period_cost_cols = [
         "travel_cost_usd",
         "out_of_region_penalty_usd",
+        "timezone_penalty_usd",
         "hire_cost_usd",
         "unmet_penalty_usd",
         "modeled_total_cost_usd",
@@ -254,6 +259,10 @@ def main() -> None:
     for col in period_cost_cols:
         if col in summary.columns:
             summary[col] = summary[col] / data_span_years
+    if not contractor_usage.empty and "total_travel_cost_usd" in contractor_usage.columns:
+        contractor_usage["total_travel_cost_usd"] = (
+            contractor_usage["total_travel_cost_usd"] / data_span_years
+        )
 
     base_row = summary.loc[summary["scenario_hires"] == 0]
     if base_row.empty:
@@ -380,6 +389,9 @@ def main() -> None:
         )
 
     util_best = util[util["scenario_hires"] == best_hires].copy()
+    contractor_best = contractor_usage[
+        contractor_usage["scenario_hires"] == best_hires
+    ].copy() if not contractor_usage.empty else pd.DataFrame()
     util_metrics = {
         "mean_utilization": float(util_best["utilization"].mean()) if not util_best.empty else np.nan,
         "max_utilization": float(util_best["utilization"].max()) if not util_best.empty else np.nan,
@@ -442,6 +454,7 @@ def main() -> None:
             ),
         },
         "capacity_model_time_unit": config.PATIENT_SIM_CAPACITY_TIME_UNIT,
+        "contractor_usage_best_scenario": df_records(contractor_best),
         "weighted_avg_install_calendar_days": weighted_avg_install_calendar_days,
         "weighted_avg_install_revenue_usd": weighted_avg_install_revenue_usd,
         "weighted_avg_install_margin": weighted_avg_install_margin,
@@ -486,6 +499,7 @@ def main() -> None:
                 ),
                 "install_revenue_enabled_usd": float(scenario_row["install_revenue_enabled_usd"]),
                 "install_profit_enabled_usd": float(scenario_row["install_profit_enabled_usd"]),
+                "timezone_penalty_usd": float(scenario_row.get("timezone_penalty_usd", 0.0)),
                 "net_cost_increase_usd": float(scenario_row["net_cost_increase_usd"]),
                 "net_economic_value_install_usd": float(scenario_row["net_economic_value_install_usd"]),
                 "roi_install_pct": (
@@ -534,6 +548,11 @@ def main() -> None:
             "same demand pool using `availability_fte` and the target "
             "utilization setting.**"
         ),
+        (
+            "- Operational zone rule: **standard employees/new hires are free at "
+            "0-1 zone jumps, penalized at 2, and blocked at 3+; contractors use "
+            "a softer penalty-only rule.**"
+        ),
         f"- Freed-capacity utilization factor: **{util_factor:.0%}**",
         f"- Weighted average install calendar days: **{weighted_avg_install_calendar_days:,.2f}**",
         f"- Weighted average install revenue: **${weighted_avg_install_revenue_usd:,.0f}**",
@@ -543,9 +562,43 @@ def main() -> None:
             "for compatibility, but its values are modeled load ratios.**"
         ),
         "",
-        "## Historical Mix (Events)",
+        "## Contractor Usage (Best Scenario)",
         "",
     ]
+    if contractor_best.empty:
+        lines.append("- No contractor usage rows in the selected scenario.")
+    else:
+        lines.extend(
+            markdown_table(
+                contractor_best,
+                [
+                    "tech_name",
+                    "assigned_appointments",
+                    "assigned_hours",
+                    "avg_zone_jump",
+                    "share_two_zone_plus",
+                    "share_three_zone_plus",
+                    "states_served",
+                ],
+                [
+                    "Technician",
+                    "Assigned Appointments",
+                    "Assigned Hours",
+                    "Avg Zone Jump",
+                    "Share 2+ Zones",
+                    "Share 3+ Zones",
+                    "States Served",
+                ],
+            )
+        )
+
+    lines.extend(
+        [
+            "",
+        "## Historical Mix (Events)",
+        "",
+        ]
+    )
     if historical_mix_events.empty:
         lines.append("- No cleaned historical event mix available.")
     else:

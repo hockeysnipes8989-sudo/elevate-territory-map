@@ -130,10 +130,11 @@ CORPORATE_TRAVEL_PREMIUM = 1.6       # Navan median $633 / BTS avg $386
 # the relative comparison between hiring levels.
 BASELINE_CANCELED_VOIDED_USD = 0.0
 
-IRS_MILEAGE_RATE_USD_PER_MI = 0.70   # 2025 IRS standard mileage rate
-RENTAL_CAR_AVG_USD = 235.0            # Navan average across 82 confirmed bookings
-HOTEL_NIGHTLY_RATE_USD = 159.0        # Navan average nightly rate (rounded from $158.76, 125 bookings)
+IRS_MILEAGE_RATE_USD_PER_MI = 0.60   # Updated planning assumption from stakeholder review
+RENTAL_CAR_DAILY_RATE_USD = 40.0     # Updated planning assumption: approximate daily rental rate
+HOTEL_NIGHTLY_RATE_USD = 165.0       # Updated planning assumption from stakeholder review
 HOTEL_AVG_NIGHTS = 2.5                # Navan average stay length (fly trip duration fallback)
+PERSONAL_VEHICLE_MAX_ONE_WAY_MI = 125.0  # Applies to Step 11 median_dist_mi (one-way)
 
 # Three-tier trip cost model (Step 11):
 #   < 100 mi:  same-day drive — mileage only, no hotel, no rental
@@ -144,6 +145,33 @@ OVERNIGHT_DRIVE_THRESHOLD_MI = 300.0
 
 # Legacy reference (fly-trip average only — use HOTEL_NIGHTLY_RATE_USD × nights instead)
 HOTEL_AVG_USD = round(HOTEL_NIGHTLY_RATE_USD * HOTEL_AVG_NIGHTS)  # $398 ≈ $399
+RENTAL_CAR_AVG_USD = round(RENTAL_CAR_DAILY_RATE_USD * HOTEL_AVG_NIGHTS)
+
+# Operational zone policy (Phase 1 realism upgrade).
+# These are intentionally broad operational buckets, not literal DST-aware
+# wall-clock offsets. The current solver works at strategic assignment level.
+OPERATIONAL_ZONE_DEFINITIONS = {
+    "Eastern": {"rank": 0, "utc_offset_standard": -5},
+    "Central": {"rank": 1, "utc_offset_standard": -6},
+    "Mountain": {"rank": 2, "utc_offset_standard": -7},
+    "Pacific": {"rank": 3, "utc_offset_standard": -8},
+    "Alaska": {"rank": 4, "utc_offset_standard": -9},
+    "Hawaii": {"rank": 5, "utc_offset_standard": -10},
+}
+
+ZONE_POLICY_STANDARD = "standard_hard_3plus"
+ZONE_POLICY_CONTRACTOR_SOFT = "contractor_soft"
+EMPLOYEE_TWO_ZONE_JUMP_PENALTY_USD = 450.0
+CONTRACTOR_TWO_ZONE_JUMP_PENALTY_USD = 250.0
+CONTRACTOR_THREE_PLUS_ZONE_JUMP_PENALTY_USD = 1500.0
+
+ASSIGNMENT_SCOPE_MODE_NATIONAL = "national"
+ASSIGNMENT_SCOPE_MODE_STATE_LIMITED = "state_limited"
+TRAVEL_COST_POLICY_EMPLOYEE = "employee_standard"
+TRAVEL_COST_POLICY_CONTRACTOR = "contractor_compressed_capped"
+CONTRACTOR_COST_MULTIPLIER = 0.65
+CONTRACTOR_COST_CAP_USD = 900.0
+CONTRACTOR_DISPATCH_SURCHARGE_USD = 125.0
 
 # Realistic installation estimate parameters (Step 09 capacity-freed analysis).
 # The freed time here comes from the repo's calendar-window demand model, so it
@@ -447,3 +475,76 @@ MAJOR_AIRPORTS = [
     {"code": "BOI", "name": "Boise Airport",          "city": "Boise, ID",            "lat": 43.5644, "lon": -116.2228},
     {"code": "ANC", "name": "Anchorage Intl",         "city": "Anchorage, AK",        "lat": 61.1744, "lon": -149.9963},
 ]
+
+AIRPORT_OPERATIONAL_ZONE_LABELS = {
+    "ABQ": "Mountain",
+    "ANC": "Alaska",
+    "ATL": "Eastern",
+    "AUS": "Central",
+    "BHM": "Central",
+    "BIL": "Mountain",
+    "BIS": "Central",
+    "BNA": "Central",
+    "BOI": "Mountain",
+    "BOS": "Eastern",
+    "BUF": "Eastern",
+    "BWI": "Eastern",
+    "CLE": "Eastern",
+    "CLT": "Eastern",
+    "CMH": "Eastern",
+    "CVG": "Eastern",
+    "DCA": "Eastern",
+    "DEN": "Mountain",
+    "DFW": "Central",
+    "DSM": "Central",
+    "DTW": "Eastern",
+    "EWR": "Eastern",
+    "FAR": "Central",
+    "IAD": "Eastern",
+    "IAH": "Central",
+    "ICT": "Central",
+    "IND": "Eastern",
+    "JAX": "Eastern",
+    "JFK": "Eastern",
+    "LAS": "Pacific",
+    "LAX": "Pacific",
+    "LGA": "Eastern",
+    "LIT": "Central",
+    "MCI": "Central",
+    "MCO": "Eastern",
+    "MDW": "Central",
+    "MEM": "Central",
+    "MIA": "Eastern",
+    "MKE": "Central",
+    "MSP": "Central",
+    "MSY": "Central",
+    "OKC": "Central",
+    "OMA": "Central",
+    "ONT": "Pacific",
+    "ORD": "Central",
+    "PDX": "Pacific",
+    "PHL": "Eastern",
+    "PHX": "Mountain",
+    "PIT": "Eastern",
+    "RDU": "Eastern",
+    "SAN": "Pacific",
+    "SAT": "Central",
+    "SEA": "Pacific",
+    "SFO": "Pacific",
+    "SHV": "Central",
+    "SJC": "Pacific",
+    "SLC": "Mountain",
+    "SMF": "Pacific",
+    "STL": "Central",
+    "TPA": "Eastern",
+    "TUL": "Central",
+    "TUS": "Mountain",
+}
+
+AIRPORT_OPERATIONAL_ZONES = {
+    code: {
+        "label": label,
+        **OPERATIONAL_ZONE_DEFINITIONS[label],
+    }
+    for code, label in AIRPORT_OPERATIONAL_ZONE_LABELS.items()
+}

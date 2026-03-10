@@ -58,6 +58,9 @@ def build_demand_nodes(demand: pd.DataFrame) -> pd.DataFrame:
     """Aggregate appointments into demand nodes by state + skill class."""
     demand = demand.copy()
     demand["state_norm"] = demand["state_norm"].map(normalize_state)
+    demand["nearest_hub_operational_zone_rank"] = pd.to_numeric(
+        demand.get("nearest_hub_operational_zone_rank"), errors="coerce"
+    )
     # duration_hours is the model's calendar-window workload measure. It is not
     # intended to represent exact hands-on labor or weekday-only work time.
     demand["duration_hours"] = pd.to_numeric(demand["duration_hours"], errors="coerce").fillna(8.0)
@@ -72,8 +75,10 @@ def build_demand_nodes(demand: pd.DataFrame) -> pd.DataFrame:
             print(f"  WARNING: {pct:.1f}% of demand rows dropped — exceeds 5% threshold. Check state_norm values.")
     demand = demand[~dropped_mask].copy()
 
+    group_cols = ["state_norm", "skill_class", "required_hps", "required_ls"]
+
     grouped = (
-        demand.groupby(["state_norm", "skill_class", "required_hps", "required_ls"], as_index=False)
+        demand.groupby(group_cols, as_index=False)
         .agg(
             appointment_count=("appointment_id", "count"),
             demand_hours=("duration_hours", "sum"),
@@ -81,6 +86,44 @@ def build_demand_nodes(demand: pd.DataFrame) -> pd.DataFrame:
         )
         .sort_values(["state_norm", "skill_class"])
         .reset_index(drop=True)
+    )
+
+    zone_counts = (
+        demand.groupby(
+            group_cols
+            + [
+                "nearest_hub_operational_zone_label",
+                "nearest_hub_operational_zone_rank",
+            ],
+            dropna=False,
+        )
+        .size()
+        .reset_index(name="zone_count")
+        .sort_values(
+            group_cols + ["zone_count", "nearest_hub_operational_zone_rank"],
+            ascending=[True, True, True, True, False, True],
+        )
+    )
+    zone_counts["node_operational_zone_share"] = (
+        zone_counts["zone_count"] / zone_counts.groupby(group_cols)["zone_count"].transform("sum")
+    )
+    zone_mode = zone_counts.drop_duplicates(subset=group_cols, keep="first").copy()
+    grouped = grouped.merge(
+        zone_mode[
+            group_cols
+            + [
+                "nearest_hub_operational_zone_label",
+                "nearest_hub_operational_zone_rank",
+                "node_operational_zone_share",
+            ]
+        ].rename(
+            columns={
+                "nearest_hub_operational_zone_label": "node_operational_zone_label",
+                "nearest_hub_operational_zone_rank": "node_operational_zone_rank",
+            }
+        ),
+        on=group_cols,
+        how="left",
     )
     grouped["avg_hours_per_appointment"] = grouped["demand_hours"] / grouped["appointment_count"]
     grouped["node_id"] = grouped.apply(
@@ -92,12 +135,52 @@ def build_demand_nodes(demand: pd.DataFrame) -> pd.DataFrame:
 
 def build_full_cost_lookup(
     full_cost_df: pd.DataFrame,
-) -> dict[tuple[str, str], float]:
-    """Build (tech_or_candidate_id, node_id) → unit_cost_usd from full_cost_table.csv."""
+) -> dict[tuple[str, str], dict]:
+    """Build (tech_or_candidate_id, node_id) → full cost metadata row."""
     return {
-        (str(row.tech_or_candidate_id), str(row.node_id)): float(row.unit_cost_usd)
-        for row in full_cost_df.itertuples(index=False)
+        (str(row["tech_or_candidate_id"]), str(row["node_id"])): row
+        for row in full_cost_df.to_dict("records")
     }
+
+
+def zone_jump_count(base_rank: object, node_rank: object) -> int | None:
+    """Return broad operational zone jump count."""
+    if pd.isna(base_rank) or pd.isna(node_rank):
+        return None
+    return abs(int(base_rank) - int(node_rank))
+
+
+def evaluate_zone_policy(zone_jump: int | None, zone_policy: str) -> tuple[bool, float]:
+    """Return (feasible, penalty_usd_per_appointment) for a zone policy."""
+    if zone_jump is None:
+        return True, 0.0
+    if zone_policy == config.ZONE_POLICY_STANDARD:
+        if zone_jump >= 3:
+            return False, 0.0
+        if zone_jump == 2:
+            return True, float(config.EMPLOYEE_TWO_ZONE_JUMP_PENALTY_USD)
+        return True, 0.0
+    if zone_policy == config.ZONE_POLICY_CONTRACTOR_SOFT:
+        if zone_jump >= 3:
+            return True, float(config.CONTRACTOR_THREE_PLUS_ZONE_JUMP_PENALTY_USD)
+        if zone_jump == 2:
+            return True, float(config.CONTRACTOR_TWO_ZONE_JUMP_PENALTY_USD)
+        return True, 0.0
+    return True, 0.0
+
+
+def tech_assignment_scope_fields(tech: pd.Series, contractor_scope: str) -> tuple[str, str]:
+    """Return assignment scope mode/state with fallback for legacy data."""
+    mode = str(tech.get("assignment_scope_mode", "")).strip()
+    state = str(tech.get("assignment_scope_state", "")).strip()
+    if state.lower() == "nan":
+        state = ""
+    is_contractor = str(tech.get("employment_type", "")).strip().lower() == "contractor"
+    if mode:
+        return mode, state
+    if is_contractor and contractor_scope == "texas_only":
+        return config.ASSIGNMENT_SCOPE_MODE_STATE_LIMITED, "TX"
+    return config.ASSIGNMENT_SCOPE_MODE_NATIONAL, ""
 
 
 def tech_eligible_for_node(tech: pd.Series, node: pd.Series, contractor_scope: str) -> bool:
@@ -110,12 +193,20 @@ def tech_eligible_for_node(tech: pd.Series, node: pd.Series, contractor_scope: s
         return False
 
     node_state = str(node.get("state_norm", ""))
-    is_contractor = str(tech.get("employment_type", "")).lower() == "contractor"
     florida_only = int(tech.get("constraint_florida_only", 0)) == 1
+    scope_mode, scope_state = tech_assignment_scope_fields(tech, contractor_scope)
+    zone_policy = str(tech.get("zone_policy", config.ZONE_POLICY_STANDARD)).strip() or config.ZONE_POLICY_STANDARD
+    jump = zone_jump_count(
+        tech.get("base_operational_zone_rank"),
+        node.get("node_operational_zone_rank"),
+    )
+    zone_feasible, _ = evaluate_zone_policy(jump, zone_policy)
 
     if florida_only and node_state != "FL":
         return False
-    if is_contractor and contractor_scope == "texas_only" and node_state != "TX":
+    if scope_mode == config.ASSIGNMENT_SCOPE_MODE_STATE_LIMITED and node_state != scope_state:
+        return False
+    if not zone_feasible:
         return False
 
     # If no origin airport, don't allow assignment.
@@ -147,6 +238,7 @@ def _infeasible_summary(hire_count: int, message: str, baseline_canceled_voided_
         "unmet_appointments": None,
         "travel_cost_usd": None,
         "out_of_region_penalty_usd": None,
+        "timezone_penalty_usd": None,
         "hire_cost_usd": None,
         "unmet_penalty_usd": None,
         "modeled_total_cost_usd": None,
@@ -164,7 +256,7 @@ def solve_scenario(
     tech: pd.DataFrame,
     nodes: pd.DataFrame,
     candidates: pd.DataFrame,
-    full_cost_lookup: dict[tuple[str, str], float],
+    full_cost_lookup: dict[tuple[str, str], dict],
     contractor_scope: str,
     target_utilization: float,
     out_of_region_penalty: float,
@@ -201,9 +293,11 @@ def solve_scenario(
     u_idx: dict[int, int] = {}
     candidate_indices = list(candidates.index) if hire_count > 0 else []
     _full_cost_fallback_count = 0  # track missing full_cost_lookup entries
+    _fallback_trip_span_days = max(1, int(np.ceil(config.HOTEL_AVG_NIGHTS)))
     _fallback_cost = (
         config.BTS_NATIONAL_FALLBACK * config.CORPORATE_TRAVEL_PREMIUM
-        + config.RENTAL_CAR_AVG_USD + config.HOTEL_AVG_USD
+        + (config.RENTAL_CAR_DAILY_RATE_USD * _fallback_trip_span_days)
+        + (config.HOTEL_NIGHTLY_RATE_USD * _fallback_trip_span_days)
     )
 
     # Existing tech assignment vars: appointments assigned to node.
@@ -221,10 +315,19 @@ def solve_scenario(
             _fc_key = (str(trow["tech_id"]), str(nrow["node_id"]))
             if _fc_key not in full_cost_lookup:
                 _full_cost_fallback_count += 1
-            base_cost = full_cost_lookup.get(_fc_key, _fallback_cost)
+            cost_meta = full_cost_lookup.get(_fc_key, {})
+            base_cost = float(cost_meta.get("unit_cost_usd", _fallback_cost))
             is_out_region = int(str(trow.get("base_state", "")) != str(nrow["state_norm"]))
             penalty = out_of_region_penalty if is_out_region else 0.0
-            obj.append(base_cost + penalty)
+            zone_policy = str(
+                trow.get("zone_policy", config.ZONE_POLICY_STANDARD)
+            ).strip() or config.ZONE_POLICY_STANDARD
+            jump = zone_jump_count(
+                trow.get("base_operational_zone_rank"),
+                nrow.get("node_operational_zone_rank"),
+            )
+            _, zone_penalty = evaluate_zone_policy(jump, zone_policy)
+            obj.append(base_cost + penalty + zone_penalty)
             meta.append(
                 {
                     "var_type": "x",
@@ -232,6 +335,10 @@ def solve_scenario(
                     "node_idx": ni,
                     "base_cost": base_cost,
                     "out_region_penalty": penalty,
+                    "zone_policy": zone_policy,
+                    "zone_jump_count": jump,
+                    "timezone_penalty": zone_penalty,
+                    "cost_meta": cost_meta,
                 }
             )
 
@@ -257,10 +364,18 @@ def solve_scenario(
             _fc_key = (str(crow["candidate_id"]), str(nrow["node_id"]))
             if _fc_key not in full_cost_lookup:
                 _full_cost_fallback_count += 1
-            base_cost = full_cost_lookup.get(_fc_key, _fallback_cost)
+            cost_meta = full_cost_lookup.get(_fc_key, {})
+            base_cost = float(cost_meta.get("unit_cost_usd", _fallback_cost))
             is_out_region = int(str(crow.get("state", "")) != str(nrow["state_norm"]))
             penalty = out_of_region_penalty if is_out_region else 0.0
-            obj.append(base_cost + penalty)
+            jump = zone_jump_count(
+                crow.get("operational_zone_rank"),
+                nrow.get("node_operational_zone_rank"),
+            )
+            zone_feasible, zone_penalty = evaluate_zone_policy(jump, config.ZONE_POLICY_STANDARD)
+            if node_requires_hps or not zone_feasible:
+                ub[-1] = 0.0
+            obj.append(base_cost + penalty + zone_penalty)
             meta.append(
                 {
                     "var_type": "z",
@@ -268,6 +383,10 @@ def solve_scenario(
                     "node_idx": ni,
                     "base_cost": base_cost,
                     "out_region_penalty": penalty,
+                    "zone_policy": config.ZONE_POLICY_STANDARD,
+                    "zone_jump_count": jump,
+                    "timezone_penalty": zone_penalty,
+                    "cost_meta": cost_meta,
                 }
             )
 
@@ -397,6 +516,7 @@ def solve_scenario(
 
     travel_cost = 0.0
     out_region_cost = 0.0
+    timezone_penalty_cost = 0.0
     unmet_appointments = 0.0
 
     for (ti, ni), idx in x_idx.items():
@@ -408,8 +528,11 @@ def solve_scenario(
         m = meta[idx]
         base = float(m["base_cost"])
         pen = float(m["out_region_penalty"])
+        zone_penalty = float(m.get("timezone_penalty", 0.0))
+        cost_meta = m.get("cost_meta", {})
         travel_cost += val * base
         out_region_cost += val * pen
+        timezone_penalty_cost += val * zone_penalty
         hours = val * float(nrow["avg_hours_per_appointment"])
         existing_rows.append(
             {
@@ -426,8 +549,22 @@ def solve_scenario(
                 "assigned_hours": hours,
                 "unit_travel_cost_usd": base,
                 "unit_out_region_penalty_usd": pen,
+                "unit_timezone_penalty_usd": zone_penalty,
+                "zone_policy": m.get("zone_policy"),
+                "zone_jump_count": m.get("zone_jump_count"),
+                "base_operational_zone_label": trow.get("base_operational_zone_label"),
+                "node_operational_zone_label": nrow.get("node_operational_zone_label"),
+                "travel_cost_policy": cost_meta.get("travel_cost_policy", trow.get("travel_cost_policy")),
+                "trip_mode": cost_meta.get("trip_mode"),
+                "ground_transport_mode": cost_meta.get("ground_transport_mode"),
+                "median_dist_mi": cost_meta.get("median_dist_mi"),
+                "trip_span_days": cost_meta.get("trip_span_days"),
+                "rental_days": cost_meta.get("rental_days"),
+                "employee_style_unit_cost_usd": cost_meta.get("employee_style_unit_cost_usd", base),
+                "effective_unit_cost_usd": cost_meta.get("effective_unit_cost_usd", base),
                 "total_travel_cost_usd": val * base,
                 "total_out_region_penalty_usd": val * pen,
+                "total_timezone_penalty_usd": val * zone_penalty,
             }
         )
 
@@ -440,8 +577,11 @@ def solve_scenario(
         m = meta[idx]
         base = float(m["base_cost"])
         pen = float(m["out_region_penalty"])
+        zone_penalty = float(m.get("timezone_penalty", 0.0))
+        cost_meta = m.get("cost_meta", {})
         travel_cost += val * base
         out_region_cost += val * pen
+        timezone_penalty_cost += val * zone_penalty
         hours = val * float(nrow["avg_hours_per_appointment"])
         new_rows.append(
             {
@@ -458,8 +598,22 @@ def solve_scenario(
                 "assigned_hours": hours,
                 "unit_travel_cost_usd": base,
                 "unit_out_region_penalty_usd": pen,
+                "unit_timezone_penalty_usd": zone_penalty,
+                "zone_policy": m.get("zone_policy"),
+                "zone_jump_count": m.get("zone_jump_count"),
+                "base_operational_zone_label": crow.get("operational_zone_label"),
+                "node_operational_zone_label": nrow.get("node_operational_zone_label"),
+                "travel_cost_policy": cost_meta.get("travel_cost_policy", config.TRAVEL_COST_POLICY_EMPLOYEE),
+                "trip_mode": cost_meta.get("trip_mode"),
+                "ground_transport_mode": cost_meta.get("ground_transport_mode"),
+                "median_dist_mi": cost_meta.get("median_dist_mi"),
+                "trip_span_days": cost_meta.get("trip_span_days"),
+                "rental_days": cost_meta.get("rental_days"),
+                "employee_style_unit_cost_usd": cost_meta.get("employee_style_unit_cost_usd", base),
+                "effective_unit_cost_usd": cost_meta.get("effective_unit_cost_usd", base),
                 "total_travel_cost_usd": val * base,
                 "total_out_region_penalty_usd": val * pen,
+                "total_timezone_penalty_usd": val * zone_penalty,
             }
         )
 
@@ -526,7 +680,71 @@ def solve_scenario(
 
     hire_cost = float(sum(int(round(v)) for v in y_values.values()) * annual_hire_cost_usd)
     unmet_cost = float(unmet_appointments * unmet_penalty)
-    modeled_total = float(travel_cost + out_region_cost + hire_cost + unmet_cost)
+    modeled_total = float(travel_cost + out_region_cost + timezone_penalty_cost + hire_cost + unmet_cost)
+
+    contractor_usage_df = pd.DataFrame()
+    if not existing_df.empty:
+        contractor_df = existing_df[
+            existing_df["employment_type"].astype(str).str.lower().eq("contractor")
+        ].copy()
+        if not contractor_df.empty:
+            contractor_df["zone_jump_count"] = pd.to_numeric(
+                contractor_df["zone_jump_count"], errors="coerce"
+            ).fillna(0.0)
+            contractor_df["weighted_zone_jump"] = (
+                contractor_df["assigned_appointments"] * contractor_df["zone_jump_count"]
+            )
+            contractor_df["two_zone_plus_appointments"] = np.where(
+                contractor_df["zone_jump_count"] >= 2,
+                contractor_df["assigned_appointments"],
+                0.0,
+            )
+            contractor_df["three_zone_plus_appointments"] = np.where(
+                contractor_df["zone_jump_count"] >= 3,
+                contractor_df["assigned_appointments"],
+                0.0,
+            )
+            contractor_usage_df = (
+                contractor_df.groupby(["scenario_hires", "tech_id", "tech_name"], as_index=False)
+                .agg(
+                    assigned_appointments=("assigned_appointments", "sum"),
+                    assigned_hours=("assigned_hours", "sum"),
+                    total_travel_cost_usd=("total_travel_cost_usd", "sum"),
+                    weighted_zone_jump=("weighted_zone_jump", "sum"),
+                    two_zone_plus_appointments=("two_zone_plus_appointments", "sum"),
+                    three_zone_plus_appointments=("three_zone_plus_appointments", "sum"),
+                    states_served=("state_norm", "nunique"),
+                )
+            )
+            contractor_usage_df["avg_zone_jump"] = np.where(
+                contractor_usage_df["assigned_appointments"] > 0,
+                contractor_usage_df["weighted_zone_jump"] / contractor_usage_df["assigned_appointments"],
+                0.0,
+            )
+            contractor_usage_df["share_two_zone_plus"] = np.where(
+                contractor_usage_df["assigned_appointments"] > 0,
+                contractor_usage_df["two_zone_plus_appointments"] / contractor_usage_df["assigned_appointments"],
+                0.0,
+            )
+            contractor_usage_df["share_three_zone_plus"] = np.where(
+                contractor_usage_df["assigned_appointments"] > 0,
+                contractor_usage_df["three_zone_plus_appointments"] / contractor_usage_df["assigned_appointments"],
+                0.0,
+            )
+            contractor_usage_df = contractor_usage_df[
+                [
+                    "scenario_hires",
+                    "tech_id",
+                    "tech_name",
+                    "assigned_appointments",
+                    "assigned_hours",
+                    "total_travel_cost_usd",
+                    "avg_zone_jump",
+                    "share_two_zone_plus",
+                    "share_three_zone_plus",
+                    "states_served",
+                ]
+            ]
 
     summary = {
         "scenario_hires": int(hire_count),
@@ -541,6 +759,7 @@ def solve_scenario(
         "unmet_appointments": float(unmet_appointments),
         "travel_cost_usd": travel_cost,
         "out_of_region_penalty_usd": out_region_cost,
+        "timezone_penalty_usd": timezone_penalty_cost,
         "hire_cost_usd": hire_cost,
         "unmet_penalty_usd": unmet_cost,
         "modeled_total_cost_usd": modeled_total,
@@ -556,6 +775,7 @@ def solve_scenario(
         "new_assignments": new_df,
         "placements": placements_df,
         "tech_utilization": util_df,
+        "contractor_usage": contractor_usage_df,
     }
 
 
@@ -600,7 +820,7 @@ def main() -> None:
         "--contractor-assignment-scope",
         choices=["texas_only", "anywhere"],
         default=None,
-        help="Override contractor assignment geography.",
+        help="Legacy override for contractor assignment scope.",
     )
     args = parser.parse_args()
     if args.annual_hire_cost_usd < 0:
@@ -637,6 +857,64 @@ def main() -> None:
         tech[col] = pd.to_numeric(tech[col], errors="coerce").fillna(0).astype(int)
     tech["availability_fte"] = pd.to_numeric(tech["availability_fte"], errors="coerce").fillna(0.0)
     tech["base_state"] = tech["base_state"].map(normalize_state)
+    tech["base_operational_zone_rank"] = pd.to_numeric(
+        tech.get("base_operational_zone_rank"), errors="coerce"
+    )
+    candidates["operational_zone_rank"] = pd.to_numeric(
+        candidates.get("operational_zone_rank"), errors="coerce"
+    )
+    if "assignment_scope_mode" not in tech.columns:
+        is_contractor = tech["employment_type"].astype(str).str.lower().eq("contractor")
+        tech["assignment_scope_mode"] = np.where(
+            is_contractor & (args.contractor_assignment_scope == "texas_only"),
+            config.ASSIGNMENT_SCOPE_MODE_STATE_LIMITED,
+            config.ASSIGNMENT_SCOPE_MODE_NATIONAL,
+        )
+    if "assignment_scope_state" not in tech.columns:
+        is_contractor = tech["employment_type"].astype(str).str.lower().eq("contractor")
+        tech["assignment_scope_state"] = np.where(
+            is_contractor & (args.contractor_assignment_scope == "texas_only"),
+            "TX",
+            "",
+        )
+    if "travel_cost_policy" not in tech.columns:
+        tech["travel_cost_policy"] = np.where(
+            tech["employment_type"].astype(str).str.lower().eq("contractor"),
+            config.TRAVEL_COST_POLICY_CONTRACTOR,
+            config.TRAVEL_COST_POLICY_EMPLOYEE,
+        )
+    if "contractor_cost_multiplier" not in tech.columns:
+        tech["contractor_cost_multiplier"] = np.where(
+            tech["employment_type"].astype(str).str.lower().eq("contractor"),
+            config.CONTRACTOR_COST_MULTIPLIER,
+            1.0,
+        )
+    if "contractor_cost_cap_usd" not in tech.columns:
+        tech["contractor_cost_cap_usd"] = np.where(
+            tech["employment_type"].astype(str).str.lower().eq("contractor"),
+            config.CONTRACTOR_COST_CAP_USD,
+            np.nan,
+        )
+    if "contractor_dispatch_surcharge_usd" not in tech.columns:
+        tech["contractor_dispatch_surcharge_usd"] = np.where(
+            tech["employment_type"].astype(str).str.lower().eq("contractor"),
+            config.CONTRACTOR_DISPATCH_SURCHARGE_USD,
+            0.0,
+        )
+    if "zone_policy" not in tech.columns:
+        tech["zone_policy"] = np.where(
+            tech["employment_type"].astype(str).str.lower().eq("contractor"),
+            config.ZONE_POLICY_CONTRACTOR_SOFT,
+            config.ZONE_POLICY_STANDARD,
+        )
+    if args.contractor_assignment_scope:
+        contractor_mask = tech["employment_type"].astype(str).str.lower().eq("contractor")
+        if args.contractor_assignment_scope == "texas_only":
+            tech.loc[contractor_mask, "assignment_scope_mode"] = config.ASSIGNMENT_SCOPE_MODE_STATE_LIMITED
+            tech.loc[contractor_mask, "assignment_scope_state"] = "TX"
+        else:
+            tech.loc[contractor_mask, "assignment_scope_mode"] = config.ASSIGNMENT_SCOPE_MODE_NATIONAL
+            tech.loc[contractor_mask, "assignment_scope_state"] = ""
 
     demand_nodes = build_demand_nodes(demand)
 
@@ -658,6 +936,7 @@ def main() -> None:
     all_new = []
     all_placements = []
     all_util = []
+    all_contractors = []
 
     canceled_voided_usd = config.BASELINE_CANCELED_VOIDED_USD
 
@@ -723,18 +1002,22 @@ def main() -> None:
             all_placements.append(result["placements"])
         if not result["tech_utilization"].empty:
             all_util.append(result["tech_utilization"])
+        if not result["contractor_usage"].empty:
+            all_contractors.append(result["contractor_usage"])
 
     summary_df = pd.DataFrame(scenario_summaries).sort_values("scenario_hires")
     existing_df = pd.concat(all_existing, ignore_index=True) if all_existing else pd.DataFrame()
     new_df = pd.concat(all_new, ignore_index=True) if all_new else pd.DataFrame()
     placements_df = pd.concat(all_placements, ignore_index=True) if all_placements else pd.DataFrame()
     util_df = pd.concat(all_util, ignore_index=True) if all_util else pd.DataFrame()
+    contractor_usage_df = pd.concat(all_contractors, ignore_index=True) if all_contractors else pd.DataFrame()
 
     summary_out = out_dir / "scenario_summary.csv"
     existing_out = out_dir / "scenario_assignments_existing.csv"
     new_out = out_dir / "scenario_assignments_newhires.csv"
     placements_out = out_dir / "scenario_placements.csv"
     util_out = out_dir / "scenario_tech_utilization.csv"
+    contractor_out = out_dir / "scenario_contractor_usage.csv"
     assumptions_out = out_dir / "model_assumptions.json"
 
     summary_df.to_csv(summary_out, index=False)
@@ -742,6 +1025,7 @@ def main() -> None:
     new_df.to_csv(new_out, index=False)
     placements_df.to_csv(placements_out, index=False)
     util_df.to_csv(util_out, index=False)
+    contractor_usage_df.to_csv(contractor_out, index=False)
 
     assumptions = {
         "min_new_hires": args.min_new_hires,
@@ -773,13 +1057,28 @@ def main() -> None:
             "load ratio, not a literal payroll-utilization benchmark."
         ),
         "contractor_assignment_scope": contractor_scope,
+        "contractor_policy": {
+            "travel_cost_policy": config.TRAVEL_COST_POLICY_CONTRACTOR,
+            "assignment_scope_mode_default": config.ASSIGNMENT_SCOPE_MODE_NATIONAL,
+            "cost_multiplier_default": config.CONTRACTOR_COST_MULTIPLIER,
+            "cost_cap_usd_default": config.CONTRACTOR_COST_CAP_USD,
+            "dispatch_surcharge_usd_default": config.CONTRACTOR_DISPATCH_SURCHARGE_USD,
+            "zone_policy_default": config.ZONE_POLICY_CONTRACTOR_SOFT,
+        },
+        "operational_zone_policy": {
+            "anchor": "airport_based_operational_zone_buckets",
+            "standard_rule": "0-1 free, 2 penalized, 3+ blocked",
+            "contractor_rule": "0-1 free, 2 penalized, 3+ heavily penalized",
+            "arizona_handling": "Mapped to a fixed Mountain operational bucket; DST ignored.",
+        },
         "full_cost_model": True,
         "flight_cost_model": "BTS Q2 2025 lookup × corporate premium",
         "full_cost_model_constants": {
             "bts_national_fallback_usd": config.BTS_NATIONAL_FALLBACK,
             "corporate_travel_premium": config.CORPORATE_TRAVEL_PREMIUM,
             "irs_mileage_rate_usd_per_mi": config.IRS_MILEAGE_RATE_USD_PER_MI,
-            "rental_car_avg_usd": config.RENTAL_CAR_AVG_USD,
+            "rental_car_daily_rate_usd": config.RENTAL_CAR_DAILY_RATE_USD,
+            "personal_vehicle_max_one_way_mi": config.PERSONAL_VEHICLE_MAX_ONE_WAY_MI,
             "hotel_nightly_rate_usd": config.HOTEL_NIGHTLY_RATE_USD,
             "hotel_avg_nights": config.HOTEL_AVG_NIGHTS,
             "hotel_avg_usd_legacy": config.HOTEL_AVG_USD,
@@ -800,6 +1099,7 @@ def main() -> None:
     print(f"Saved: {new_out}")
     print(f"Saved: {placements_out}")
     print(f"Saved: {util_out}")
+    print(f"Saved: {contractor_out}")
     print(f"Saved: {assumptions_out}")
     print("\nScenario summary:")
     print(summary_df.to_string(index=False))

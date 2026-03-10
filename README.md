@@ -81,17 +81,30 @@ Step 11 uses a three-tier trip model:
 - Overnight drive: `100-300` miles
 - Fly: `>=300` miles
 
+Ground-transport detail inside the drive tiers:
+- drive trips below `125` one-way median miles use personal-vehicle mileage
+- drive trips at or above `125` one-way median miles switch to rental-car economics
+- rental days follow the model's trip-span proxy, not a flat one-time rental fee
+
 ## Current Model Rules
 
 - Annual burdened planning cost per incremental new hire: `$146,640`
 - Unmet demand penalty: `$5,000` per appointment
 - Out-of-region soft penalty default: `$0`
+- Mileage reimbursement: `$0.60` per mile
+- Hotel proxy: `$165` per night
+- Rental-car proxy: `$40` per day
 - Canada excluded from optimization scope
 - Current verified technician roster: `16`
 - Total effective FTE in the current modeled roster: `12.55`
 - New hires cannot serve HPS nodes
 - AVS is treated as Learning Space for dispatch skill logic
 - New-hire concentration cap defaults to `1` per base
+- HTX contractors remain in Step 08 as real capacity
+- HTX contractors are modeled as **national** flexible resources, not Texas-only resources
+- HTX contractors use a compressed-and-capped travel-cost proxy plus a dispatch surcharge
+- Standard employees and new hires are free at `0-1` operational zone jumps, penalized at `2`, and blocked at `3+`
+- Contractors use a softer operational-zone rule: free at `0-1`, penalized at `2`, heavily penalized at `3+`
 
 ## Step 08 Capacity Logic
 
@@ -108,6 +121,17 @@ Important interpretation:
 - the resulting utilization value is a **modeled load ratio**
 
 There is no literal fixed `2,080-hour` payroll-style denominator in the current solver.
+
+## Step 08 Operational Realism Rules
+
+Phase 1 added a small realism layer without changing the cost-first structure of the solver:
+
+- Every tech base, candidate base, and demand node now gets an **operational zone** bucket from its airport anchor.
+- The solver works with broad zone jumps like Eastern → Central, not precise wall-clock math.
+- Arizona is kept in a fixed **Mountain** bucket so DST quirks do not create weird behavior.
+- Step 08 now carries a separate `timezone_penalty_usd` term in the modeled cost output.
+- HTX contractors stay in the solve, but they are no longer treated as Texas-only.
+- Contractors are also **not** treated like free national resources. They still carry assignment friction.
 
 ## Step 09 Patient-Sim Install Upside
 
@@ -149,8 +173,10 @@ From the current checked-in optimization outputs:
 - Scenario window: `N=0..4`
 - All `1,466` US appointments are served in every scenario
 - Best scenario under the repo's proven-optimal rule: **N=1**
-- N=0 annualized total cost: **$556,549**
-- Mean existing-tech legacy utilization field at N=0: **0.8505**
+- Recommended `N=1` hire location file currently points to: **Cleveland, OH**
+- Current `N=4` placement set: **Atlanta, Cleveland, Janesville, Bossier City**
+- N=0 annualized total cost: **$457,132**
+- Mean existing-tech legacy utilization field at N=0: **0.8844**
 - Max existing-tech legacy utilization field at N=0: **0.99999**
 - Weighted average install effort: **1.52 calendar days**
 - Weighted average install revenue: **$47,277**
@@ -159,23 +185,23 @@ From the current checked-in optimization outputs:
 
 ### Scenario Cost Summary
 
-| N | Annual Travel | Annual Payroll | Annual Total |
-|---|--------------:|---------------:|-------------:|
-| 0 | $556,549 | $0 | $556,549 |
-| 1 | $480,342 | $146,640 | $626,982 |
-| 2 | $423,357 | $293,280 | $716,637 |
-| 3 | $375,018 | $439,920 | $814,938 |
-| 4 | $329,658 | $586,560 | $916,218 |
+| N | Annual Travel | Annual Zone Penalty | Annual Payroll | Annual Total |
+|---|--------------:|--------------------:|---------------:|-------------:|
+| 0 | $456,266 | $866 | $0 | $457,132 |
+| 1 | $384,875 | $866 | $146,640 | $532,382 |
+| 2 | $337,848 | $866 | $293,280 | $631,994 |
+| 3 | $291,570 | $866 | $439,920 | $732,356 |
+| 4 | $249,785 | $1,227 | $586,560 | $837,572 |
 
 ### Scenario Install-Upside Summary
 
 | N | Install Units Enabled | Net Cost Increase | Net Economic Value | Break-Even Install Units |
 |---|----------------------:|------------------:|-------------------:|-------------------------:|
 | 0 | 0.0 | $0 | $0 | 0.0 |
-| 1 | 34.5 | $70,433 | $582,336 | 3.7 |
-| 2 | 69.0 | $160,088 | $1,145,620 | 8.5 |
-| 3 | 103.3 | $258,389 | $1,695,067 | 13.7 |
-| 4 | 137.8 | $359,669 | $2,246,128 | 19.0 |
+| 1 | 34.5 | $75,249 | $577,520 | 4.0 |
+| 2 | 66.1 | $174,862 | $1,075,892 | 9.2 |
+| 3 | 97.3 | $275,224 | $1,564,431 | 14.6 |
+| 4 | 134.8 | $380,439 | $2,168,624 | 20.1 |
 
 ## Key Caveats
 
@@ -183,6 +209,8 @@ From the current checked-in optimization outputs:
 - Travel and appointment duration are simplified into the current calendar-window workload model.
 - Same-city trip bundling is not modeled.
 - Great-circle distance is used for trip classification thresholds.
+- Operational zone jumps are broad airport-based buckets, not exact time arithmetic.
+- Contractor travel cost is a compressed-and-capped proxy, not a literal expense-reimbursement ledger.
 - AVS / Learning Space stays in the dispatch demand model but is excluded from patient-sim install revenue modeling.
 - Install upside represents **enabled capacity**, not guaranteed bookings.
 - Per-family install economics are provisional planning assumptions until finance replaces them.
@@ -200,6 +228,7 @@ From the current checked-in optimization outputs:
 - `data/processed/optimization/scenario_placements.csv`
 - `data/processed/optimization/scenario_assignments_existing.csv`
 - `data/processed/optimization/scenario_assignments_newhires.csv`
+- `data/processed/optimization/scenario_contractor_usage.csv`
 - `data/processed/optimization/scenario_tech_utilization.csv`
   Legacy filename; values are modeled load ratios.
 - `data/processed/optimization/patient_sim_install_history_clean.csv`
