@@ -38,12 +38,21 @@ def get_map_ui_preset():
     stakeholder = mode == "stakeholder"
     return {
         "mode": mode,
+        "include_airports": True,
         "show_active_assets": not stakeholder,
         "show_nonactive_assets": not stakeholder,
         "show_service_appointments": not stakeholder,
         "show_territory_boundaries": not stakeholder,
         "show_hub_radius": not stakeholder,
-        "show_airports": not stakeholder,
+        "airport_default_visible": (
+            getattr(config, "MAP_STAKEHOLDER_HUBS_DEFAULT_VISIBLE", False)
+            if stakeholder
+            else True
+        ),
+        "show_hub_toggle": bool(
+            getattr(config, "MAP_STAKEHOLDER_SHOW_HUB_TOGGLE", True)
+        ) and stakeholder,
+        "hub_toggle_label": getattr(config, "MAP_HUB_TOGGLE_LABEL", "Flight hubs"),
         "show_layer_control": not stakeholder,
         "show_legends": not stakeholder,
         "panel_width_px": getattr(config, "MAP_PANEL_WIDTH_PX", 360),
@@ -1409,6 +1418,15 @@ def build_simulation_panel_css(ui_preset):
       .sim-header {{
         margin-bottom: 18px;
       }}
+      .sim-header-top {{
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+      }}
+      .sim-header-copy {{
+        min-width: 0;
+      }}
       .sim-eyebrow {{
         font-size: 11px;
         font-weight: 700;
@@ -1428,6 +1446,40 @@ def build_simulation_panel_css(ui_preset):
         margin: 8px 0 0 0;
         font-size: 12px;
         color: #475569;
+      }}
+      .sim-chip {{
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        border: 1px solid rgba(15, 23, 42, 0.10);
+        border-radius: 999px;
+        background: #f8fafc;
+        color: #475569;
+        padding: 7px 10px;
+        font: 600 11px {ui_preset["font_family"]};
+        cursor: pointer;
+        transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.15s;
+        flex-shrink: 0;
+      }}
+      .sim-chip:hover {{
+        background: #f1f5f9;
+        border-color: rgba(15, 23, 42, 0.22);
+        color: #102235;
+      }}
+      .sim-chip.active {{
+        background: #e8eff4;
+        border-color: #183b58;
+        color: #183b58;
+      }}
+      .sim-chip-indicator {{
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #94a3b8;
+        box-shadow: inset 0 0 0 1px rgba(255,255,255,0.7);
+      }}
+      .sim-chip.active .sim-chip-indicator {{
+        background: #183b58;
       }}
       .sim-section {{
         margin-top: 16px;
@@ -1711,9 +1763,17 @@ def build_simulation_panel_markup():
     <button id="sim-panel-toggle" title="Show or hide scenarios">Scenarios</button>
     <div id="sim-panel">
       <div class="sim-header">
-        <div class="sim-eyebrow">Elevate Healthcare</div>
-        <h2 class="sim-title">Service territory scenarios</h2>
-        <p id="sim-subtitle">Cost-first optimization &middot; annualized results</p>
+        <div class="sim-header-top">
+          <div class="sim-header-copy">
+            <div class="sim-eyebrow">Elevate Healthcare</div>
+            <h2 class="sim-title">Service territory scenarios</h2>
+            <p id="sim-subtitle">Cost-first optimization &middot; annualized results</p>
+          </div>
+          <button id="sim-hub-toggle" class="sim-chip" type="button" style="display:none;">
+            <span class="sim-chip-indicator" aria-hidden="true"></span>
+            <span id="sim-hub-toggle-label">Flight hubs</span>
+          </button>
+        </div>
       </div>
 
       <div class="sim-section">
@@ -1822,6 +1882,7 @@ def build_simulation_panel_script(
     layer_js,
     territory_dots_js,
     tech_colors_js,
+    airport_layer_name,
     ordered_keys,
     default_key,
     ui_preset,
@@ -1836,9 +1897,13 @@ def build_simulation_panel_script(
       const scenarioLayerNames = {layer_js};
       const territoryDotLayerNames = {territory_dots_js};
       const techColors = {tech_colors_js};
+      const airportLayerName = {json.dumps(airport_layer_name)};
       const orderedScenarios = {json.dumps(ordered_keys)};
       const defaultScenario = "{default_key}";
       const coverageDefaultCount = {int(ui_preset["coverage_default_count"])};
+      const showHubToggle = {json.dumps(bool(ui_preset["show_hub_toggle"]))};
+      const hubToggleLabel = {json.dumps(ui_preset["hub_toggle_label"])};
+      const airportDefaultVisible = {json.dumps(bool(ui_preset["airport_default_visible"]))};
       const kpiExplanations = {explanations_js};
       const showUnmetKpi = orderedScenarios.some((s) =>
         Number(((scenarioData[s] || {{}}).kpis || {{}}).unmet_appointments || 0) > 0
@@ -1848,6 +1913,8 @@ def build_simulation_panel_script(
       let mapRef = null;
       let scenarioLayers = {{}};
       let territoryDotLayers = {{}};
+      let airportLayer = null;
+      let airportVisible = airportDefaultVisible;
 
       function money(v) {{
         const n = Math.abs(Number(v || 0));
@@ -1889,6 +1956,20 @@ def build_simulation_panel_script(
         document.querySelectorAll(".sim-btn").forEach((button) => {{
           button.classList.toggle("active", button.getAttribute("data-scenario") === scenario);
         }});
+      }}
+
+      function updateHubToggleUi() {{
+        const toggle = document.getElementById("sim-hub-toggle");
+        const label = document.getElementById("sim-hub-toggle-label");
+        if (!toggle || !label) return;
+        if (!showHubToggle || !airportLayer) {{
+          toggle.style.display = "none";
+          return;
+        }}
+        toggle.style.display = "inline-flex";
+        label.textContent = hubToggleLabel;
+        toggle.classList.toggle("active", !!airportVisible);
+        toggle.setAttribute("aria-pressed", airportVisible ? "true" : "false");
       }}
 
       function setSignedValueColor(element, value) {{
@@ -2028,6 +2109,18 @@ def build_simulation_panel_script(
         }}
       }}
 
+      function syncAirportLayerVisibility() {{
+        if (!mapRef || !airportLayer) return;
+        if (airportVisible) {{
+          if (!mapRef.hasLayer(airportLayer)) {{
+            mapRef.addLayer(airportLayer);
+          }}
+        }} else if (mapRef.hasLayer(airportLayer)) {{
+          mapRef.removeLayer(airportLayer);
+        }}
+        updateHubToggleUi();
+      }}
+
       function showScenario(scenario) {{
         if (!mapRef) return;
         orderedScenarios.forEach((s) => {{
@@ -2082,6 +2175,9 @@ def build_simulation_panel_script(
           }}
         }});
 
+        airportLayer = airportLayerName ? window[airportLayerName] || null : null;
+        airportVisible = airportLayer ? mapRef.hasLayer(airportLayer) : false;
+
         return missing;
       }}
 
@@ -2103,6 +2199,17 @@ def build_simulation_panel_script(
           const scenario = active.getAttribute("data-scenario");
           coverageExpandedByScenario[scenario] = !coverageExpandedByScenario[scenario];
           renderCoverageAssignments(scenario);
+        }});
+      }}
+
+      function wireHubToggle() {{
+        const toggle = document.getElementById("sim-hub-toggle");
+        if (!toggle) return;
+        updateHubToggleUi();
+        toggle.addEventListener("click", () => {{
+          if (!airportLayer) return;
+          airportVisible = !airportVisible;
+          syncAirportLayerVisibility();
         }});
       }}
 
@@ -2147,8 +2254,10 @@ def build_simulation_panel_script(
         }}
         wireMobileToggle();
         wireCoverageToggle();
+        wireHubToggle();
         wireKpiModal();
         showScenario(defaultScenario);
+        syncAirportLayerVisibility();
       }}
 
       initWhenReady(80);
@@ -2163,6 +2272,7 @@ def add_simulation_panel(
     scenario_layer_names,
     territory_layer_names=None,
     tech_color_map=None,
+    airport_layer_name=None,
     ui_preset=None,
 ):
     """Inject scenario controls and KPI cards into the map page."""
@@ -2200,6 +2310,7 @@ def add_simulation_panel(
             layer_js,
             territory_dots_js,
             tech_colors_js,
+            airport_layer_name,
             ordered_keys,
             default_key,
             ui_preset,
@@ -2279,6 +2390,7 @@ def main():
         tiles=config.MAP_TILES,
         control_scale=True,
     )
+    airport_layer = None
 
     if ui_preset["show_active_assets"]:
         print("Adding active contract choropleth...")
@@ -2313,7 +2425,7 @@ def main():
         territory_data = load_territory_assignment_data()
 
     # Layer 3: Service Appointments
-    # Hidden by default when territory viz is active (user can toggle on via LayerControl)
+    # Stakeholder mode removes this from the visible UI, but debug mode still supports it.
     if ui_preset["show_service_appointments"]:
         show_static_appts = territory_data is None
         print("Adding service appointments...")
@@ -2329,9 +2441,13 @@ def main():
         add_territory_boundaries(m, config.TERRITORIES_GEOJSON, layer_name=layer_territory_name)
 
     # Layer 6: Airport Hubs
-    if ui_preset["show_airports"]:
+    if ui_preset["include_airports"]:
         print("Adding airport hubs...")
-        add_airport_layer(m, ui_preset=ui_preset, show=True)
+        airport_layer = add_airport_layer(
+            m,
+            ui_preset=ui_preset,
+            show=ui_preset["airport_default_visible"],
+        )
 
     # Layer 7: Hub Dispatch Radius Circles
     if ui_preset["show_hub_radius"]:
@@ -2373,6 +2489,7 @@ def main():
                 m, simulation_payload, scenario_layer_names,
                 territory_layer_names=territory_layer_info,
                 tech_color_map=tech_color_map if territory_data else None,
+                airport_layer_name=airport_layer.get_name() if airport_layer else None,
                 ui_preset=ui_preset,
             )
             print(f"  Loaded scenarios: {', '.join(sorted(simulation_payload.keys(), key=lambda x: int(x) if x.isdigit() else 999))}")
