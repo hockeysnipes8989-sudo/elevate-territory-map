@@ -331,8 +331,9 @@ MAP_ANCHOR_MARKER_COLOR = "#7C3E66"
 MAP_ANCHOR_MARKER_FILL = "#FDF2F8"
 MAP_ANCHOR_MARKER_BORDER = "#D8B4C6"
 
-MAP_ASSIGNMENT_DOT_STROKE = "#FFFFFF"
-MAP_ASSIGNMENT_DOT_STROKE_WIDTH = 1.4
+MAP_ASSIGNMENT_DOT_LIGHT_STROKE = "#FFFFFF"
+MAP_ASSIGNMENT_DOT_DARK_STROKE = "#1F2937"
+MAP_ASSIGNMENT_DOT_STROKE_WIDTH = 1.5
 MAP_ASSIGNMENT_DOT_STAKEHOLDER_RADIUS = 5
 MAP_ASSIGNMENT_DOT_STAKEHOLDER_OPACITY = 0.82
 MAP_ASSIGNMENT_DOT_DEBUG_RADIUS = 6
@@ -390,52 +391,49 @@ GEOCODE_DELAY = 1.1  # seconds between Nominatim requests
 # ---------------------------------------------------------------------------
 # Per-tech territory visualization (scenario-based assignment coloring)
 # ---------------------------------------------------------------------------
-# High-contrast palette ordered to maximize separation between neighboring techs
-# in the stable alphabetic assignment order used by Step 05.
-TECH_TERRITORY_PALETTE = [
-    "#D81B60",  # vivid magenta-red
-    "#1E88E5",  # bright blue
-    "#43A047",  # green
-    "#FB8C00",  # orange
-    "#8E24AA",  # purple
-    "#FDD835",  # yellow
-    "#6D4C41",  # brown
-    "#00ACC1",  # cyan
-    "#C62828",  # red
-    "#3949AB",  # indigo
-    "#7CB342",  # lime green
-    "#F4511E",  # red-orange
-    "#5E35B1",  # violet
-    "#00897B",  # teal
-    "#FFB300",  # amber
-    "#AD1457",  # raspberry
-    "#546E7A",  # slate
-    "#2E7D32",  # dark green
-    "#283593",  # deep blue
-    "#9E9D24",  # olive
+# Explicit fixed assignee colors so high-usage technicians do not end up with
+# near-lookalike colors in the stakeholder map.
+TECH_ASSIGNMENT_COLOR_MAP = {
+    "ben_walker": "#D81B60",            # strong magenta
+    "bladimir_torres": "#1E88E5",      # bright blue
+    "clarence_bonner": "#2E7D32",      # green
+    "curt_corder": "#A16207",          # dark gold / mustard
+    "damion_lyn": "#7B1FA2",           # purple
+    "elier_martin": "#795548",         # taupe / brown
+    "eric_olinger": "#00ACC1",         # cyan
+    "hector_arias": "#EC407A",         # pink
+    "htx_contractor_alex": "#C62828",  # true red
+    "htx_contractor_robert": "#1E3A8A",# navy
+    "james_sanchez": "#455A64",        # charcoal slate
+    "josh_brown": "#EF6C00",           # true orange
+    "robert_cohen": "#00897B",         # jade / teal-green
+    "scott_fogo": "#4338CA",           # indigo
+    "tameka_gongs": "#FDD835",         # yellow
+    "airport_atl": "#A44A3F",          # terracotta
+    "airport_cle": "#8D4E2D",          # sienna
+    "airport_iad": "#9CCB19",          # lime
+    "demand_bossier_city_la": "#C2185B",  # rose
+    "demand_janesville_wi": "#7C4DFF",    # violet
+}
+
+# Reserve palette only for future unknown assignee ids.
+TECH_ASSIGNMENT_FALLBACK_PALETTE = [
+    "#0F766E",
+    "#2563EB",
+    "#B91C1C",
+    "#9333EA",
+    "#CA8A04",
+    "#BE185D",
+    "#1D4ED8",
+    "#15803D",
+    "#7C2D12",
+    "#334155",
+    "#0EA5E9",
+    "#4D7C0F",
 ]
-STAKEHOLDER_TERRITORY_PALETTE = [
-    "#D81B60",
-    "#1E88E5",
-    "#43A047",
-    "#FB8C00",
-    "#8E24AA",
-    "#FDD835",
-    "#6D4C41",
-    "#00ACC1",
-    "#C62828",
-    "#3949AB",
-    "#7CB342",
-    "#F4511E",
-    "#5E35B1",
-    "#00897B",
-    "#FFB300",
-    "#AD1457",
-    "#546E7A",
-    "#2E7D32",
-    "#283593",
-    "#9E9D24",
-]
+
+TECH_TERRITORY_PALETTE = list(TECH_ASSIGNMENT_FALLBACK_PALETTE)
+STAKEHOLDER_TERRITORY_PALETTE = list(TECH_ASSIGNMENT_FALLBACK_PALETTE)
 TERRITORY_DOT_RADIUS = 6            # CircleMarker radius for assignment dots
 TERRITORY_DOT_OPACITY = 0.85        # CircleMarker fill opacity
 ENABLE_SIMULATION_UI = True

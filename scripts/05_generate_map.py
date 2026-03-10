@@ -88,13 +88,18 @@ def get_map_ui_preset():
             else "MAP_ASSIGNMENT_DOT_DEBUG_OPACITY",
             getattr(config, "TERRITORY_DOT_OPACITY", 0.85),
         ),
-        "assignment_dot_stroke": getattr(config, "MAP_ASSIGNMENT_DOT_STROKE", "#FFFFFF"),
+        "assignment_dot_light_stroke": getattr(
+            config, "MAP_ASSIGNMENT_DOT_LIGHT_STROKE", "#FFFFFF"
+        ),
+        "assignment_dot_dark_stroke": getattr(
+            config, "MAP_ASSIGNMENT_DOT_DARK_STROKE", "#1F2937"
+        ),
         "assignment_dot_stroke_width": getattr(config, "MAP_ASSIGNMENT_DOT_STROKE_WIDTH", 1.1),
         "territory_palette": list(
             getattr(
                 config,
                 "STAKEHOLDER_TERRITORY_PALETTE" if stakeholder else "TECH_TERRITORY_PALETTE",
-                getattr(config, "TECH_TERRITORY_PALETTE", []),
+                getattr(config, "TECH_ASSIGNMENT_FALLBACK_PALETTE", []),
             )
         ),
     }
@@ -1177,7 +1182,10 @@ def build_tech_color_map(territory_data, palette):
     """Assign a stable, high-contrast color to each assignee."""
     tech_master = territory_data["tech_master"]
     newhires_df = territory_data["newhires"]
-    palette = palette or config.TECH_TERRITORY_PALETTE
+    explicit_color_map = dict(getattr(config, "TECH_ASSIGNMENT_COLOR_MAP", {}))
+    fallback_palette = palette or getattr(
+        config, "TECH_ASSIGNMENT_FALLBACK_PALETTE", getattr(config, "TECH_TERRITORY_PALETTE", [])
+    )
 
     # Existing techs with availability > 0, sorted alphabetically
     active_techs = tech_master[
@@ -1194,14 +1202,39 @@ def build_tech_color_map(territory_data, palette):
     color_map = {}
     idx = 0
     for tid in sorted_tech_ids:
-        color_map[tid] = palette[idx % len(palette)]
+        if tid in explicit_color_map:
+            color_map[tid] = explicit_color_map[tid]
+            continue
+        color_map[tid] = fallback_palette[idx % len(fallback_palette)]
         idx += 1
     for cid in sorted_candidate_ids:
         if cid not in color_map:
-            color_map[cid] = palette[idx % len(palette)]
+            if cid in explicit_color_map:
+                color_map[cid] = explicit_color_map[cid]
+                continue
+            color_map[cid] = fallback_palette[idx % len(fallback_palette)]
             idx += 1
 
     return color_map
+
+
+def get_assignment_dot_stroke(fill_hex, ui_preset):
+    """Choose a dark stroke for light fills and a white stroke for dark fills."""
+    value = str(fill_hex or "").strip().lstrip("#")
+    if len(value) != 6:
+        return ui_preset["assignment_dot_light_stroke"]
+    try:
+        red = int(value[0:2], 16)
+        green = int(value[2:4], 16)
+        blue = int(value[4:6], 16)
+    except ValueError:
+        return ui_preset["assignment_dot_light_stroke"]
+
+    # Simple perceived brightness check keeps yellow/lime dots readable.
+    brightness = (red * 299 + green * 587 + blue * 114) / 1000
+    if brightness >= 165:
+        return ui_preset["assignment_dot_dark_stroke"]
+    return ui_preset["assignment_dot_light_stroke"]
 
 
 def add_territory_assignment_layers(m, assignment_map, territory_data, tech_color_map, ui_preset):
@@ -1278,6 +1311,7 @@ def add_territory_assignment_layers(m, assignment_map, territory_data, tech_colo
         )
         for assignee_id, appts_list in tech_appts.items():
             color = tech_color_map.get(assignee_id, "#888888")
+            stroke_color = get_assignment_dot_stroke(color, ui_preset)
             tech_name = name_lookup.get(assignee_id, assignee_id)
             for lat, lon, appt_id in appts_list:
                 detail = appt_details.get(appt_id, {})
@@ -1292,7 +1326,7 @@ def add_territory_assignment_layers(m, assignment_map, territory_data, tech_colo
                 folium.CircleMarker(
                     location=[lat, lon],
                     radius=ui_preset["assignment_dot_radius"],
-                    color=ui_preset["assignment_dot_stroke"],
+                    color=stroke_color,
                     fill=True,
                     fill_color=color,
                     fill_opacity=ui_preset["assignment_dot_opacity"],
@@ -2057,6 +2091,8 @@ def build_simulation_panel_script(
       const orderedScenarios = {json.dumps(ordered_keys)};
       const defaultScenario = "{default_key}";
       const coverageDefaultCount = {int(ui_preset["coverage_default_count"])};
+      const lightDotStroke = {json.dumps(ui_preset["assignment_dot_light_stroke"])};
+      const darkDotStroke = {json.dumps(ui_preset["assignment_dot_dark_stroke"])};
       const showHubToggle = {json.dumps(bool(ui_preset["show_hub_toggle"]))};
       const hubToggleLabel = {json.dumps(ui_preset["hub_toggle_label"])};
       const airportDefaultVisible = {json.dumps(bool(ui_preset["airport_default_visible"]))};
@@ -2092,6 +2128,17 @@ def build_simulation_panel_script(
         const n = Number(v || 0);
         if (n === 0) return "0.00%";
         return (n > 0 ? "+" : "-") + Math.abs(n).toFixed(digits === undefined ? 2 : digits) + "%";
+      }}
+
+      function getDotStroke(fillHex) {{
+        const raw = String(fillHex || "").replace("#", "");
+        if (raw.length !== 6) return lightDotStroke;
+        const red = parseInt(raw.slice(0, 2), 16);
+        const green = parseInt(raw.slice(2, 4), 16);
+        const blue = parseInt(raw.slice(4, 6), 16);
+        if ([red, green, blue].some(Number.isNaN)) return lightDotStroke;
+        const brightness = (red * 299 + green * 587 + blue * 114) / 1000;
+        return brightness >= 165 ? darkDotStroke : lightDotStroke;
       }}
 
       function renderButtons() {{
@@ -2244,10 +2291,11 @@ def build_simulation_panel_script(
 
         listEl.innerHTML = visibleEntries.map(([techId, stat]) => {{
           const color = techColors[techId] || "#64748b";
+          const stroke = getDotStroke(color);
           const base = stat.base ? String(stat.base) : "Base unavailable";
           return `
             <div class="coverage-row">
-              <span class="coverage-dot" style="background:${{color}};"></span>
+              <span class="coverage-dot" style="background:${{color}}; border-color:${{stroke}};"></span>
               <div>
                 <div class="coverage-name">${{stat.name}}</div>
                 <div class="coverage-meta">${{Number(stat.appointments || 0).toFixed(0)}} appointments &middot; ${{base}}</div>
