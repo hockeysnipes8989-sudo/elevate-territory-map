@@ -89,6 +89,7 @@ def get_map_ui_preset():
             getattr(config, "TERRITORY_DOT_OPACITY", 0.85),
         ),
         "assignment_dot_stroke": getattr(config, "MAP_ASSIGNMENT_DOT_STROKE", "#FFFFFF"),
+        "assignment_dot_stroke_width": getattr(config, "MAP_ASSIGNMENT_DOT_STROKE_WIDTH", 1.1),
         "territory_palette": list(
             getattr(
                 config,
@@ -1173,7 +1174,7 @@ def resolve_appointment_assignments(territory_data):
 
 
 def build_tech_color_map(territory_data, palette):
-    """Assign a unique color from TECH_TERRITORY_PALETTE to each assignee."""
+    """Assign a stable, high-contrast color to each assignee."""
     tech_master = territory_data["tech_master"]
     newhires_df = territory_data["newhires"]
     palette = palette or config.TECH_TERRITORY_PALETTE
@@ -1295,7 +1296,7 @@ def add_territory_assignment_layers(m, assignment_map, territory_data, tech_colo
                     fill=True,
                     fill_color=color,
                     fill_opacity=ui_preset["assignment_dot_opacity"],
-                    weight=1.1,
+                    weight=ui_preset["assignment_dot_stroke_width"],
                     opacity=0.95,
                     stroke=True,
                     popup=folium.Popup(popup_html, max_width=300),
