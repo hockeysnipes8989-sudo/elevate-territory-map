@@ -31,6 +31,10 @@ This file is the working context handoff for future chats.
 - Step 08 now layers in airport-based operational zones:
   - standard employees/new hires: `0-1` free, `2` penalized, `3+` blocked
   - HTX contractors: softer penalty-only treatment, not full exemption
+- Tameka is now modeled as an anchored technician:
+  - `75%` reserved at **Morgan State University**
+  - `25%` external field capacity
+  - external assignments limited to the configured nearby state set
 - Step 05 now defaults to a **stakeholder** UI mode:
   - keeps the scenario coverage dots, hire markers, and technician bases front and center
   - exposes one quiet `Flight hubs` chip in the panel header for airport hubs
@@ -127,6 +131,7 @@ Expected in `data/raw/`:
 - UIUC service appointments workbook
 - service appointments report workbook
 - install base workbook
+- `technician_anchor_allocations.csv` for anchored / reserved-duty technicians
 
 ### Optimization Inputs
 
@@ -174,6 +179,11 @@ Important notes:
 - Canada and excluded territories stay out of optimization scope
 - tech, demand, and candidate outputs now also carry airport-based operational-zone fields
 - HTX contractor rows now carry per-tech scope, travel-policy, and zone-policy fields
+- anchored-tech rows can also carry:
+  - anchor-site metadata
+  - reserved-duty FTE
+  - external-field FTE
+  - explicit allowed external states
 
 ### Step 11
 
@@ -220,6 +230,10 @@ Phase 1 operational realism now added on top of the same cost-first MILP shape:
   - are no longer Texas-only
   - use a softer zone rule
   - use a compressed-and-capped travel-cost proxy plus dispatch surcharge so they are flexible but not free
+- Anchored technicians:
+  - keep reserved duty out of the flexible field-capacity pool through `availability_fte`
+  - can use explicit state-set scope rules for the remaining field work
+  - do not require synthetic demand rows in Phase 1
 
 ### Step 09
 
@@ -252,6 +266,7 @@ Important Step 09 framing:
 - freed capacity is enabled install capacity, not guaranteed bookings
 - primary upside excludes service-contract profit on purpose
 - old conservative/moderate/aggressive install outputs are compatibility aliases only
+- analysis outputs now also surface special-tech constraints such as anchored-duty assumptions
 
 ## Current Assumptions and Business Rules
 
@@ -318,9 +333,9 @@ From the current generated outputs:
 - Scenario range: `N=0..4`
 - Best scenario under the repo's proven-optimal rule: `N=1`
 - `recommended_hire_locations.csv` currently points to `Cleveland, OH` for `N=1`
-- Current `N=4` placement set: `Atlanta`, `Cleveland`, `Janesville`, `Bossier City`
-- N=0 annualized total cost: `$457,132.47`
-- Mean existing-tech legacy utilization field at N=0: `0.8844`
+- Current `N=4` placement set: `Washington, DC`, `Atlanta, GA`, `Bossier City, LA`, `Janesville, WI`
+- N=0 annualized total cost: `$465,894.36`
+- Mean existing-tech legacy utilization field at N=0: `0.8575`
 - Max existing-tech legacy utilization field at N=0: `0.99999`
 - Weighted average install effort: `1.52` calendar days
 - Weighted average install revenue: `$47,277`
@@ -333,21 +348,21 @@ From the current generated outputs:
 
 | N | Annual Travel | Annual Zone Penalty | Annual Payroll | Annual Total |
 |---|--------------:|--------------------:|---------------:|-------------:|
-| 0 | $456,266 | $866 | $0 | $457,132 |
-| 1 | $384,875 | $866 | $146,640 | $532,382 |
-| 2 | $337,848 | $866 | $293,280 | $631,994 |
-| 3 | $291,570 | $866 | $439,920 | $732,356 |
-| 4 | $249,785 | $1,227 | $586,560 | $837,572 |
+| 0 | $465,028 | $866 | $0 | $465,894 |
+| 1 | $392,859 | $866 | $146,640 | $540,365 |
+| 2 | $342,651 | $866 | $293,280 | $636,798 |
+| 3 | $299,410 | $866 | $439,920 | $740,197 |
+| 4 | $258,142 | $1,227 | $586,560 | $845,929 |
 
 ### Current Annualized Install-Upside Table
 
 | N | Install Units Enabled | Net Cost Increase | Net Economic Value | Break-Even Install Units |
 |---|----------------------:|------------------:|-------------------:|-------------------------:|
 | 0 | 0.0 | $0 | $0 | 0.0 |
-| 1 | 34.5 | $75,249 | $577,520 | 4.0 |
-| 2 | 66.1 | $174,862 | $1,075,892 | 9.2 |
-| 3 | 97.3 | $275,224 | $1,564,431 | 14.6 |
-| 4 | 134.8 | $380,439 | $2,168,624 | 20.1 |
+| 1 | 34.5 | $74,471 | $578,598 | 3.9 |
+| 2 | 69.1 | $170,903 | $1,135,593 | 9.0 |
+| 3 | 103.5 | $274,302 | $1,682,954 | 14.5 |
+| 4 | 135.5 | $380,035 | $2,182,210 | 20.1 |
 
 ## Important Output Files
 

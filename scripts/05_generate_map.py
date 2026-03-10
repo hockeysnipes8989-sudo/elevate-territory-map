@@ -114,6 +114,75 @@ def exclude_inactive_technicians(techs):
     return filtered.copy()
 
 
+def load_anchor_tech_metadata():
+    """Load anchored-tech metadata from optimization tech_master if available."""
+    tech_master_path = os.path.join(config.OPTIMIZATION_DIR, "tech_master.csv")
+    if not os.path.exists(tech_master_path):
+        return {"by_name": {}, "anchors": []}
+
+    tech_master = pd.read_csv(tech_master_path)
+    required_anchor_cols = {
+        "tech_name",
+        "anchor_site_name",
+        "anchor_site_lat",
+        "anchor_site_lon",
+        "anchor_reserved_fte",
+        "external_field_fte",
+        "anchor_show_on_map",
+        "assignment_scope_states",
+        "anchor_notes",
+    }
+    if not required_anchor_cols.issubset(set(tech_master.columns)):
+        return {"by_name": {}, "anchors": []}
+
+    by_name = {}
+    anchor_rows = []
+    anchored = tech_master[
+        tech_master["anchor_site_name"].fillna("").astype(str).str.strip().ne("")
+    ].copy()
+
+    for _, row in anchored.iterrows():
+        tech_name = str(row.get("tech_name", "")).strip()
+        if not tech_name:
+            continue
+        metadata = {
+            "anchor_site_name": str(row.get("anchor_site_name", "")).strip(),
+            "anchor_site_location_raw": str(row.get("anchor_site_location_raw", "")).strip(),
+            "anchor_reserved_fte": pd.to_numeric(row.get("anchor_reserved_fte"), errors="coerce"),
+            "external_field_fte": pd.to_numeric(row.get("external_field_fte"), errors="coerce"),
+            "assignment_scope_states": str(row.get("assignment_scope_states", "")).strip(),
+            "anchor_notes": str(row.get("anchor_notes", "")).strip(),
+            "anchor_show_on_map": bool(
+                pd.to_numeric(row.get("anchor_show_on_map"), errors="coerce")
+                if pd.notna(pd.to_numeric(row.get("anchor_show_on_map"), errors="coerce"))
+                else 0
+            ),
+            "anchor_site_lat": pd.to_numeric(row.get("anchor_site_lat"), errors="coerce"),
+            "anchor_site_lon": pd.to_numeric(row.get("anchor_site_lon"), errors="coerce"),
+        }
+        by_name[tech_name] = metadata
+        if (
+            metadata["anchor_show_on_map"]
+            and pd.notna(metadata["anchor_site_lat"])
+            and pd.notna(metadata["anchor_site_lon"])
+        ):
+            anchor_rows.append(
+                {
+                    "tech_name": tech_name,
+                    **metadata,
+                }
+            )
+    return {"by_name": by_name, "anchors": anchor_rows}
+
+
+def format_state_scope(states_value):
+    """Render semicolon-delimited state scope as slash-delimited copy."""
+    if states_value is None or pd.isna(states_value):
+        return ""
+    parts = [part.strip() for part in str(states_value).split(";") if part.strip()]
+    return " / ".join(parts)
+
+
 def validate_current_tech_headcount(techs):
     """Warn if current technician roster count differs from configured expectation."""
     expected = getattr(config, "EXPECTED_CURRENT_TECH_COUNT", None)
@@ -420,9 +489,10 @@ def add_service_appointments(m, appts, layer_name, show=True):
     return fg
 
 
-def add_technician_markers(m, techs, layer_name, ui_preset):
+def add_technician_markers(m, techs, layer_name, ui_preset, anchor_metadata_by_name=None):
     """Add technician home base markers."""
     fg = folium.FeatureGroup(name=layer_name, show=True)
+    anchor_metadata_by_name = anchor_metadata_by_name or {}
 
     techs_with_coords = exclude_inactive_technicians(techs).dropna(subset=["lat", "lon"])
     if techs_with_coords.empty:
@@ -473,8 +543,31 @@ def add_technician_markers(m, techs, layer_name, ui_preset):
             comment = "" if pd.isna(comment_raw) else str(comment_raw).strip()
             if comment.lower() == "nan":
                 comment = ""
+            anchor_meta = anchor_metadata_by_name.get(name, {})
             extra = f" - {comment}" if comment else ""
-            roster_lines.append(f"<li><b>{name}</b> ({status}){extra}</li>")
+            detail_lines = []
+            anchor_site = str(anchor_meta.get("anchor_site_name", "")).strip()
+            if anchor_site:
+                detail_lines.append(f"Anchor site: {anchor_site}")
+            reserved = anchor_meta.get("anchor_reserved_fte")
+            external = anchor_meta.get("external_field_fte")
+            allowed_states = format_state_scope(anchor_meta.get("assignment_scope_states", ""))
+            if pd.notna(reserved):
+                detail_lines.append(f"Reserved duty: {float(reserved):.0%}")
+            if pd.notna(external):
+                detail_lines.append(f"External field capacity: {float(external):.0%}")
+            if allowed_states:
+                detail_lines.append(f"External assignment region: {allowed_states}")
+            if anchor_meta.get("anchor_notes"):
+                detail_lines.append(str(anchor_meta["anchor_notes"]))
+            extra_html = (
+                "<br><span style='display:block;margin-top:3px;font-size:11px;color:#64748b;'>"
+                + "<br>".join(detail_lines)
+                + "</span>"
+                if detail_lines
+                else ""
+            )
+            roster_lines.append(f"<li><b>{name}</b> ({status}){extra}{extra_html}</li>")
         roster_html = "".join(roster_lines)
         popup_html = (
             f"<b>{location}</b><br>"
@@ -511,6 +604,68 @@ def add_technician_markers(m, techs, layer_name, ui_preset):
             ),
         ).add_to(fg)
 
+    fg.add_to(m)
+    return fg
+
+
+def add_anchor_site_markers(m, anchor_rows, ui_preset):
+    """Add subtle anchor-site markers for anchored technicians."""
+    fg = folium.FeatureGroup(name="Anchored Technician Sites", show=True, control=False)
+    if not anchor_rows:
+        fg.add_to(m)
+        return fg
+
+    seen_keys = set()
+    for row in anchor_rows:
+        key = (
+            row.get("tech_name"),
+            row.get("anchor_site_name"),
+            float(row.get("anchor_site_lat")),
+            float(row.get("anchor_site_lon")),
+        )
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        reserved = row.get("anchor_reserved_fte")
+        external = row.get("external_field_fte")
+        state_scope = format_state_scope(row.get("assignment_scope_states", ""))
+        popup_parts = [
+            f"<b>{row.get('anchor_site_name', 'Anchor site')}</b>",
+            f"Anchored technician: <b>{row.get('tech_name', 'Unknown')}</b>",
+        ]
+        if pd.notna(reserved):
+            popup_parts.append(f"Reserved duty: {float(reserved):.0%}")
+        if pd.notna(external):
+            popup_parts.append(f"External field capacity: {float(external):.0%}")
+        if state_scope:
+            popup_parts.append(f"External assignment region: {state_scope}")
+        if row.get("anchor_notes"):
+            popup_parts.append(str(row["anchor_notes"]))
+        popup_html = "<br>".join(popup_parts)
+        marker_html = (
+            "<div style=\""
+            "width:18px;height:18px;border-radius:999px;"
+            f"background:{config.MAP_ANCHOR_MARKER_FILL};"
+            f"border:1.5px solid {config.MAP_ANCHOR_MARKER_BORDER};"
+            "box-shadow:0 4px 10px rgba(15,23,42,0.14);"
+            "display:flex;align-items:center;justify-content:center;"
+            f"color:{config.MAP_ANCHOR_MARKER_COLOR};"
+            "font-size:10px;font-weight:700;"
+            "\">"
+            "M"
+            "</div>"
+        )
+        folium.Marker(
+            location=[float(row["anchor_site_lat"]), float(row["anchor_site_lon"])],
+            popup=folium.Popup(popup_html, max_width=300),
+            tooltip=f"{row.get('anchor_site_name', 'Anchor site')}: {row.get('tech_name', '')}",
+            icon=folium.DivIcon(
+                html=marker_html,
+                icon_size=(18, 18),
+                icon_anchor=(9, 9),
+                class_name="elevate-anchor-marker",
+            ),
+        ).add_to(fg)
     fg.add_to(m)
     return fg
 
@@ -2340,6 +2495,7 @@ def main():
     print("Loading processed data...")
     appts = pd.read_csv(config.GEOCODED_APPTS_CSV)
     techs = pd.read_csv(config.GEOCODED_TECHS_CSV)
+    anchor_metadata = load_anchor_tech_metadata()
     raw_tech_count = len(techs)
     techs = exclude_inactive_technicians(techs)
     validate_current_tech_headcount(techs)
@@ -2371,6 +2527,8 @@ def main():
         f"({int((~install_all_matched['has_active_contract'] & install_all_matched['matched']).sum())} matched)"
     )
     print(f"  Territories: {len(territory_summary)}")
+    if anchor_metadata["anchors"]:
+        print(f"  Anchored technician sites: {len(anchor_metadata['anchors'])}")
 
     active_assets_count = int(len(install_matched))
     appointments_count = int(len(appts))
@@ -2433,7 +2591,17 @@ def main():
 
     # Layer 4: Technician Home Bases
     print("Adding technician markers...")
-    add_technician_markers(m, techs, layer_name=layer_tech_name, ui_preset=ui_preset)
+    add_technician_markers(
+        m,
+        techs,
+        layer_name=layer_tech_name,
+        ui_preset=ui_preset,
+        anchor_metadata_by_name=anchor_metadata["by_name"],
+    )
+
+    if anchor_metadata["anchors"]:
+        print("Adding anchored technician sites...")
+        add_anchor_site_markers(m, anchor_metadata["anchors"], ui_preset=ui_preset)
 
     # Layer 5: Territory Boundaries
     if ui_preset["show_territory_boundaries"]:

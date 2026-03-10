@@ -409,6 +409,7 @@ def main() -> None:
         .rename_axis("reason")
         .reset_index(name="rows")
     )
+    special_tech_constraints = assumptions.get("special_tech_constraints", [])
 
     report = {
         "data_span_years": data_span_years,
@@ -426,6 +427,7 @@ def main() -> None:
         ) if base_cost > 0 else 0.0,
         "utilization_metrics_best_scenario": util_metrics,
         "assumptions": assumptions,
+        "special_tech_constraints": special_tech_constraints,
         "install_model_assumptions": install_model.assumptions,
         "install_model_source": install_model.source_metadata,
         "utilization_metric": {
@@ -562,9 +564,40 @@ def main() -> None:
             "for compatibility, but its values are modeled load ratios.**"
         ),
         "",
-        "## Contractor Usage (Best Scenario)",
+        "## Special Technician Constraints",
         "",
     ]
+    if not special_tech_constraints:
+        lines.append("- No special technician constraints configured.")
+    else:
+        for item in special_tech_constraints:
+            tech_name = str(item.get("tech_name", "Unknown"))
+            anchor_site = str(item.get("anchor_site_name", "")).strip() or "Not specified"
+            reserved = item.get("anchor_reserved_fte")
+            external = item.get("external_field_fte")
+            allowed_states = str(item.get("assignment_scope_states", "")).strip()
+            notes = str(item.get("anchor_notes", "")).strip()
+            parts = [
+                f"- **{tech_name}**",
+                f"anchor site: **{anchor_site}**",
+            ]
+            if reserved is not None:
+                parts.append(f"reserved duty: **{float(reserved):.0%}**")
+            if external is not None:
+                parts.append(f"external field capacity: **{float(external):.0%}**")
+            if allowed_states:
+                parts.append(f"external assignment region: **{allowed_states.replace(';', ' / ')}**")
+            if notes:
+                parts.append(f"note: {notes}")
+            lines.append(", ".join(parts))
+
+    lines.extend(
+        [
+            "",
+        "## Contractor Usage (Best Scenario)",
+        "",
+        ]
+    )
     if contractor_best.empty:
         lines.append("- No contractor usage rows in the selected scenario.")
     else:

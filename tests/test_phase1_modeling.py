@@ -24,6 +24,7 @@ def load_module(module_name: str, filename: str):
 
 step08 = load_module("step08_optimize", "08_optimize_locations.py")
 step11 = load_module("step11_costs", "11_build_full_cost_table.py")
+step06 = load_module("step06_inputs", "06_build_optimization_inputs.py")
 
 
 class PhaseOneModelingTests(unittest.TestCase):
@@ -165,6 +166,80 @@ class PhaseOneModelingTests(unittest.TestCase):
         )
         self.assertFalse(step08.tech_eligible_for_node(standard_tech, far_node, "anywhere"))
         self.assertTrue(step08.tech_eligible_for_node(contractor, node, "anywhere"))
+
+    def test_apply_anchor_allocations_sets_tameka_scope_and_capacity(self):
+        tech_master = pd.DataFrame(
+            [
+                {
+                    "tech_name": "Tameka Gongs",
+                    "availability_fte": 1.0,
+                    "assignment_scope_mode": config.ASSIGNMENT_SCOPE_MODE_NATIONAL,
+                    "assignment_scope_state": "",
+                    "notes": "25% travel, rest at customer site",
+                }
+            ]
+        )
+        anchors = pd.DataFrame(
+            [
+                {
+                    "tech_name": "Tameka Gongs",
+                    "anchor_site_name": "Morgan State University",
+                    "anchor_site_location_raw": "Baltimore, MD",
+                    "anchor_site_lat": 39.2908816,
+                    "anchor_site_lon": -76.610759,
+                    "anchor_reserved_fte": 0.75,
+                    "external_field_fte": 0.25,
+                    "external_assignment_mode": config.ASSIGNMENT_SCOPE_MODE_STATE_SET_LIMITED,
+                    "external_allowed_states": "MD;VA;WV;DC;DE",
+                    "anchor_show_on_map": 1,
+                    "anchor_notes": "Reserved duty",
+                }
+            ]
+        )
+
+        enriched = step06.apply_anchor_allocations(tech_master, anchors)
+        row = enriched.iloc[0]
+        self.assertAlmostEqual(float(row["availability_fte"]), 0.25)
+        self.assertEqual(
+            row["assignment_scope_mode"], config.ASSIGNMENT_SCOPE_MODE_STATE_SET_LIMITED
+        )
+        self.assertEqual(row["assignment_scope_states"], "MD;VA;WV;DC;DE")
+        self.assertEqual(row["anchor_site_name"], "Morgan State University")
+
+    def test_state_set_limited_scope_blocks_out_of_region_assignments(self):
+        anchored_tech = pd.Series(
+            {
+                "skill_hps": 0,
+                "skill_ls": 1,
+                "skill_patient": 1,
+                "constraint_florida_only": 0,
+                "employment_type": "fte",
+                "base_airport_iata": "BWI",
+                "zone_policy": config.ZONE_POLICY_STANDARD,
+                "base_operational_zone_rank": 0,
+                "assignment_scope_mode": config.ASSIGNMENT_SCOPE_MODE_STATE_SET_LIMITED,
+                "assignment_scope_state": "",
+                "assignment_scope_states": "MD;VA;WV;DC;DE",
+            }
+        )
+        md_node = pd.Series(
+            {
+                "required_hps": 0,
+                "required_ls": 1,
+                "state_norm": "MD",
+                "node_operational_zone_rank": 0,
+            }
+        )
+        ny_node = pd.Series(
+            {
+                "required_hps": 0,
+                "required_ls": 1,
+                "state_norm": "NY",
+                "node_operational_zone_rank": 0,
+            }
+        )
+        self.assertTrue(step08.tech_eligible_for_node(anchored_tech, md_node, "anywhere"))
+        self.assertFalse(step08.tech_eligible_for_node(anchored_tech, ny_node, "anywhere"))
 
 
 if __name__ == "__main__":

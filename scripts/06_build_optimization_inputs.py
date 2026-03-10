@@ -212,6 +212,153 @@ def assignment_scope_defaults(is_contractor: bool, contractor_scope: str) -> dic
     }
 
 
+ANCHOR_TECH_COLUMNS = {
+    "assignment_scope_states": "",
+    "anchor_site_name": "",
+    "anchor_site_location_raw": "",
+    "anchor_site_lat": np.nan,
+    "anchor_site_lon": np.nan,
+    "anchor_reserved_fte": np.nan,
+    "external_field_fte": np.nan,
+    "anchor_show_on_map": 0,
+    "anchor_notes": "",
+}
+
+
+def normalize_allowed_states(value: object) -> str:
+    """Normalize a delimited state list into canonical semicolon-separated abbreviations."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    tokens = re.split(r"[;,|/]+", str(value))
+    normalized: list[str] = []
+    for token in tokens:
+        raw = token.strip()
+        if not raw:
+            continue
+        state = normalize_state(raw)
+        if not state or country_from_state(state) != "USA":
+            raise ValueError(f"Unsupported state token in anchor allocation: {raw}")
+        if state not in normalized:
+            normalized.append(state)
+    return ";".join(normalized)
+
+
+def load_anchor_allocations(anchor_csv: str | None) -> pd.DataFrame:
+    """Load manual anchor-site technician allocations if configured."""
+    required_cols = {
+        "tech_name",
+        "anchor_site_name",
+        "anchor_site_location_raw",
+        "anchor_site_lat",
+        "anchor_site_lon",
+        "anchor_reserved_fte",
+        "external_field_fte",
+        "external_assignment_mode",
+        "external_allowed_states",
+        "anchor_show_on_map",
+        "anchor_notes",
+    }
+    if not anchor_csv or not os.path.exists(anchor_csv):
+        return pd.DataFrame(columns=sorted(required_cols))
+
+    anchors = pd.read_csv(anchor_csv)
+    missing = sorted(required_cols - set(anchors.columns))
+    if missing:
+        raise ValueError(
+            f"Anchor allocations CSV at {anchor_csv} is missing required columns: {missing}"
+        )
+
+    anchors = anchors.copy()
+    anchors["tech_name"] = anchors["tech_name"].apply(
+        lambda value: TECH_NAME_ALIASES.get(normalize_name(value), str(value).strip())
+    )
+    anchors["anchor_reserved_fte"] = pd.to_numeric(
+        anchors["anchor_reserved_fte"], errors="raise"
+    )
+    anchors["external_field_fte"] = pd.to_numeric(
+        anchors["external_field_fte"], errors="raise"
+    )
+    anchors["anchor_site_lat"] = pd.to_numeric(anchors["anchor_site_lat"], errors="raise")
+    anchors["anchor_site_lon"] = pd.to_numeric(anchors["anchor_site_lon"], errors="raise")
+    anchors["anchor_show_on_map"] = anchors["anchor_show_on_map"].apply(
+        lambda value: int(str(value).strip().lower() in {"1", "true", "yes", "y"})
+    )
+    anchors["external_assignment_mode"] = (
+        anchors["external_assignment_mode"].fillna("").astype(str).str.strip()
+    )
+    anchors["external_allowed_states"] = anchors["external_allowed_states"].apply(
+        normalize_allowed_states
+    )
+
+    for _, row in anchors.iterrows():
+        reserved = float(row["anchor_reserved_fte"])
+        external = float(row["external_field_fte"])
+        if reserved < 0 or reserved > 1 or external < 0 or external > 1:
+            raise ValueError(
+                f"Anchor allocation FTE values must be between 0 and 1 for {row['tech_name']}."
+            )
+        if reserved + external > 1.000001:
+            raise ValueError(
+                f"Anchor allocation FTE values exceed 1.0 for {row['tech_name']}."
+            )
+        mode = str(row["external_assignment_mode"])
+        if mode == config.ASSIGNMENT_SCOPE_MODE_STATE_SET_LIMITED and not str(
+            row["external_allowed_states"]
+        ).strip():
+            raise ValueError(
+                f"state_set_limited anchor allocation requires external_allowed_states for {row['tech_name']}."
+            )
+    return anchors
+
+
+def apply_anchor_allocations(
+    tech_master: pd.DataFrame,
+    anchor_allocations: pd.DataFrame,
+) -> pd.DataFrame:
+    """Overlay anchored-tech metadata and reserved-duty availability onto tech_master."""
+    tech_master = tech_master.copy()
+    for col, default in ANCHOR_TECH_COLUMNS.items():
+        if col not in tech_master.columns:
+            tech_master[col] = default
+
+    if anchor_allocations.empty:
+        tameka_mask = tech_master["tech_name"].eq("Tameka Gongs")
+        if tameka_mask.any():
+            tech_master.loc[tameka_mask, "availability_fte"] = 0.25
+        return tech_master
+
+    anchor_by_name = {
+        str(row["tech_name"]).strip(): row for _, row in anchor_allocations.iterrows()
+    }
+
+    missing_names = sorted(set(anchor_by_name) - set(tech_master["tech_name"].astype(str)))
+    if missing_names:
+        raise ValueError(
+            "Anchor allocation tech_name values not found in technician roster: "
+            + ", ".join(missing_names)
+        )
+
+    for idx, row in tech_master.iterrows():
+        tech_name = str(row["tech_name"]).strip()
+        anchor = anchor_by_name.get(tech_name)
+        if anchor is None:
+            continue
+        tech_master.at[idx, "availability_fte"] = float(anchor["external_field_fte"])
+        tech_master.at[idx, "assignment_scope_mode"] = str(anchor["external_assignment_mode"]).strip()
+        tech_master.at[idx, "assignment_scope_state"] = ""
+        tech_master.at[idx, "assignment_scope_states"] = str(anchor["external_allowed_states"]).strip()
+        tech_master.at[idx, "anchor_site_name"] = str(anchor["anchor_site_name"]).strip()
+        tech_master.at[idx, "anchor_site_location_raw"] = str(anchor["anchor_site_location_raw"]).strip()
+        tech_master.at[idx, "anchor_site_lat"] = float(anchor["anchor_site_lat"])
+        tech_master.at[idx, "anchor_site_lon"] = float(anchor["anchor_site_lon"])
+        tech_master.at[idx, "anchor_reserved_fte"] = float(anchor["anchor_reserved_fte"])
+        tech_master.at[idx, "external_field_fte"] = float(anchor["external_field_fte"])
+        tech_master.at[idx, "anchor_show_on_map"] = int(anchor["anchor_show_on_map"])
+        tech_master.at[idx, "anchor_notes"] = str(anchor["anchor_notes"]).strip()
+
+    return tech_master
+
+
 def enrich_tech_policy_fields(
     tech_master: pd.DataFrame,
     airports_df: pd.DataFrame,
@@ -281,6 +428,7 @@ def build_tech_master(
     tech_path: str,
     airports_df: pd.DataFrame,
     contractor_scope: str,
+    anchor_allocations: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Build canonical technician table."""
     if str(tech_path).lower().endswith(".csv"):
@@ -323,10 +471,14 @@ def build_tech_master(
                 + ", ".join(invalid_values)
             )
         print("  NOTE: using cached tech_master CSV fallback.")
-        return enrich_tech_policy_fields(
+        enriched = enrich_tech_policy_fields(
             cached.sort_values("tech_name").reset_index(drop=True),
             airports_df,
             contractor_scope,
+        )
+        return apply_anchor_allocations(
+            enriched,
+            anchor_allocations if anchor_allocations is not None else pd.DataFrame(),
         )
 
     tech = None
@@ -398,8 +550,6 @@ def build_tech_master(
 
         is_contractor = "contractor" in name_raw.lower()
         availability = 0.5 if is_contractor else 1.0
-        if canonical_name == "Tameka Gongs":
-            availability = 0.25
         if canonical_name == "James Sanchez":
             availability = 1.0  # Full field tech; temporarily on phones (injury) but model targets ideal state
         if canonical_name == "Hakim Mouazer":
@@ -438,7 +588,11 @@ def build_tech_master(
         )
 
     tech_master = pd.DataFrame(rows).sort_values("tech_name").reset_index(drop=True)
-    return enrich_tech_policy_fields(tech_master, airports_df, contractor_scope)
+    tech_master = enrich_tech_policy_fields(tech_master, airports_df, contractor_scope)
+    return apply_anchor_allocations(
+        tech_master,
+        anchor_allocations if anchor_allocations is not None else pd.DataFrame(),
+    )
 
 
 def build_demand_appointments(
@@ -720,7 +874,13 @@ def main() -> None:
     )
 
     airports_df = build_airports_df(config.MAJOR_AIRPORTS)
-    tech_master = build_tech_master(tech_path, airports_df, args.contractor_assignment_scope)
+    anchor_allocations = load_anchor_allocations(config.TECHNICIAN_ANCHOR_ALLOCATIONS_CSV)
+    tech_master = build_tech_master(
+        tech_path,
+        airports_df,
+        args.contractor_assignment_scope,
+        anchor_allocations=anchor_allocations,
+    )
     demand = build_demand_appointments(appts_path, config.GEOCODED_APPTS_CSV, airports_df)
     candidates = build_candidate_bases(airports_df, demand, args.top_demand_cities)
 
@@ -752,6 +912,11 @@ def main() -> None:
     summary = {
         "appointments_source": appts_path,
         "tech_source": tech_path,
+        "technician_anchor_allocations_source": (
+            config.TECHNICIAN_ANCHOR_ALLOCATIONS_CSV
+            if os.path.exists(config.TECHNICIAN_ANCHOR_ALLOCATIONS_CSV)
+            else None
+        ),
         "rows": {
             "tech_master": int(len(tech_master)),
             "demand_appointments": int(len(demand)),
@@ -771,6 +936,19 @@ def main() -> None:
             "contractor_dispatch_surcharge_usd": config.CONTRACTOR_DISPATCH_SURCHARGE_USD,
         },
         "operational_zone_anchor": "airport_based",
+        "special_tech_constraints": [
+            {
+                "tech_name": str(row["tech_name"]),
+                "anchor_site_name": str(row["anchor_site_name"]),
+                "anchor_reserved_fte": float(row["anchor_reserved_fte"]),
+                "external_field_fte": float(row["external_field_fte"]),
+                "external_assignment_mode": str(row["assignment_scope_mode"]),
+                "external_allowed_states": str(row["assignment_scope_states"]),
+            }
+            for _, row in tech_master[
+                tech_master["anchor_site_name"].fillna("").astype(str).str.strip().ne("")
+            ].iterrows()
+        ],
         "data_span_days": int(data_span_days),
         "data_span_years": round(float(data_span_years), 4),
         "date_range_start": str(date_min.date()),

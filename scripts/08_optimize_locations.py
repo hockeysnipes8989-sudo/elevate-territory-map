@@ -169,18 +169,34 @@ def evaluate_zone_policy(zone_jump: int | None, zone_policy: str) -> tuple[bool,
     return True, 0.0
 
 
-def tech_assignment_scope_fields(tech: pd.Series, contractor_scope: str) -> tuple[str, str]:
-    """Return assignment scope mode/state with fallback for legacy data."""
+def parse_assignment_scope_states(value: object) -> set[str]:
+    """Parse semicolon-delimited assignment scope states into a normalized set."""
+    if value is None or pd.isna(value):
+        return set()
+    states: set[str] = set()
+    for token in str(value).split(";"):
+        raw = token.strip()
+        if not raw:
+            continue
+        states.add(normalize_state(raw))
+    return {state for state in states if state}
+
+
+def tech_assignment_scope_fields(
+    tech: pd.Series, contractor_scope: str
+) -> tuple[str, str, set[str]]:
+    """Return assignment scope mode/state/state-set with fallback for legacy data."""
     mode = str(tech.get("assignment_scope_mode", "")).strip()
     state = str(tech.get("assignment_scope_state", "")).strip()
+    states = parse_assignment_scope_states(tech.get("assignment_scope_states", ""))
     if state.lower() == "nan":
         state = ""
     is_contractor = str(tech.get("employment_type", "")).strip().lower() == "contractor"
     if mode:
-        return mode, state
+        return mode, state, states
     if is_contractor and contractor_scope == "texas_only":
-        return config.ASSIGNMENT_SCOPE_MODE_STATE_LIMITED, "TX"
-    return config.ASSIGNMENT_SCOPE_MODE_NATIONAL, ""
+        return config.ASSIGNMENT_SCOPE_MODE_STATE_LIMITED, "TX", {"TX"}
+    return config.ASSIGNMENT_SCOPE_MODE_NATIONAL, "", set()
 
 
 def tech_eligible_for_node(tech: pd.Series, node: pd.Series, contractor_scope: str) -> bool:
@@ -194,7 +210,7 @@ def tech_eligible_for_node(tech: pd.Series, node: pd.Series, contractor_scope: s
 
     node_state = str(node.get("state_norm", ""))
     florida_only = int(tech.get("constraint_florida_only", 0)) == 1
-    scope_mode, scope_state = tech_assignment_scope_fields(tech, contractor_scope)
+    scope_mode, scope_state, scope_states = tech_assignment_scope_fields(tech, contractor_scope)
     zone_policy = str(tech.get("zone_policy", config.ZONE_POLICY_STANDARD)).strip() or config.ZONE_POLICY_STANDARD
     jump = zone_jump_count(
         tech.get("base_operational_zone_rank"),
@@ -205,6 +221,8 @@ def tech_eligible_for_node(tech: pd.Series, node: pd.Series, contractor_scope: s
     if florida_only and node_state != "FL":
         return False
     if scope_mode == config.ASSIGNMENT_SCOPE_MODE_STATE_LIMITED and node_state != scope_state:
+        return False
+    if scope_mode == config.ASSIGNMENT_SCOPE_MODE_STATE_SET_LIMITED and node_state not in scope_states:
         return False
     if not zone_feasible:
         return False
@@ -542,6 +560,11 @@ def solve_scenario(
                 "employment_type": trow["employment_type"],
                 "base_state": trow["base_state"],
                 "base_airport_iata": trow["base_airport_iata"],
+                "assignment_scope_mode": trow.get("assignment_scope_mode"),
+                "assignment_scope_states": trow.get("assignment_scope_states"),
+                "anchor_site_name": trow.get("anchor_site_name"),
+                "anchor_reserved_fte": trow.get("anchor_reserved_fte"),
+                "external_field_fte": trow.get("external_field_fte"),
                 "node_id": nrow["node_id"],
                 "state_norm": nrow["state_norm"],
                 "skill_class": nrow["skill_class"],
@@ -1027,6 +1050,27 @@ def main() -> None:
     util_df.to_csv(util_out, index=False)
     contractor_usage_df.to_csv(contractor_out, index=False)
 
+    anchored_mask = (
+        tech["anchor_site_name"].fillna("").astype(str).str.strip().ne("")
+        if "anchor_site_name" in tech.columns
+        else pd.Series(False, index=tech.index)
+    )
+    special_tech_constraints = []
+    for _, row in tech[anchored_mask].iterrows():
+        reserved = pd.to_numeric(row.get("anchor_reserved_fte"), errors="coerce")
+        external = pd.to_numeric(row.get("external_field_fte"), errors="coerce")
+        special_tech_constraints.append(
+            {
+                "tech_name": str(row["tech_name"]),
+                "anchor_site_name": str(row.get("anchor_site_name", "")).strip(),
+                "anchor_reserved_fte": None if pd.isna(reserved) else float(reserved),
+                "external_field_fte": None if pd.isna(external) else float(external),
+                "assignment_scope_mode": str(row.get("assignment_scope_mode", "")).strip(),
+                "assignment_scope_states": str(row.get("assignment_scope_states", "")).strip(),
+                "anchor_notes": str(row.get("anchor_notes", "")).strip(),
+            }
+        )
+
     assumptions = {
         "min_new_hires": args.min_new_hires,
         "max_new_hires": args.max_new_hires,
@@ -1065,6 +1109,7 @@ def main() -> None:
             "dispatch_surcharge_usd_default": config.CONTRACTOR_DISPATCH_SURCHARGE_USD,
             "zone_policy_default": config.ZONE_POLICY_CONTRACTOR_SOFT,
         },
+        "special_tech_constraints": special_tech_constraints,
         "operational_zone_policy": {
             "anchor": "airport_based_operational_zone_buckets",
             "standard_rule": "0-1 free, 2 penalized, 3+ blocked",

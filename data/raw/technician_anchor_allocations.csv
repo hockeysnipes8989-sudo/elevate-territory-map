@@ -1,0 +1,2 @@
+tech_name,anchor_site_name,anchor_site_location_raw,anchor_site_lat,anchor_site_lon,anchor_reserved_fte,external_field_fte,external_assignment_mode,external_allowed_states,anchor_show_on_map,anchor_notes
+Tameka Gongs,Morgan State University,"Baltimore, MD",39.2908816,-76.610759,0.75,0.25,state_set_limited,MD;VA;WV;DC;DE,1,"75% reserved at Morgan State; 25% external field coverage"

@@ -19,6 +19,7 @@ Step 05 now builds a **stakeholder-first** map by default:
 - visible control: one small `Flight hubs` chip in the panel header for airport hubs
 - hidden from the stakeholder build: the heavier diagnostic layers and legend boxes
 - optional internal debug view: set `ELEVATE_MAP_UI_MODE=debug` before running `scripts/05_generate_map.py`
+- anchored tech sites such as **Morgan State University** can now be shown directly on the map
 
 ## Capacity / Utilization Framing
 
@@ -92,6 +93,9 @@ Ground-transport detail inside the drive tiers:
 - drive trips at or above `125` one-way median miles switch to rental-car economics
 - rental days follow the model's trip-span proxy, not a flat one-time rental fee
 
+Special-tech inputs:
+- `data/raw/technician_anchor_allocations.csv` stores anchor-site / reserved-duty metadata for technicians who are not fully general field resources
+
 ## Current Model Rules
 
 - Annual burdened planning cost per incremental new hire: `$146,640`
@@ -111,6 +115,7 @@ Ground-transport detail inside the drive tiers:
 - HTX contractors use a compressed-and-capped travel-cost proxy plus a dispatch surcharge
 - Standard employees and new hires are free at `0-1` operational zone jumps, penalized at `2`, and blocked at `3+`
 - Contractors use a softer operational-zone rule: free at `0-1`, penalized at `2`, heavily penalized at `3+`
+- Anchored technicians can reserve part of their FTE at a named site while limiting their remaining field work to an explicit nearby state set
 
 ## Step 08 Capacity Logic
 
@@ -138,6 +143,10 @@ Phase 1 added a small realism layer without changing the cost-first structure of
 - Step 08 now carries a separate `timezone_penalty_usd` term in the modeled cost output.
 - HTX contractors stay in the solve, but they are no longer treated as Texas-only.
 - Contractors are also **not** treated like free national resources. They still carry assignment friction.
+- Tameka is now modeled as an anchored technician:
+  - `75%` reserved at **Morgan State University**
+  - `25%` available for external field work
+  - external work limited to the configured nearby state set instead of broad national same-zone assignments
 
 ## Step 09 Patient-Sim Install Upside
 
@@ -180,9 +189,9 @@ From the current checked-in optimization outputs:
 - All `1,466` US appointments are served in every scenario
 - Best scenario under the repo's proven-optimal rule: **N=1**
 - Recommended `N=1` hire location file currently points to: **Cleveland, OH**
-- Current `N=4` placement set: **Atlanta, Cleveland, Janesville, Bossier City**
-- N=0 annualized total cost: **$457,132**
-- Mean existing-tech legacy utilization field at N=0: **0.8844**
+- Current `N=4` placement set: **Washington, DC; Atlanta, GA; Bossier City, LA; Janesville, WI**
+- N=0 annualized total cost: **$465,894**
+- Mean existing-tech legacy utilization field at N=0: **0.8575**
 - Max existing-tech legacy utilization field at N=0: **0.99999**
 - Weighted average install effort: **1.52 calendar days**
 - Weighted average install revenue: **$47,277**
@@ -193,21 +202,21 @@ From the current checked-in optimization outputs:
 
 | N | Annual Travel | Annual Zone Penalty | Annual Payroll | Annual Total |
 |---|--------------:|--------------------:|---------------:|-------------:|
-| 0 | $456,266 | $866 | $0 | $457,132 |
-| 1 | $384,875 | $866 | $146,640 | $532,382 |
-| 2 | $337,848 | $866 | $293,280 | $631,994 |
-| 3 | $291,570 | $866 | $439,920 | $732,356 |
-| 4 | $249,785 | $1,227 | $586,560 | $837,572 |
+| 0 | $465,028 | $866 | $0 | $465,894 |
+| 1 | $392,859 | $866 | $146,640 | $540,365 |
+| 2 | $342,651 | $866 | $293,280 | $636,798 |
+| 3 | $299,410 | $866 | $439,920 | $740,197 |
+| 4 | $258,142 | $1,227 | $586,560 | $845,929 |
 
 ### Scenario Install-Upside Summary
 
 | N | Install Units Enabled | Net Cost Increase | Net Economic Value | Break-Even Install Units |
 |---|----------------------:|------------------:|-------------------:|-------------------------:|
 | 0 | 0.0 | $0 | $0 | 0.0 |
-| 1 | 34.5 | $75,249 | $577,520 | 4.0 |
-| 2 | 66.1 | $174,862 | $1,075,892 | 9.2 |
-| 3 | 97.3 | $275,224 | $1,564,431 | 14.6 |
-| 4 | 134.8 | $380,439 | $2,168,624 | 20.1 |
+| 1 | 34.5 | $74,471 | $578,598 | 3.9 |
+| 2 | 69.1 | $170,903 | $1,135,593 | 9.0 |
+| 3 | 103.5 | $274,302 | $1,682,954 | 14.5 |
+| 4 | 135.5 | $380,035 | $2,182,210 | 20.1 |
 
 ## Key Caveats
 
