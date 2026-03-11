@@ -1,0 +1,1717 @@
+================================================================================
+  ELEVATE HEALTHCARE - FIELD SERVICE OPTIMIZATION PIPELINE
+  CURRENT TECHNICAL REFERENCE
+================================================================================
+
+  Prepared: March 11, 2026
+  Repository: https://github.com/hockeysnipes8989-sudo/elevate-territory-map
+  Live Map: https://hockeysnipes8989-sudo.github.io/elevate-territory-map/
+
+  Purpose:
+  This document explains, in plain English, how the current codebase works,
+  what each step does, what files it reads and writes, what rules are active
+  today, and what the latest saved results in the repo currently show.
+
+  Checked against:
+    - current scripts in elevate-territory-map/scripts/
+    - current saved outputs in data/processed/ and data/processed/optimization/
+    - current tests in elevate-territory-map/tests/
+
+================================================================================
+TABLE OF CONTENTS
+================================================================================
+
+  1.  Executive Summary
+  2.  Main Business Question
+  3.  Repo Layout and Key Files
+  4.  Data Sources and File Resolution Rules
+  5.  Steps 01-04: Map Preparation Pipeline
+  6.  Current Live Optimization Order
+  7.  Step 06: Build Optimization Inputs
+  8.  Step 11: Build the Full Travel Cost Table
+  9.  Step 08: Solve Hiring Scenarios
+  10. Step 09: Annualize, Analyze, and Score the Scenarios
+  11. Step 05: Interactive Map and Scenario Panel
+  12. Current Saved Scenario Snapshot
+  13. Current Install-Upside Snapshot
+  14. What Changed vs Older Versions
+  15. Main Limits and Simplifications
+  16. Validation and Tests
+  17. Files to Check First
+  18. Glossary
+
+================================================================================
+1. EXECUTIVE SUMMARY
+================================================================================
+
+This repo answers one main planning question:
+
+  "If Elevate hires new field technicians, how many should it hire and where
+   should they be based?"
+
+The current live optimization flow is:
+
+  Step 06 -> Step 11 -> Step 08 -> Step 09 -> Step 05
+
+In simple terms:
+
+  - Step 06 builds the clean optimization input tables.
+  - Step 11 prices travel for every usable base-to-demand pairing.
+  - Step 08 solves the hiring and assignment math problem.
+  - Step 09 converts the raw solver output into annual business results and
+    adds the patient-simulator install-upside view.
+  - Step 05 loads those saved results into the interactive map.
+
+The current saved run in the repo uses:
+
+  - 16 technicians
+  - 11.55 effective field FTE
+  - 1,466 US appointments in optimization scope
+  - 82 candidate bases
+  - 110 demand nodes
+  - 759 days of history
+  - 2.078 years of data span
+
+Important current result:
+
+  - Lowest observed annual cost in the saved run: N=0 at $465,894
+  - Current repo recommendation rule: N=1, because N=1 is the lowest-cost
+    scenario that was proven optimal by the solver
+
+Why that difference exists:
+
+  - N=0 looks cheapest in the saved outputs
+  - But N=0 hit the solver time limit before final proof
+  - N=1 through N=4 were proven optimal
+  - The repo currently uses a "proven_optimal_only" recommendation rule
+  - So the current recommended scenario is N=1 in Cleveland, OH
+
+The current install-upside view says:
+
+  - N=1 enables about 34.5 patient-sim installs per year
+  - N=1 creates about $653,069 of annual install profit enabled
+  - After subtracting the added annual cost of hiring, N=1 still shows about
+    $578,598 of positive annual net economic value under the current install-
+    only planning assumptions
+
+The current map behavior is also different from older versions:
+
+  - stakeholder mode is now the default
+  - the map now focuses on scenario dots, hire markers, and technician bases
+  - flight hubs are hidden behind one small toggle by default
+  - Tameka Gongs is now modeled as an anchored technician at Morgan State
+  - the install-upside model is now family-based, not the old generic bucket
+    model
+
+================================================================================
+2. MAIN BUSINESS QUESTION
+================================================================================
+
+The model treats the service demand as fixed and asks:
+
+  (a) Can the current team cover the work?
+  (b) If Elevate hires 1 to 4 new technicians, where should they sit?
+  (c) How does that change annual travel cost?
+  (d) How much existing-tech load gets freed up?
+  (e) What extra patient-sim install capacity could that freed time support?
+
+The optimizer itself is cost-first.
+
+That means Step 08 tries to minimize:
+
+  - travel cost
+  - time-zone / operational-zone penalties
+  - hire payroll
+  - optional out-of-region penalty
+  - unmet-demand penalty
+
+The install-upside analysis comes later in Step 09.
+
+That matters because:
+
+  - revenue does not change the Step 08 solve
+  - the hire recommendation is still chosen from the cost-first results
+  - Step 09 is a second business lens layered on top of the cost result
+
+================================================================================
+3. REPO LAYOUT AND KEY FILES
+================================================================================
+
+Main folders:
+
+  scripts/
+    Core pipeline logic
+
+  data/raw/
+    Source workbooks and anchor-allocation CSV
+
+  data/processed/
+    Map-ready cleaned outputs
+
+  data/processed/optimization/
+    Optimization outputs and Step 09 analysis outputs
+
+  docs/
+    Generated interactive map page
+
+  tests/
+    Small verification tests for the current modeling rules
+
+Most important scripts:
+
+  - 01_clean_data.py
+  - 02_geocode.py
+  - 03_match_install_base.py
+  - 04_build_territories.py
+  - 05_generate_map.py
+  - 06_build_optimization_inputs.py
+  - 08_optimize_locations.py
+  - 09_analyze_scenarios.py
+  - 11_build_full_cost_table.py
+  - install_mix_model.py
+  - optimization_utils.py
+  - config.py
+
+Most important saved outputs:
+
+  data/processed/
+    - service_appointments_clean.csv
+    - appointments_geocoded.csv
+    - technicians.csv
+    - technicians_geocoded.csv
+    - install_base_matched.csv
+    - install_base_all_matched.csv
+    - territory_summary.csv
+    - territories.geojson
+
+  data/processed/optimization/
+    - optimization_input_summary.json
+    - tech_master.csv
+    - demand_appointments.csv
+    - candidate_bases.csv
+    - full_cost_table.csv
+    - scenario_summary.csv
+    - scenario_summary_enhanced.csv
+    - scenario_placements.csv
+    - scenario_tech_utilization.csv
+    - scenario_contractor_usage.csv
+    - recommended_hire_locations.csv
+    - analysis_report.json
+    - analysis_report.md
+    - patient_sim_install_history_clean.csv
+    - patient_sim_forward_mix.csv
+    - patient_sim_family_economics_assumptions.csv
+    - scenario_install_upside_by_family.csv
+
+================================================================================
+4. DATA SOURCES AND FILE RESOLUTION RULES
+================================================================================
+
+There are two broad source types:
+
+  1. Raw source workbooks / CSVs
+  2. Generated processed outputs
+
+4.1  MAIN APPOINTMENT SOURCE
+     -------------------------------------------------------------------------
+     The main appointment workbook path is controlled by:
+
+       - CLI flag: --appts-xlsx
+       - env var: ELEVATE_APPTS_SOURCE
+       - config default: EXTERNAL_APPOINTMENTS_XLSX
+       - repo raw fallback: data/raw/UIUC service appointments with dipsatch
+         date - final.xlsx
+
+     In the current saved run, the resolved appointment source is:
+
+       /Users/patricklipinski/elevate-territory-map/data/raw/
+       UIUC service appointments with dipsatch date - final.xlsx
+
+4.2  MAIN TECHNICIAN SOURCE
+     -------------------------------------------------------------------------
+     The main technician workbook path is resolved in this order:
+
+       - CLI flag: --tech-xlsx
+       - env var: ELEVATE_TECH_SOURCE
+       - config default: EXTERNAL_TECH_ROSTER_XLSX
+       - cached optimization fallback: data/processed/optimization/tech_master.csv
+       - legacy workbook fallback: Service Appointments report - final.xlsx
+
+     In the current saved run, Step 06 used the cached fallback:
+
+       data/processed/optimization/tech_master.csv
+
+4.3  ANCHOR-ALLOCATION SOURCE
+     -------------------------------------------------------------------------
+     The anchored-tech file is:
+
+       data/raw/technician_anchor_allocations.csv
+
+     Current saved row:
+
+       - Tameka Gongs
+       - anchor site: Morgan State University
+       - reserved duty: 75%
+       - external field FTE: 25%
+       - external allowed states: MD / VA / WV / DC / DE
+       - anchor is shown on the map
+
+4.4  STEP 09 INSTALL-HISTORY SOURCE
+     -------------------------------------------------------------------------
+     Step 09 prefers the raw workbook over demand_appointments.csv because the
+     workbook preserves richer text detail for install parsing.
+
+     Current saved source metadata:
+
+       - source kind: raw_workbook_merge
+       - workbook:
+         /Users/patricklipinski/elevate-territory-map/data/raw/
+         UIUC service appointments with dipsatch date - final.xlsx
+       - raw sheet: report1770130594436
+       - derived sheet: Derived Fields
+
+================================================================================
+5. STEPS 01-04: MAP PREPARATION PIPELINE
+================================================================================
+
+These steps still matter.
+
+They are no longer the live optimization order, but they prepare the map-side
+data that Step 05 uses.
+
+--------------------------------------------------------------------------------
+5.1  STEP 01: CLEAN DATA
+--------------------------------------------------------------------------------
+
+Script:
+  scripts/01_clean_data.py
+
+Main outputs:
+
+  - data/processed/service_appointments_clean.csv
+  - data/processed/technicians.csv
+  - data/processed/install_base_clean.csv
+
+What Step 01 does:
+
+  - loads the appointment workbook
+  - cleans city names
+  - normalizes a few technician name variants
+  - builds geocode keys for appointments and technicians
+  - loads the technician roster
+  - excludes inactive / former technicians from current-state outputs
+  - loads the install base workbook
+  - flags active contracts
+
+Current saved output counts:
+
+  - cleaned appointments: 1,480 rows
+  - cleaned technicians: 16 rows
+  - install-base rows: 8,528
+  - install-base active-contract rows: 3,087
+
+--------------------------------------------------------------------------------
+5.2  STEP 02: GEOCODE
+--------------------------------------------------------------------------------
+
+Script:
+  scripts/02_geocode.py
+
+Main outputs:
+
+  - data/processed/appointments_geocoded.csv
+  - data/processed/technicians_geocoded.csv
+  - data/geocode_cache.json
+
+What Step 02 does:
+
+  - geocodes unique city/state keys with Nominatim
+  - caches results in JSON so the same places are not re-looked-up
+  - applies deterministic typo fixes from config.py
+  - applies exact account-level coordinate overrides
+
+Important exact override currently active:
+
+  - Morgan State University is pinned to:
+    lat 39.3438, lon -76.5844
+
+Current saved output counts:
+
+  - geocoded appointments: 1,480 of 1,480
+  - geocoded technicians: 16 of 16
+
+--------------------------------------------------------------------------------
+5.3  STEP 03: MATCH INSTALL BASE TO APPOINTMENT LOCATIONS
+--------------------------------------------------------------------------------
+
+Script:
+  scripts/03_match_install_base.py
+
+Main outputs:
+
+  - data/processed/install_base_matched.csv
+  - data/processed/install_base_all_matched.csv
+  - data/processed/install_base_nonactive_matched.csv
+
+What Step 03 does:
+
+  - matches install-base accounts to appointment account coordinates
+  - uses exact matching first
+  - then uses a small manual alias list
+  - then uses high-threshold fuzzy matching inside the same territory
+  - rejects a hand-maintained list of known bad fuzzy pairs
+
+Current fuzzy threshold:
+
+  - 95
+
+Current saved match snapshot:
+
+  Active-contract file:
+    - active assets: 3,087
+    - matched active assets: 2,000
+
+  All-assets file:
+    - all assets: 8,528
+    - matched all assets: 3,823
+
+--------------------------------------------------------------------------------
+5.4  STEP 04: BUILD TERRITORY BOUNDARIES
+--------------------------------------------------------------------------------
+
+Script:
+  scripts/04_build_territories.py
+
+Main outputs:
+
+  - data/processed/territory_summary.csv
+  - data/processed/territories.geojson
+
+What Step 04 does:
+
+  - builds the named territory layer from US states and Canadian provinces
+  - uses cached GeoJSON files when available
+  - handles split-state territories with reference markers instead of fake
+    full-state polygons
+  - creates outlier reference markers for places like Alaska and Hawaii
+
+Current saved territory count:
+
+  - 19 territories
+
+Important note:
+
+  - Canada is still present on the map side
+  - Canada is excluded from the optimization side
+
+================================================================================
+6. CURRENT LIVE OPTIMIZATION ORDER
+================================================================================
+
+The live optimization order today is:
+
+  Step 06 -> Step 11 -> Step 08 -> Step 09 -> Step 05
+
+That means:
+
+  - optimization inputs are built first
+  - travel is priced next
+  - the solver runs after that
+  - the analysis layer annualizes and scores the results
+  - the map loads the saved scenario outputs at the very end
+
+Steps 07 and 10 are not active.
+
+They are older, retired parts of the pipeline and should not be treated as
+current logic.
+
+================================================================================
+7. STEP 06: BUILD OPTIMIZATION INPUTS
+================================================================================
+
+Script:
+  scripts/06_build_optimization_inputs.py
+
+Main outputs:
+
+  - tech_master.csv
+  - demand_appointments.csv
+  - candidate_bases.csv
+  - skill_parse_ambiguous.csv
+  - optimization_input_summary.json
+
+--------------------------------------------------------------------------------
+7.1  TECHNICIAN TABLE
+--------------------------------------------------------------------------------
+
+Current saved output:
+
+  - 16 technicians
+  - 11.55 effective field FTE
+  - 2 contractors
+  - 9 HPS-certified techs
+  - 7 Learning Space-certified techs
+  - 16 patient-sim-certified techs
+  - 1 anchored technician
+
+What Step 06 does for technicians:
+
+  - resolves the source file
+  - normalizes known name variants
+  - parses city/state from free-form base text
+  - maps each base to a major airport
+  - adds skill flags
+  - adds travel-policy fields
+  - adds operational-zone fields
+  - applies availability overrides
+  - applies anchored-tech rules
+
+Current special availability rules in live code:
+
+  - HTX contractors: 0.50 FTE each
+  - Damion Lyn: 0.20 FTE
+  - Elier Martin: 0.10 FTE
+  - Hakim Mouazer: 0.00 FTE
+  - James Sanchez: 1.00 FTE
+  - Tameka Gongs: 0.25 FTE available for external field work
+
+Current special technician rules:
+
+  - Curt Corder is Florida-only
+  - Tameka Gongs is state-set-limited to MD / VA / WV / DC / DE for external
+    field work
+  - contractors use national scope in the current saved run
+
+Important current contractor policy defaults:
+
+  - assignment scope: anywhere
+  - travel cost policy: contractor_compressed_capped
+  - zone policy: contractor_soft
+  - cost multiplier: 0.65
+  - hard cap per trip: $900
+  - dispatch surcharge: $125
+
+Important current anchored-tech rule:
+
+  - Tameka Gongs is modeled as 75% reserved at Morgan State University and
+    25% available for external field work
+
+--------------------------------------------------------------------------------
+7.2  APPOINTMENT TABLE
+--------------------------------------------------------------------------------
+
+Current saved output:
+
+  - 1,466 US appointments in scope
+  - date range: 2024-01-02 through 2026-01-29
+  - data span: 759 days = 2.078 years
+  - annualized appointment count: about 705.5 per year
+  - states represented: 49
+
+What Step 06 does for appointments:
+
+  - merges the raw appointment sheet with the derived sheet
+  - keeps descriptive text, service type, and schedule fields
+  - brings in lat/lon from appointments_geocoded.csv when available
+  - fills remaining missing coordinates from city/state centroids
+  - assigns each appointment to a nearest hub airport
+  - assigns each appointment to a broad operational zone
+  - keeps duration_hours as the optimization workload field
+
+Important time-unit note:
+
+  duration_hours in this repo means the calendar window the appointment is
+  covering.
+
+  It is:
+
+    - not a timesheet field
+    - not pure hands-on labor time
+    - not a Monday-through-Friday payroll denominator
+
+Current demand-hours total:
+
+  - 85,578 duration_hours
+
+--------------------------------------------------------------------------------
+7.3  FILTERING RULES
+--------------------------------------------------------------------------------
+
+Step 06 removes appointments outside the current optimization scope:
+
+  - Canada is excluded
+  - certain excluded US territories are excluded
+
+That is why:
+
+  - the map-side cleaned file has 1,480 appointments
+  - the optimization demand file has 1,466 appointments
+
+--------------------------------------------------------------------------------
+7.4  SKILL CLASSIFICATION
+--------------------------------------------------------------------------------
+
+Step 06 classifies appointments from Description and Subject text.
+
+Current saved counts:
+
+  - regular: 1,033
+  - Learning Space: 319
+  - HPS: 114
+  - HPS + Learning Space: 0
+
+Current key rule:
+
+  - AVS and AVS ISO are treated as Learning Space work
+
+What that means in practice:
+
+  - if an appointment is AVS-related, Step 06 forces required_ls = 1
+  - if the original skill class was regular, it becomes ls
+  - if the original skill class was hps, it becomes hps_ls
+
+Current service-type snapshot in demand_appointments.csv:
+
+  - PM: 484
+  - Repair: 424
+  - AVS ISO: 300
+  - Other: 137
+  - ISO: 68
+  - Return/Follow-up: 39
+  - AVS: 14
+
+Current parse-ambiguity file:
+
+  - skill_parse_ambiguous.csv has 0 rows in the saved outputs
+
+--------------------------------------------------------------------------------
+7.5  CANDIDATE BASE TABLE
+--------------------------------------------------------------------------------
+
+Current saved output:
+
+  - 82 candidate bases total
+  - 62 major-airport candidates
+  - 20 demand-city candidates
+
+Candidate logic:
+
+  - start with the major airport list in config.py
+  - add the top-demand cities from the demand table
+  - attach each demand city to its nearest major airport
+  - remove demand cities that duplicate an existing airport city/state
+  - attach operational-zone fields
+
+Important note:
+
+  - Step 06 asks for the top 40 demand cities by default
+  - after deduping against airport cities, the current saved output keeps 20
+
+================================================================================
+8. STEP 11: BUILD THE FULL TRAVEL COST TABLE
+================================================================================
+
+Script:
+  scripts/11_build_full_cost_table.py
+
+Main output:
+  full_cost_table.csv
+
+Step 11 precomputes the travel cost for every usable base-to-node pairing
+before the solver runs.
+
+--------------------------------------------------------------------------------
+8.1  WHAT A DEMAND NODE MEANS
+--------------------------------------------------------------------------------
+
+The solver does not assign one technician per raw appointment directly.
+
+It first groups appointments into nodes by:
+
+  state_norm + skill_class
+
+With the current saved demand file, that creates:
+
+  - 110 demand nodes
+
+--------------------------------------------------------------------------------
+8.2  CURRENT COST TABLE SIZE
+--------------------------------------------------------------------------------
+
+Current saved full_cost_table.csv:
+
+  - 10,670 rows
+
+Why 10,670 rows exists:
+
+  - 15 usable existing-tech origins x 110 nodes
+  - 82 candidate bases x 110 nodes
+
+One technician does not contribute active origin rows in the current saved
+table:
+
+  - Hakim Mouazer
+
+Why:
+
+  - his availability is 0.0
+  - his base airport is blank in the current saved tech table
+  - Canada is also outside optimization scope
+
+--------------------------------------------------------------------------------
+8.3  THREE-TIER TRIP LOGIC
+--------------------------------------------------------------------------------
+
+Step 11 uses three distance bands:
+
+  1. drive_day
+  2. drive_overnight
+  3. fly
+
+Current thresholds:
+
+  - under 100 miles: drive_day
+  - 100 to under 300 miles: drive_overnight
+  - 300 miles or more: fly
+
+--------------------------------------------------------------------------------
+8.4  GROUND-TRANSPORT RULE
+--------------------------------------------------------------------------------
+
+Drive trips use one extra rule:
+
+  - below 125 one-way median miles: personal-vehicle mileage
+  - at 125 or above: rental-car economics
+
+That means:
+
+  - short drive trips use mileage reimbursement
+  - longer drive trips switch to rental-day logic
+
+Rental days are based on:
+
+  trip_span_days = max(1, ceil(node_avg_days))
+
+So rental cost grows with the modeled trip span.
+
+--------------------------------------------------------------------------------
+8.5  CURRENT COST CONSTANTS
+--------------------------------------------------------------------------------
+
+These come from scripts/config.py:
+
+  - IRS mileage rate: $0.60 per mile
+  - rental car: $40 per day
+  - hotel: $165 per night
+  - BTS national fallback fare: $386
+  - corporate travel premium: 1.6x
+  - personal-vehicle cutoff: 125 one-way miles
+
+Important note:
+
+  - older write-ups that mention $0.70 mileage, flat $235 rental, or $159
+    hotel are stale
+  - the current live code uses the values above
+
+--------------------------------------------------------------------------------
+8.6  HOW EACH TRIP TYPE IS PRICED
+--------------------------------------------------------------------------------
+
+Same-day drive:
+
+  cost = mileage only
+
+Overnight drive:
+
+  cost = mileage or rental + 1 hotel night
+
+Fly:
+
+  cost = origin-airport BTS fare x 1.6
+       + rental days
+       + hotel nights
+
+Important simplification:
+
+  - flight cost is origin-only
+  - it depends on the origin airport, not the exact destination airport
+
+--------------------------------------------------------------------------------
+8.7  CONTRACTOR TRAVEL POLICY
+--------------------------------------------------------------------------------
+
+Contractors do not use the raw employee-style unit travel cost directly.
+
+Their effective travel unit cost is:
+
+  employee_style_unit_cost x 0.65 + 125
+
+Then it is capped at:
+
+  $900
+
+This keeps contractors flexible, but not free.
+
+--------------------------------------------------------------------------------
+8.8  CURRENT TRIP MIX SNAPSHOT
+--------------------------------------------------------------------------------
+
+From the saved full_cost_table.csv:
+
+  - fly: 90.88%
+  - drive_overnight: 7.32%
+  - drive_day: 1.80%
+
+Current saved flight-cost snapshot:
+
+  - mean flight component: $632.69
+  - min flight component: $455.26
+  - max flight component: $782.51
+
+================================================================================
+9. STEP 08: SOLVE HIRING SCENARIOS
+================================================================================
+
+Script:
+  scripts/08_optimize_locations.py
+
+This is the actual hiring optimizer.
+
+It uses SciPy's HiGHS-backed MILP solver. In plain English, that means it uses
+a math optimizer that searches for the lowest-cost answer while obeying a set
+of hard rules.
+
+--------------------------------------------------------------------------------
+9.1  CURRENT SCENARIO RANGE
+--------------------------------------------------------------------------------
+
+The saved run solves:
+
+  N = 0, 1, 2, 3, 4
+
+--------------------------------------------------------------------------------
+9.2  DEMAND NODES
+--------------------------------------------------------------------------------
+
+Step 08 groups raw appointments into 110 nodes using:
+
+  - state
+  - skill class
+
+Each node stores:
+
+  - appointment count
+  - total demand hours
+  - average hours per appointment
+  - plurality operational zone for that node
+
+--------------------------------------------------------------------------------
+9.3  DECISION VARIABLES
+--------------------------------------------------------------------------------
+
+Step 08 creates four kinds of variables:
+
+  x = existing-tech assignments
+  z = new-hire assignments
+  y = number of hires placed at each candidate base
+  u = unmet appointments
+
+In simple terms:
+
+  - x and z decide who covers the work
+  - y decides where new hires sit
+  - u is a last-resort safety valve if the model cannot cover something
+
+--------------------------------------------------------------------------------
+9.4  OBJECTIVE
+--------------------------------------------------------------------------------
+
+The model minimizes:
+
+  travel cost
+  + out-of-region penalty
+  + time-zone / operational-zone penalty
+  + hire cost
+  + unmet-demand penalty
+
+Current defaults:
+
+  - out-of-region penalty: $0
+  - unmet-demand penalty: $5,000 per appointment
+  - annual hire cost: $146,640 per new hire
+
+Important note:
+
+  - the out-of-region penalty is still part of the objective shape
+  - but in the current saved run it is effectively off because it is set to 0
+
+--------------------------------------------------------------------------------
+9.5  CAPACITY / LOAD MODEL
+--------------------------------------------------------------------------------
+
+The current model does not assume a fixed 2,080-hour year.
+
+Instead it normalizes capacity against the current appointment-duration demand
+pool.
+
+Current saved values:
+
+  - total demand hours: 85,578
+  - total effective FTE: 11.55
+  - target utilization: 0.85
+  - hours_per_capacity_unit: 8,716.883
+
+So:
+
+  - each existing tech gets availability_fte x 8,716.883 capacity hours
+  - each new hire gets 8,716.883 capacity hours
+
+Important interpretation:
+
+  - duration_hours is calendar-window workload
+  - capacity_hours is normalized model capacity
+  - utilization outputs are modeled load ratios
+
+They are NOT:
+
+  - literal payroll utilization
+  - literal weekday labor utilization
+  - literal clocked timesheet utilization
+
+--------------------------------------------------------------------------------
+9.6  HARD ELIGIBILITY RULES
+--------------------------------------------------------------------------------
+
+Current hard rules in live code:
+
+  - HPS work can only go to HPS-certified existing techs
+  - Learning Space work can only go to LS-certified techs
+  - all work requires patient-sim skill
+  - new hires cannot serve HPS-required nodes
+  - Curt Corder can only serve Florida
+  - a technician with no usable base airport cannot be assigned
+  - hires per base are capped by --max-hires-per-base
+
+Current default base cap:
+
+  - 1 hire per base
+
+--------------------------------------------------------------------------------
+9.7  OPERATIONAL-ZONE RULES
+--------------------------------------------------------------------------------
+
+The current model uses broad airport-based operational zones:
+
+  - Eastern
+  - Central
+  - Mountain
+  - Pacific
+  - Alaska
+  - Hawaii
+
+Important Arizona handling:
+
+  - Arizona is fixed to Mountain for this model
+  - daylight-saving detail is intentionally ignored here
+
+Current standard employee / new-hire rule:
+
+  - 0 or 1 zone jump: allowed with no penalty
+  - 2 zone jumps: allowed with a $450 penalty per appointment
+  - 3 or more zone jumps: blocked
+
+Current contractor rule:
+
+  - 0 or 1 zone jump: allowed with no penalty
+  - 2 zone jumps: allowed with a $250 penalty per appointment
+  - 3 or more zone jumps: still allowed, but with a $1,500 penalty per
+    appointment
+
+--------------------------------------------------------------------------------
+9.8  ASSIGNMENT-SCOPE RULES
+--------------------------------------------------------------------------------
+
+Current saved rules:
+
+  Standard employees:
+    - national unless another explicit restriction exists
+
+  HTX contractors:
+    - national in the current saved run
+    - older write-ups that still say "Texas-only contractors" are stale
+
+  Anchored Tameka rule:
+    - state-set-limited to MD / VA / WV / DC / DE for external field work
+
+--------------------------------------------------------------------------------
+9.9  ANNUALIZATION INSIDE THE SOLVER
+--------------------------------------------------------------------------------
+
+The saved demand spans 2.078 years.
+
+Travel cost in Step 08 naturally covers that full multi-year period, so hire
+cost is scaled up to the same period before the solve.
+
+Current saved math:
+
+  $146,640 x 2.078 = $304,717.92 per hire for the optimization period
+
+That keeps the cost comparison fair inside the solver.
+
+Step 09 later converts those period totals back to annual numbers.
+
+--------------------------------------------------------------------------------
+9.10  CURRENT RECOMMENDATION RULE
+--------------------------------------------------------------------------------
+
+The analysis layer uses:
+
+  proven_optimal_only
+
+Meaning:
+
+  - if at least one scenario is proven optimal, pick the best scenario from
+    only that proven-optimal set
+  - if none are proven optimal, then fall back to the lowest observed cost
+
+That is why:
+
+  - N=0 has the lowest observed annual cost
+  - N=1 is still the current official recommendation in the repo
+
+================================================================================
+10. STEP 09: ANNUALIZE, ANALYZE, AND SCORE THE SCENARIOS
+================================================================================
+
+Script:
+  scripts/09_analyze_scenarios.py
+
+Main outputs:
+
+  - scenario_summary_enhanced.csv
+  - recommended_hire_locations.csv
+  - analysis_report.json
+  - analysis_report.md
+  - patient_sim_install_history_clean.csv
+  - patient_sim_historical_mix_events.csv
+  - patient_sim_historical_mix_units.csv
+  - patient_sim_forward_mix.csv
+  - patient_sim_family_economics_assumptions.csv
+  - scenario_install_upside_by_family.csv
+
+--------------------------------------------------------------------------------
+10.1  WHAT STEP 09 DOES
+--------------------------------------------------------------------------------
+
+Step 09 takes the raw Step 08 outputs and:
+
+  - annualizes the cost columns
+  - computes savings vs N=0
+  - computes marginal change vs the prior scenario
+  - measures how much existing-tech load is freed
+  - converts that freed load into patient-sim install capacity
+  - builds the recommendation file
+  - writes JSON and Markdown analysis reports
+
+--------------------------------------------------------------------------------
+10.2  CURRENT ANNUALIZATION RULE
+--------------------------------------------------------------------------------
+
+Step 09 divides the period-total cost columns by:
+
+  data_span_years = 2.078
+
+That is why the map and reports show annual values rather than raw full-period
+totals.
+
+--------------------------------------------------------------------------------
+10.3  CURRENT FREED-CAPACITY MATH
+--------------------------------------------------------------------------------
+
+The current install-capacity math is:
+
+  1. Compare existing-tech assigned hours at N=0 vs each hire scenario
+  2. Treat the difference as freed existing-tech hours
+  3. Convert hours to calendar days by dividing by 24
+  4. Keep only 30% of that time as realistically usable
+  5. Divide by weighted-average install calendar days
+
+Current key assumptions:
+
+  - freed-capacity utilization factor: 0.30
+  - capacity time unit: calendar_days
+  - weighted-average install calendar days: 1.517857
+  - weighted-average install revenue: $47,276.79
+  - weighted-average install profit per install: $18,910.71
+
+Important meaning of the 30% factor:
+
+  - the code assumes only part of the freed calendar time becomes actual new
+    installs in the real world
+  - this is meant to absorb scheduling friction, admin work, sales-pipeline
+    limits, and other real-world loss
+
+--------------------------------------------------------------------------------
+10.4  CURRENT INSTALL MODEL
+--------------------------------------------------------------------------------
+
+The current Step 09 model is not the old low / mid / high install bucket model.
+
+It is now a family-based patient-sim install-only model that:
+
+  - rebuilds install history from the raw workbook first
+  - parses product-family signals from Description and Subject
+  - excludes AVS / Learning Space from patient-sim revenue
+  - excludes obvious non-net-new install rows
+  - separates historical mix from forward mix
+  - excludes HPS from the forward mix by default
+  - uses per-family revenue, margin, and install-day assumptions
+
+Current normalized families:
+
+  - Apollo
+  - Lucina
+  - Juno
+  - Ares
+  - Aria
+  - Evo
+  - Luna
+  - HPS
+
+--------------------------------------------------------------------------------
+10.5  CURRENT INSTALL-HISTORY CLEANING RULES
+--------------------------------------------------------------------------------
+
+Step 09 excludes rows for reasons like:
+
+  - learning_space_excluded
+  - non_net_new_install
+  - service_type_non_install
+  - support_only_install_activity
+  - ambiguous_family_unresolved
+  - ambiguous_bundle_units
+
+It also deduplicates likely repeats by:
+
+  - case id + family when possible
+  - otherwise account + normalized description + family
+
+Current saved history snapshot from analysis_report.json:
+
+  - parsed clean-history rows: 469
+  - included history component rows after exclusions and dedupe: 108
+
+--------------------------------------------------------------------------------
+10.6  CURRENT HISTORICAL MIX AND FORWARD MIX
+--------------------------------------------------------------------------------
+
+Current historical mix by inferred unit share:
+
+  - Apollo: 29.51%
+  - Lucina: 20.49%
+  - Juno: 21.31%
+  - Ares: 4.92%
+  - Aria: 6.56%
+  - Evo: 5.74%
+  - Luna: 3.28%
+  - HPS: 8.20%
+
+Current forward mix:
+
+  - Apollo: 32.14%
+  - Lucina: 22.32%
+  - Juno: 23.21%
+  - Ares: 5.36%
+  - Aria: 7.14%
+  - Evo: 6.25%
+  - Luna: 3.57%
+  - HPS: 0.00% because config excludes it
+
+--------------------------------------------------------------------------------
+10.7  CURRENT FAMILY ECONOMICS TABLE
+--------------------------------------------------------------------------------
+
+Current saved per-family planning assumptions:
+
+  - Apollo: revenue $50,000, margin 40%, install days 2.375
+  - Lucina: revenue $80,000, margin 40%, install days 1.375
+  - Juno: revenue $19,000, margin 40%, install days 0.375
+  - Ares: revenue $33,000, margin 40%, install days 1.375
+  - Aria: revenue $38,000, margin 40%, install days 1.875
+  - Evo: revenue $45,000, margin 40%, install days 1.375
+  - Luna: revenue $46,000, margin 40%, install days 1.875
+  - HPS: excluded from forward mix by default and has no active revenue value
+
+Where install days come from:
+
+  - config override if one exists
+  - otherwise historical single-unit median
+  - otherwise historical all-row median
+
+Important note:
+
+  - these revenue values are still planning assumptions
+  - the code is built so they can be replaced later in config.py
+
+--------------------------------------------------------------------------------
+10.8  LEGACY COMPATIBILITY COLUMNS
+--------------------------------------------------------------------------------
+
+Step 09 still writes older conservative / moderate / aggressive install columns
+for compatibility with the map and other downstream readers.
+
+Important current meaning:
+
+  - those columns are now aliases to one single family-weighted install-only
+    model
+  - recurring service-contract profit is currently set to 0 in those outputs
+
+--------------------------------------------------------------------------------
+10.9  CURRENT BEST-SCENARIO SELECTION LOGIC
+--------------------------------------------------------------------------------
+
+Step 09 picks the recommended scenario like this:
+
+  - use only proven-optimal scenarios when at least one exists
+  - otherwise fall back to the lowest observed cost
+
+That rule is why the recommendation file currently points to:
+
+  - Cleveland, OH for the N=1 scenario
+
+================================================================================
+11. STEP 05: INTERACTIVE MAP AND SCENARIO PANEL
+================================================================================
+
+Script:
+  scripts/05_generate_map.py
+
+Main output:
+  docs/index.html
+
+Step 05 is the presentation layer.
+
+It does not solve the optimization problem. It loads already-saved files and
+turns them into a map and scenario panel.
+
+--------------------------------------------------------------------------------
+11.1  CURRENT MAP DATA SNAPSHOT
+--------------------------------------------------------------------------------
+
+Current saved map-side counts:
+
+  - appointments_geocoded.csv: 1,480 rows
+  - technicians_geocoded.csv: 16 rows
+  - install_base_matched.csv active rows: 3,087
+  - territory_summary.csv rows: 19
+  - anchored technician sites shown on map: 1
+
+--------------------------------------------------------------------------------
+11.2  STAKEHOLDER MODE IS NOW THE DEFAULT
+--------------------------------------------------------------------------------
+
+The current default UI mode is:
+
+  stakeholder
+
+That means the map now favors the clean business-story view by default.
+
+Visible by default in stakeholder mode:
+
+  - technician home bases
+  - scenario territory-assignment dots
+  - selected-scenario new-hire markers
+
+Available but hidden behind a toggle:
+
+  - flight hubs
+
+Hidden in stakeholder mode:
+
+  - active-asset layer
+  - non-active-asset layer
+  - raw service-appointment layer
+  - territory boundaries
+  - hub-radius circles
+  - legend boxes
+  - Folium layer-control widget
+
+If you want the older inspection-heavy view, use:
+
+  ELEVATE_MAP_UI_MODE=debug
+
+--------------------------------------------------------------------------------
+11.3  CURRENT SCENARIO PANEL
+--------------------------------------------------------------------------------
+
+The scenario panel currently shows:
+
+  Cost & Load:
+    - Total Cost
+    - Annual Cost Delta vs N=0
+    - Incremental Cost vs Prior Scenario
+    - Incremental Hire Payroll
+    - Mean Load Ratio
+    - Peak Load Ratio
+    - Unmet Appointments only if any scenario has unmet work
+
+  Install Upside:
+    - Install Units Enabled
+    - Install Revenue Enabled
+    - Install Profit Enabled
+    - Net Economic Value
+    - Break-Even Units
+    - ROI
+
+  Other UI behavior:
+    - scenario buttons N=0 through N=4
+    - mobile show/hide toggle
+    - KPI explanation modal
+    - recommended-base list
+    - coverage-assignment list
+
+--------------------------------------------------------------------------------
+11.4  CURRENT TERRITORY DOT LOGIC
+--------------------------------------------------------------------------------
+
+The colored assignment dots on the map are not direct raw solver outputs.
+
+Why:
+
+  - the solver assigns work at the node level
+  - the map wants to show actual appointment points
+
+So Step 05 rebuilds appointment-level ownership like this:
+
+  1. take the node-level assignment quotas from Step 08 outputs
+  2. round them to whole appointments
+  3. fix any rounding mismatch by adjusting the biggest quota
+  4. assign individual appointments to assignees using a nearest-base greedy
+     rule
+
+Important meaning:
+
+  - the dots are a visualization reconstruction
+  - they are meant to tell the story of coverage
+  - they are not a separate new optimization solve
+
+--------------------------------------------------------------------------------
+11.5  CURRENT COVERAGE-COLOR LOGIC
+--------------------------------------------------------------------------------
+
+The current map now uses a fixed high-contrast color map for known assignees.
+
+Why:
+
+  - older versions could leave two heavy-usage assignees looking too similar
+  - the current code now reserves explicit colors for the main technicians and
+    current saved new-hire candidates
+
+Current coverage-panel behavior:
+
+  - top assignees are shown first
+  - only the first 6 are shown by default
+  - a "show all" toggle appears if more than 6 assignees exist
+
+--------------------------------------------------------------------------------
+11.6  CURRENT ANCHOR-SITE MAP BEHAVIOR
+--------------------------------------------------------------------------------
+
+The map can now show anchored technician sites directly.
+
+Current saved anchor site:
+
+  - Morgan State University
+
+Current saved Tameka map behavior:
+
+  - Tameka still has a base in Baltimore / BWI
+  - the map can also show her reserved anchor site as a separate marker
+
+================================================================================
+12. CURRENT SAVED SCENARIO SNAPSHOT
+================================================================================
+
+All figures below are annualized from the 2.078-year data period.
+
+12.1  COST SNAPSHOT
+     -------------------------------------------------------------------------
+
+  N=0
+    - solver result: time limit reached, usable solution found, not proven
+    - annual total cost: $465,894
+    - annual travel cost: $465,028
+    - annual zone penalty: $866
+    - annual hire payroll: $0
+    - annual unmet appointments: 0
+
+  N=1
+    - solver result: proven optimal
+    - annual total cost: $540,365
+    - annual travel cost: $392,859
+    - annual zone penalty: $866
+    - annual hire payroll: $146,640
+    - annual unmet appointments: 0
+    - placement: Cleveland, OH
+
+  N=2
+    - solver result: proven optimal
+    - annual total cost: $636,798
+    - annual travel cost: $342,651
+    - annual zone penalty: $866
+    - annual hire payroll: $293,280
+    - annual unmet appointments: 0
+    - placements: Washington, DC and Janesville, WI
+
+  N=3
+    - solver result: proven optimal
+    - annual total cost: $740,197
+    - annual travel cost: $299,410
+    - annual zone penalty: $866
+    - annual hire payroll: $439,920
+    - annual unmet appointments: 0
+    - placements: Washington, DC; Bossier City, LA; Janesville, WI
+
+  N=4
+    - solver result: proven optimal
+    - annual total cost: $845,929
+    - annual travel cost: $258,142
+    - annual zone penalty: $1,227
+    - annual hire payroll: $586,560
+    - annual unmet appointments: 0
+    - placements: Washington, DC; Atlanta, GA; Bossier City, LA; Janesville, WI
+
+12.2  LOAD SNAPSHOT
+     -------------------------------------------------------------------------
+
+Current mean existing-tech load ratio:
+
+  - N=0: 0.8575
+  - N=1: 0.7905
+  - N=2: 0.7468
+  - N=3: 0.6818
+  - N=4: 0.4825
+
+Current peak existing-tech load ratio:
+
+  - N=0: 0.999999
+  - N=1: 0.999998
+  - N=2: 0.999946
+  - N=3: 0.999704
+  - N=4: 0.998807
+
+Important interpretation:
+
+  - those are modeled load ratios under the calendar-window framework
+  - they are not literal payroll utilization percentages
+
+12.3  CURRENT BEST-SCENARIO INTERPRETATION
+     -------------------------------------------------------------------------
+
+If you look only at observed annual cost:
+
+  - N=0 looks best
+
+If you apply the repo's current recommendation rule:
+
+  - N=1 is the selected best scenario
+
+That is the correct current reading of the saved repo outputs.
+
+================================================================================
+13. CURRENT INSTALL-UPSIDE SNAPSHOT
+================================================================================
+
+All figures below are annualized.
+
+13.1  BY SCENARIO
+     -------------------------------------------------------------------------
+
+  N=0
+    - install units enabled: 0.0
+    - net cost increase vs N=0: $0
+    - net economic value: $0
+    - break-even units: 0.0
+
+  N=1
+    - install units enabled: 34.5
+    - install revenue enabled: $1,632,672
+    - install profit enabled: $653,069
+    - net cost increase vs N=0: $74,471
+    - net economic value: $578,598
+    - break-even units: 3.9
+
+  N=2
+    - install units enabled: 69.1
+    - install revenue enabled: $3,266,242
+    - install profit enabled: $1,306,497
+    - net cost increase vs N=0: $170,903
+    - net economic value: $1,135,593
+    - break-even units: 9.0
+
+  N=3
+    - install units enabled: 103.5
+    - install revenue enabled: $4,893,140
+    - install profit enabled: $1,957,256
+    - net cost increase vs N=0: $274,302
+    - net economic value: $1,682,954
+    - break-even units: 14.5
+
+  N=4
+    - install units enabled: 135.5
+    - install revenue enabled: $6,405,612
+    - install profit enabled: $2,562,245
+    - net cost increase vs N=0: $380,035
+    - net economic value: $2,182,210
+    - break-even units: 20.1
+
+13.2  WHAT THIS CURRENTLY MEANS
+     -------------------------------------------------------------------------
+
+Under the current install-only assumptions:
+
+  - every hire scenario after N=0 produces positive net economic value
+  - the model shows growing install upside as more load is taken off existing
+    techs
+
+But this should still be read carefully:
+
+  - it is a planning model
+  - it assumes the extra install demand actually exists
+  - it assumes only 30% of freed calendar time becomes usable install time
+  - it does not guarantee bookings
+
+================================================================================
+14. WHAT CHANGED VS OLDER VERSIONS
+================================================================================
+
+These are the biggest changes that matter when reading older notes:
+
+14.1  MAP UI CHANGED
+     -------------------------------------------------------------------------
+
+  Old understanding:
+    - debug-style map with many visible layers
+
+  Current reality:
+    - stakeholder mode is default
+    - map is cleaner and story-first
+    - flight hubs are behind a small toggle
+    - coverage colors are now intentionally separated
+
+14.2  CONTRACTOR GEOGRAPHY CHANGED
+     -------------------------------------------------------------------------
+
+  Old understanding:
+    - HTX contractors were treated as Texas-only
+
+  Current reality:
+    - current saved run uses national contractor scope
+    - contractors still pay a travel-cost transformation and zone penalties
+
+14.3  OPERATIONAL-ZONE REALISM WAS ADDED
+     -------------------------------------------------------------------------
+
+  Old understanding:
+    - no broad time-zone / operating-zone penalty layer
+
+  Current reality:
+    - airport-based operational zones are active
+    - standard employees and new hires are blocked at 3+ jumps
+    - contractors use a softer penalty-only version
+
+14.4  TAMEKA / MORGAN STATE MODELING WAS ADDED
+     -------------------------------------------------------------------------
+
+  Old understanding:
+    - Tameka looked like a normal fully flexible field tech
+
+  Current reality:
+    - Tameka is modeled as an anchored technician
+    - Morgan State is pinned to exact coordinates
+    - only 25% of her FTE is in the flexible field pool
+
+14.5  INSTALL MODEL CHANGED
+     -------------------------------------------------------------------------
+
+  Old understanding:
+    - low / mid / high generic install buckets
+
+  Current reality:
+    - family-based model
+    - cleaned historical install parsing
+    - forward mix by family
+    - install-only upside in the main view
+
+14.6  LOAD / UTILIZATION LANGUAGE CHANGED
+     -------------------------------------------------------------------------
+
+  Old understanding:
+    - utilization language could sound like literal labor utilization
+
+  Current reality:
+    - the repo now clearly frames these as modeled load ratios
+    - that is the correct current interpretation
+
+================================================================================
+15. MAIN LIMITS AND SIMPLIFICATIONS
+================================================================================
+
+These are the main things to keep in mind when using the current model:
+
+15.1  DURATION_HOURS IS NOT HANDS-ON LABOR
+     -------------------------------------------------------------------------
+
+  - the model uses appointment duration as calendar-window workload
+  - that is practical for this dataset
+  - but it is not the same thing as direct labor time
+
+15.2  FLIGHT COST IS ORIGIN-ONLY
+     -------------------------------------------------------------------------
+
+  - the flight component depends on the origin airport
+  - it does not vary by exact destination airport
+
+15.3  DEMAND IS AGGREGATED TO NODES
+     -------------------------------------------------------------------------
+
+  - Step 08 solves on state + skill nodes
+  - it does not optimize each appointment as its own separate variable
+
+15.4  MAP DOTS ARE A VISUAL RECONSTRUCTION
+     -------------------------------------------------------------------------
+
+  - the map rebuilds appointment-level ownership from node quotas
+  - that is useful for storytelling
+  - but it is not a second exact optimization
+
+15.5  FAMILY ECONOMICS ARE STILL PLANNING ASSUMPTIONS
+     -------------------------------------------------------------------------
+
+  - per-family install revenue values are provisional
+  - the code is ready for those values to be replaced later
+
+15.6  HPS IS EXCLUDED FROM THE FORWARD MIX
+     -------------------------------------------------------------------------
+
+  - HPS remains in historical reporting
+  - HPS is excluded from the forward-looking install upside by config
+
+15.7  CANADA IS VISIBLE ON THE MAP BUT OUT OF OPTIMIZATION SCOPE
+     -------------------------------------------------------------------------
+
+  - Canada still appears in some map-side data and territory layers
+  - Canada is filtered out of Step 06 demand before optimization
+
+15.8  ANCHOR MODELING IS SIMPLE BY DESIGN
+     -------------------------------------------------------------------------
+
+  - the current anchor logic reduces available FTE and limits scope
+  - it does not create synthetic anchored demand rows
+  - that simpler approach is intentional in the current code
+
+================================================================================
+16. VALIDATION AND TESTS
+================================================================================
+
+The repo has small focused tests that help verify the newer modeling rules.
+
+Current test files:
+
+  - tests/test_phase1_modeling.py
+  - tests/test_install_mix_model.py
+
+What they currently check:
+
+  - Arizona maps to the Mountain operational bucket
+  - node operational zone uses the plurality zone from the underlying
+    appointments
+  - standard employees are blocked at 3+ zone jumps
+  - contractors get the softer zone rule
+  - the 125-mile ground-transport cutoff works as expected
+  - contractor travel cost is compressed and capped
+  - Tameka's anchor allocation reduces capacity and restricts state scope
+  - Morgan State exact coordinate override is applied
+  - install parsing excludes Learning Space and replacement work
+  - workbook install history is preferred over demand_appointments fallback
+  - HPS is excluded from forward mix by default
+  - duplicate install rows collapse to one primary kept row
+
+================================================================================
+17. FILES TO CHECK FIRST
+================================================================================
+
+If you need to understand the current system quickly, check these first:
+
+  1. scripts/config.py
+     Central assumptions, costs, map mode, airport list, family economics.
+
+  2. scripts/06_build_optimization_inputs.py
+     Best place to understand the current tech table, demand table, candidate
+     bases, scope rules, and anchored-tech setup.
+
+  3. scripts/11_build_full_cost_table.py
+     Best place to understand travel pricing.
+
+  4. scripts/08_optimize_locations.py
+     Best place to understand the actual solve logic.
+
+  5. scripts/09_analyze_scenarios.py
+     Best place to understand annualization, best-scenario selection, and
+     install-upside math.
+
+  6. scripts/install_mix_model.py
+     Best place to understand patient-sim history cleaning and family mix.
+
+  7. scripts/05_generate_map.py
+     Best place to understand stakeholder mode, scenario panel behavior, and
+     assignment-dot logic.
+
+  8. data/processed/optimization/scenario_summary_enhanced.csv
+     Best quick numeric summary of saved scenario results.
+
+  9. data/processed/optimization/analysis_report.json
+     Best machine-readable summary of the current saved outputs.
+
+================================================================================
+18. GLOSSARY
+================================================================================
+
+Annualized
+  Taking a multi-year total and converting it to a per-year number.
+
+Candidate base
+  A possible city or airport where a new hire could be placed.
+
+Demand node
+  A grouped bucket of appointments defined by state + skill class.
+
+Effective FTE
+  The amount of field capacity left after applying availability overrides.
+
+Full cost table
+  The precomputed travel-cost table for each origin-to-node pairing.
+
+Install units enabled
+  The model's estimate of how many patient-sim installs the freed capacity
+  could support.
+
+Modeled load ratio
+  The current repo's better interpretation of the legacy utilization fields.
+  It means assigned modeled workload divided by modeled capacity.
+
+Operational zone
+  A broad airport-based bucket like Eastern or Central used to add assignment
+  realism without building a minute-by-minute scheduling engine.
+
+Proven optimal
+  The solver has mathematically proven that no better answer exists within the
+  current model setup.
+
+Stakeholder mode
+  The cleaner default map mode that emphasizes the business story over heavy
+  debug layers.
+
+================================================================================
+END OF REFERENCE
+================================================================================
