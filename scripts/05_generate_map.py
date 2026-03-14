@@ -1461,7 +1461,118 @@ def add_historical_assignment_layer(m, territory_data, historical_data, color_ma
         ).add_to(dots_fg)
 
     dots_fg.add_to(m)
-    return dots_fg.get_name()
+
+    # --- Historical home base markers for ALL techs (shown only in historical view) ---
+    tech_master = territory_data["tech_master"]
+    former_bases_cfg = dict(getattr(config, "HISTORICAL_FORMER_TECH_BASES", {}))
+    bases_fg = folium.FeatureGroup(
+        "Historical Tech Bases", show=False, control=False
+    )
+
+    # Group techs by their base coordinates to handle co-located techs
+    base_groups = {}  # (lat, lon) -> [{"name": ..., "color": ..., "is_former": ..., ...}]
+    for display_name, stat in historical_data["tech_stats"].items():
+        tech_id = stat.get("tech_id")
+        is_former = stat.get("is_former", False)
+        appt_count = stat["appointments"]
+        color = color_map.get(display_name, "#64748b")
+
+        base_lat = None
+        base_lon = None
+        base_label = stat.get("base", "Unknown")
+
+        if not is_former and tech_id:
+            # Current tech: use known base from tech_master
+            tech_row = tech_master[tech_master["tech_id"] == tech_id]
+            if not tech_row.empty:
+                r = tech_row.iloc[0]
+                if pd.notna(r.get("lat")) and pd.notna(r.get("lon")):
+                    base_lat = float(r["lat"])
+                    base_lon = float(r["lon"])
+
+        if base_lat is None:
+            # Former tech or missing coords: estimate from appointment median
+            tech_appts = demand_appts[
+                demand_appts["Service Resource: Name"].str.strip() == display_name
+            ]
+            if not tech_appts.empty:
+                base_lat = tech_appts["lat"].dropna().median()
+                base_lon = tech_appts["lon"].dropna().median()
+            if base_lat is None or pd.isna(base_lat):
+                continue
+
+        coord_key = f"{base_lat:.4f}|{base_lon:.4f}"
+        if coord_key not in base_groups:
+            base_groups[coord_key] = {"lat": base_lat, "lon": base_lon, "techs": []}
+        base_groups[coord_key]["techs"].append({
+            "name": display_name,
+            "color": color,
+            "is_former": is_former,
+            "appointments": appt_count,
+            "base_label": base_label,
+        })
+
+    for coord_key, group in base_groups.items():
+        lat = group["lat"]
+        lon = group["lon"]
+        techs = group["techs"]
+        num_techs = len(techs)
+
+        # Pick color: single tech uses their color, multiple uses blended
+        if num_techs == 1:
+            color = techs[0]["color"]
+            tooltip = f"{techs[0]['name']} · {techs[0]['base_label']}"
+        else:
+            color = "#51606E"
+            location_label = techs[0]["base_label"]
+            tooltip = f"{location_label} ({num_techs} techs)"
+
+        # Determine text color for contrast
+        value = str(color).lstrip("#")
+        try:
+            brightness = (int(value[0:2], 16) * 299 + int(value[2:4], 16) * 587 + int(value[4:6], 16) * 114) / 1000
+        except (ValueError, IndexError):
+            brightness = 0
+        text_color = "#1F2937" if brightness >= 165 else "#fff"
+
+        diameter = 30
+        marker_html = (
+            f'<div style="background:{color};color:{text_color};border-radius:50%;'
+            f'width:{diameter}px;height:{diameter}px;display:flex;'
+            f'align-items:center;justify-content:center;font-weight:700;'
+            f'font-size:11px;border:2px solid rgba(255,255,255,0.9);'
+            f'box-shadow:0 2px 6px rgba(0,0,0,0.3);">'
+            f'{num_techs}</div>'
+        )
+
+        roster_lines = []
+        for t in sorted(techs, key=lambda x: -x["appointments"]):
+            former_tag = " (former)" if t["is_former"] else ""
+            roster_lines.append(
+                f"<li><b>{t['name']}</b>{former_tag} · {t['appointments']} appointments</li>"
+            )
+        popup_html = (
+            f"<b>{techs[0]['base_label']}</b><br>"
+            f"<ul style='margin:4px 0;padding-left:18px;'>{''.join(roster_lines)}</ul>"
+        )
+
+        folium.Marker(
+            location=[float(lat), float(lon)],
+            popup=folium.Popup(popup_html, max_width=320),
+            tooltip=tooltip,
+            icon=folium.DivIcon(
+                html=marker_html,
+                icon_size=(diameter, diameter),
+                icon_anchor=(diameter // 2, diameter // 2),
+                class_name="elevate-hist-tech-marker",
+            ),
+        ).add_to(bases_fg)
+
+    bases_fg.add_to(m)
+    return {
+        "dots_layer": dots_fg.get_name(),
+        "bases_layer": bases_fg.get_name(),
+    }
 
 
 def get_assignment_dot_stroke(fill_hex, ui_preset):
@@ -2426,13 +2537,17 @@ def build_simulation_panel_script(
     ui_preset,
     historical_payload_js=None,
     historical_dots_js=None,
+    historical_bases_js=None,
     historical_tech_colors_js=None,
+    tech_markers_layer_name=None,
 ):
     """Return the panel JavaScript."""
     explanations_js = json.dumps(build_simulation_kpi_explanations())
     hist_payload = historical_payload_js or "null"
     hist_dots = historical_dots_js or "null"
+    hist_bases = historical_bases_js or "null"
     hist_colors = historical_tech_colors_js or "{}"
+    tech_markers_js = json.dumps(tech_markers_layer_name) if tech_markers_layer_name else "null"
     return f"""
     <script>
     (function() {{
@@ -2465,9 +2580,13 @@ def build_simulation_panel_script(
       /* --- Historical view state --- */
       const historicalData = {hist_payload};
       const historicalDotLayerName = {hist_dots};
+      const historicalBasesLayerName = {hist_bases};
       const historicalTechColors = {hist_colors};
+      const techMarkersLayerName = {tech_markers_js};
       let activeView = "optimized";
       let historicalDotLayer = null;
+      let historicalBasesLayer = null;
+      let techMarkersLayer = null;
       let lastOptimizedScenario = defaultScenario;
       let histCoverageExpanded = false;
 
@@ -2827,9 +2946,17 @@ def build_simulation_panel_script(
             if (dotLayer && mapRef && mapRef.hasLayer(dotLayer)) mapRef.removeLayer(dotLayer);
           }});
 
-          /* Show historical dot layer */
+          /* Hide current tech base markers */
+          if (techMarkersLayer && mapRef && mapRef.hasLayer(techMarkersLayer)) {{
+            mapRef.removeLayer(techMarkersLayer);
+          }}
+
+          /* Show historical dot layer and historical tech bases */
           if (historicalDotLayer && mapRef && !mapRef.hasLayer(historicalDotLayer)) {{
             mapRef.addLayer(historicalDotLayer);
+          }}
+          if (historicalBasesLayer && mapRef && !mapRef.hasLayer(historicalBasesLayer)) {{
+            mapRef.addLayer(historicalBasesLayer);
           }}
 
           optimizedEl.classList.add("hidden");
@@ -2837,9 +2964,17 @@ def build_simulation_panel_script(
           renderHistoricalKpis();
           renderHistoricalCoverage();
         }} else {{
-          /* Hide historical dot layer */
+          /* Hide historical layers */
           if (historicalDotLayer && mapRef && mapRef.hasLayer(historicalDotLayer)) {{
             mapRef.removeLayer(historicalDotLayer);
+          }}
+          if (historicalBasesLayer && mapRef && mapRef.hasLayer(historicalBasesLayer)) {{
+            mapRef.removeLayer(historicalBasesLayer);
+          }}
+
+          /* Restore current tech base markers */
+          if (techMarkersLayer && mapRef && !mapRef.hasLayer(techMarkersLayer)) {{
+            mapRef.addLayer(techMarkersLayer);
           }}
 
           optimizedEl.classList.remove("hidden");
@@ -2949,9 +3084,15 @@ def build_simulation_panel_script(
           return;
         }}
 
-        /* Resolve historical dot layer */
+        /* Resolve historical layers */
         if (historicalDotLayerName && window[historicalDotLayerName]) {{
           historicalDotLayer = window[historicalDotLayerName];
+        }}
+        if (historicalBasesLayerName && window[historicalBasesLayerName]) {{
+          historicalBasesLayer = window[historicalBasesLayerName];
+        }}
+        if (techMarkersLayerName && window[techMarkersLayerName]) {{
+          techMarkersLayer = window[techMarkersLayerName];
         }}
 
         renderButtons();
@@ -2986,6 +3127,7 @@ def add_simulation_panel(
     historical_data=None,
     historical_layer_name=None,
     historical_tech_colors=None,
+    tech_markers_layer_name=None,
 ):
     """Inject scenario controls and KPI cards into the map page."""
     if not simulation_payload or not scenario_layer_names:
@@ -3015,7 +3157,12 @@ def add_simulation_panel(
 
     # Historical view JS payloads
     hist_payload_js = json.dumps(historical_data) if historical_data else None
-    hist_dots_js = json.dumps(historical_layer_name) if historical_layer_name else None
+    if historical_layer_name and isinstance(historical_layer_name, dict):
+        hist_dots_js = json.dumps(historical_layer_name.get("dots_layer"))
+        hist_bases_js = json.dumps(historical_layer_name.get("bases_layer"))
+    else:
+        hist_dots_js = json.dumps(historical_layer_name) if historical_layer_name else None
+        hist_bases_js = None
     hist_colors_js = json.dumps(historical_tech_colors) if historical_tech_colors else None
 
     panel_html = (
@@ -3033,7 +3180,9 @@ def add_simulation_panel(
             ui_preset,
             historical_payload_js=hist_payload_js,
             historical_dots_js=hist_dots_js,
+            historical_bases_js=hist_bases_js,
             historical_tech_colors_js=hist_colors_js,
+            tech_markers_layer_name=tech_markers_layer_name,
         )
     )
     m.get_root().html.add_child(folium.Element(panel_html))
@@ -3156,13 +3305,14 @@ def main():
 
     # Layer 4: Technician Home Bases
     print("Adding technician markers...")
-    add_technician_markers(
+    tech_markers_fg = add_technician_markers(
         m,
         techs,
         layer_name=layer_tech_name,
         ui_preset=ui_preset,
         anchor_metadata_by_name=anchor_metadata["by_name"],
     )
+    tech_markers_layer_name = tech_markers_fg.get_name() if tech_markers_fg else None
 
     if anchor_metadata["anchors"]:
         print("Adding anchored technician sites...")
@@ -3219,7 +3369,7 @@ def main():
 
             # Historical assignments view
             historical_data = None
-            historical_layer_name = None
+            historical_layer_info = None
             historical_color_map = None
             out_dir = config.OPTIMIZATION_DIR
             if getattr(config, "HISTORICAL_VIEW_ENABLED", False) and territory_data:
@@ -3234,7 +3384,7 @@ def main():
                     historical_color_map = build_historical_tech_color_map(
                         historical_data, tech_color_map if territory_data else {}
                     )
-                    historical_layer_name = add_historical_assignment_layer(
+                    historical_layer_info = add_historical_assignment_layer(
                         m, territory_data, historical_data, historical_color_map, ui_preset
                     )
 
@@ -3246,8 +3396,9 @@ def main():
                 airport_layer_name=airport_layer.get_name() if airport_layer else None,
                 ui_preset=ui_preset,
                 historical_data=historical_data,
-                historical_layer_name=historical_layer_name,
+                historical_layer_name=historical_layer_info,
                 historical_tech_colors=historical_color_map,
+                tech_markers_layer_name=tech_markers_layer_name,
             )
             print(f"  Loaded scenarios: {', '.join(sorted(simulation_payload.keys(), key=lambda x: int(x) if x.isdigit() else 999))}")
         else:

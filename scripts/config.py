@@ -445,9 +445,9 @@ TECH_ASSIGNMENT_COLOR_MAP = {
     "demand_bossier_city_la": "#C2185B",  # rose
     "demand_janesville_wi": "#7C4DFF",    # violet
     # Former techs (historical view only)
-    "_hist_david_bazany": "#6D4C41",      # coffee brown
-    "_hist_john_aleksa": "#546E7A",       # steel grey
-    "_hist_trent_osborne": "#8E24AA",     # deep purple
+    "_hist_david_bazany": "#FF6F00",      # amber orange
+    "_hist_john_aleksa": "#00BFA5",       # bright teal
+    "_hist_trent_osborne": "#AA00FF",     # vivid purple
 }
 
 # Reserve palette only for future unknown assignee ids.
