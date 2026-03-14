@@ -197,11 +197,31 @@ PATIENT_SIM_RECENCY_WEIGHTING_ENABLED = False
 PATIENT_SIM_RECENCY_HALFLIFE_YEARS = 1.5
 PATIENT_SIM_FORWARD_MIX_MANUAL_MULTIPLIERS = {}
 
+# Diminishing-returns parameters for install-upside capacity conversion (Step 09).
+# Stage 1 — power-law friction: freed capacity converts to installs at a
+# decreasing marginal rate.  alpha < 1 encodes coordination friction, ramp-up
+# time, and scheduling overhead that grow with scale.  The formula is:
+#   a * linear_installs^alpha
+# where a is calibrated so the N=1 baseline scenario is unchanged.
+# Set alpha = 1.0 to disable Stage 1.
+INSTALL_UPSIDE_DIMINISHING_RETURNS_ALPHA = 0.70
+
+# Stage 2 — annual ceiling: maximum net-new installs the sales pipeline and
+# market can absorb per year, regardless of available technician capacity.
+# Based on ~52 historical installs/year + modest growth headroom.
+# Set to None or 0 to disable the ceiling.
+INSTALL_UPSIDE_ANNUAL_CEILING = 55.0
+
+# Reference linear install count used to calibrate the power-law coefficient
+# so that the first non-zero scenario is unaffected.  Set to None to auto-detect
+# from the smallest positive scenario value.
+INSTALL_UPSIDE_REFERENCE_LINEAR = None
+
 PATIENT_SIM_FAMILY_ASSUMPTIONS = {
     "Apollo": {
         "install_revenue_usd": 50_000,
         "install_margin": 0.40,
-        "install_calendar_days_override": None,
+        "install_calendar_days_override": 2.1,
         "revenue_range_low_usd": 40_000,
         "revenue_range_high_usd": 60_000,
         "revenue_source_note": (
@@ -213,7 +233,7 @@ PATIENT_SIM_FAMILY_ASSUMPTIONS = {
     "Lucina": {
         "install_revenue_usd": 80_000,
         "install_margin": 0.40,
-        "install_calendar_days_override": None,
+        "install_calendar_days_override": 2.1,
         "revenue_range_low_usd": 67_000,
         "revenue_range_high_usd": 90_000,
         "revenue_source_note": (
@@ -225,7 +245,7 @@ PATIENT_SIM_FAMILY_ASSUMPTIONS = {
     "Juno": {
         "install_revenue_usd": 19_000,
         "install_margin": 0.40,
-        "install_calendar_days_override": None,
+        "install_calendar_days_override": 2.1,
         "revenue_range_low_usd": 15_000,
         "revenue_range_high_usd": 22_000,
         "revenue_source_note": (
@@ -236,7 +256,7 @@ PATIENT_SIM_FAMILY_ASSUMPTIONS = {
     "Ares": {
         "install_revenue_usd": 33_000,
         "install_margin": 0.40,
-        "install_calendar_days_override": None,
+        "install_calendar_days_override": 2.1,
         "revenue_range_low_usd": 30_000,
         "revenue_range_high_usd": 36_000,
         "revenue_source_note": (
@@ -247,7 +267,7 @@ PATIENT_SIM_FAMILY_ASSUMPTIONS = {
     "Aria": {
         "install_revenue_usd": 38_000,
         "install_margin": 0.40,
-        "install_calendar_days_override": None,
+        "install_calendar_days_override": 2.1,
         "revenue_range_low_usd": 32_000,
         "revenue_range_high_usd": 43_000,
         "revenue_source_note": (
@@ -258,7 +278,7 @@ PATIENT_SIM_FAMILY_ASSUMPTIONS = {
     "Evo": {
         "install_revenue_usd": 45_000,
         "install_margin": 0.40,
-        "install_calendar_days_override": None,
+        "install_calendar_days_override": 2.1,
         "revenue_range_low_usd": 40_000,
         "revenue_range_high_usd": 50_000,
         "revenue_source_note": (
@@ -269,7 +289,7 @@ PATIENT_SIM_FAMILY_ASSUMPTIONS = {
     "Luna": {
         "install_revenue_usd": 46_000,
         "install_margin": 0.40,
-        "install_calendar_days_override": None,
+        "install_calendar_days_override": 2.1,
         "revenue_range_low_usd": 46_000,
         "revenue_range_high_usd": 46_000,
         "revenue_source_note": (

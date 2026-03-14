@@ -77,6 +77,61 @@ def markdown_table(df: pd.DataFrame, columns: list[str], headers: list[str]) -> 
     return lines
 
 
+def apply_diminishing_returns(
+    linear_installs: pd.Series,
+    alpha: float,
+    ceiling: float | None,
+    reference_linear: float | None = None,
+) -> pd.Series:
+    """Apply two-stage diminishing returns to linear install estimates.
+
+    Stage 1 — Power-law friction:
+        adjusted = a * linear^alpha
+        where a is calibrated so that the smallest non-zero linear value
+        maps to itself (preserving the N=1 baseline).
+
+    Stage 2 — Annual ceiling:
+        final = min(adjusted, ceiling)
+
+    Parameters
+    ----------
+    linear_installs : pd.Series
+        Raw linear install-unit estimates per scenario.
+    alpha : float
+        Power-law exponent (0 < alpha <= 1). alpha=1.0 disables Stage 1.
+    ceiling : float or None
+        Maximum annual installs. None or 0 disables Stage 2.
+    reference_linear : float or None
+        The linear value to use as calibration anchor. If None, uses the
+        smallest positive value in the series.
+
+    Returns
+    -------
+    pd.Series
+        Adjusted install estimates with diminishing returns applied.
+    """
+    if alpha >= 1.0 and (ceiling is None or ceiling <= 0):
+        return linear_installs.copy()
+
+    result = linear_installs.copy()
+
+    # Stage 1: power-law
+    if alpha < 1.0:
+        positive_mask = result > 0
+        if reference_linear is None or reference_linear <= 0:
+            positives = result[positive_mask]
+            reference_linear = float(positives.min()) if not positives.empty else 1.0
+        # a = ref^(1 - alpha), so that a * ref^alpha = ref
+        a_coeff = reference_linear ** (1.0 - alpha)
+        result[positive_mask] = a_coeff * result[positive_mask] ** alpha
+
+    # Stage 2: ceiling
+    if ceiling is not None and ceiling > 0:
+        result = result.clip(upper=ceiling)
+
+    return result
+
+
 def load_data_span_years(out_dir: Path) -> float:
     """Load optimization data span years."""
     input_summary_path = out_dir / "optimization_input_summary.json"
@@ -303,6 +358,21 @@ def main() -> None:
             summary["freed_calendar_days_available"] / weighted_avg_install_calendar_days
         )
 
+    # Apply diminishing returns to the linear install estimate.
+    # Stage 1: power-law friction (coordination, ramp-up, scheduling overhead)
+    # Stage 2: annual ceiling (market/pipeline saturation)
+    dr_alpha = float(getattr(config, "INSTALL_UPSIDE_DIMINISHING_RETURNS_ALPHA", 1.0))
+    dr_ceiling = getattr(config, "INSTALL_UPSIDE_ANNUAL_CEILING", None)
+    dr_reference = getattr(config, "INSTALL_UPSIDE_REFERENCE_LINEAR", None)
+
+    summary["linear_install_units_enabled"] = summary["install_units_enabled"].copy()
+    summary["install_units_enabled"] = apply_diminishing_returns(
+        summary["linear_install_units_enabled"],
+        alpha=dr_alpha,
+        ceiling=dr_ceiling,
+        reference_linear=dr_reference,
+    )
+
     summary["realistic_installations_enabled"] = summary["install_units_enabled"]
     summary["weighted_avg_install_revenue_usd"] = weighted_avg_install_revenue_usd
     summary["weighted_avg_install_margin"] = weighted_avg_install_margin
@@ -474,6 +544,20 @@ def main() -> None:
         },
         "family_economics": df_records(family_economics),
         "capacity_freed_all_scenarios": [],
+        "diminishing_returns_model": {
+            "alpha": dr_alpha,
+            "annual_ceiling": dr_ceiling,
+            "reference_linear": dr_reference,
+            "stage_1_description": (
+                "Power-law friction: freed capacity converts to installs at a "
+                "decreasing marginal rate (coordination, ramp-up, scheduling overhead)."
+            ),
+            "stage_2_description": (
+                "Annual ceiling: maximum net-new installs the sales pipeline and "
+                "market can absorb per year, based on historical install rate plus "
+                "reasonable growth headroom."
+            ),
+        },
         "legacy_tier_alias_mode": (
             "Legacy conservative/moderate/aggressive install columns are compatibility "
             "aliases to the single family-weighted install-only model."
@@ -492,6 +576,11 @@ def main() -> None:
                 "theoretical_max_installations": (
                     float(scenario_row["theoretical_max_installations"])
                     if not np.isnan(scenario_row["theoretical_max_installations"])
+                    else None
+                ),
+                "linear_install_units_enabled": (
+                    float(scenario_row["linear_install_units_enabled"])
+                    if not np.isnan(scenario_row["linear_install_units_enabled"])
                     else None
                 ),
                 "install_units_enabled": (
@@ -556,6 +645,8 @@ def main() -> None:
             "a softer penalty-only rule.**"
         ),
         f"- Freed-capacity utilization factor: **{util_factor:.0%}**",
+        f"- Diminishing-returns power-law alpha: **{dr_alpha:.2f}**",
+        f"- Diminishing-returns annual ceiling: **{dr_ceiling}**" if dr_ceiling else "- Diminishing-returns annual ceiling: **disabled**",
         f"- Weighted average install calendar days: **{weighted_avg_install_calendar_days:,.2f}**",
         f"- Weighted average install revenue: **${weighted_avg_install_revenue_usd:,.0f}**",
         f"- Weighted average install profit per install: **${weighted_avg_install_profit_per_install_usd:,.0f}**",
@@ -731,6 +822,7 @@ def main() -> None:
         [
             "scenario_hires",
             "freed_calendar_days_available",
+            "linear_install_units_enabled",
             "install_units_enabled",
             "install_revenue_enabled_usd",
             "install_profit_enabled_usd",
@@ -743,6 +835,7 @@ def main() -> None:
         columns={
             "scenario_hires": "Scenario",
             "freed_calendar_days_available": "Freed Calendar Days Available",
+            "linear_install_units_enabled": "Linear Installs (Pre-DR)",
             "install_units_enabled": "Install Units Enabled",
             "install_revenue_enabled_usd": "Install Revenue Enabled",
             "install_profit_enabled_usd": "Install Profit Enabled",
