@@ -1218,6 +1218,252 @@ def build_tech_color_map(territory_data, palette):
     return color_map
 
 
+# ---------------------------------------------------------------------------
+# Historical assignments view
+# ---------------------------------------------------------------------------
+
+
+def load_historical_data(territory_data, out_dir):
+    """Load actual past technician assignments and compute historical travel costs.
+
+    Returns a dict with tech_stats, cost totals, and comparison to N=0 optimized.
+    """
+    demand_appts = territory_data["demand_appts"]
+    tech_master = territory_data["tech_master"]
+
+    # Read full cost table
+    cost_table_path = os.path.join(out_dir, "full_cost_table.csv")
+    if not os.path.exists(cost_table_path):
+        print("  Historical view: missing full_cost_table.csv, skipping.")
+        return None
+    cost_table = pd.read_csv(cost_table_path)
+
+    # Read data_span_years
+    summary_json_path = os.path.join(out_dir, "optimization_input_summary.json")
+    if not os.path.exists(summary_json_path):
+        print("  Historical view: missing optimization_input_summary.json, skipping.")
+        return None
+    with open(summary_json_path, "r") as f:
+        opt_summary = json.load(f)
+    data_span_years = float(opt_summary.get("data_span_years", 1.0))
+
+    # Read scenario_summary_enhanced for N=0 cost (already annualized)
+    enhanced_path = os.path.join(out_dir, "scenario_summary_enhanced.csv")
+    if not os.path.exists(enhanced_path):
+        print("  Historical view: missing scenario_summary_enhanced.csv, skipping.")
+        return None
+    enhanced_df = pd.read_csv(enhanced_path)
+    n0_rows = enhanced_df[
+        pd.to_numeric(enhanced_df["scenario_hires"], errors="coerce") == 0
+    ]
+    if n0_rows.empty:
+        print("  Historical view: no N=0 row in scenario_summary_enhanced.csv, skipping.")
+        return None
+    n0_travel_cost = float(
+        pd.to_numeric(n0_rows.iloc[0].get("travel_cost_usd", 0), errors="coerce") or 0
+    )
+
+    # Build name -> tech_id mapping
+    name_map = dict(getattr(config, "TECH_NAME_MAP", {}))
+    former_bases = dict(getattr(config, "HISTORICAL_FORMER_TECH_BASES", {}))
+    former_names = set(former_bases.keys())
+
+    # Build tech_master lookup: normalized_name_lower -> (tech_id, base_city, base_state)
+    tm_lookup = {}
+    for _, row in tech_master.iterrows():
+        tn = str(row.get("tech_name", "")).strip()
+        if tn:
+            tm_lookup[tn.lower()] = {
+                "tech_id": str(row["tech_id"]),
+                "base_city": str(row.get("base_city", "")),
+                "base_state": str(row.get("base_state", "")),
+            }
+
+    def resolve_tech(raw_name):
+        """Map raw Service Resource: Name to (display_name, tech_id, base_str, is_former)."""
+        canonical = name_map.get(raw_name, raw_name)
+        if canonical in former_names:
+            fb = former_bases[canonical]
+            return (
+                raw_name,
+                None,
+                f"{fb['city']}, {fb['state']}",
+                True,
+            )
+        match = tm_lookup.get(canonical.lower())
+        if match:
+            base_str = f"{match['base_city']}, {match['base_state']}"
+            return (raw_name, match["tech_id"], base_str, False)
+        return (raw_name, None, "Unknown", False)
+
+    # Build cost lookup: (tech_or_candidate_id, node_id) -> unit_cost_usd
+    cost_lookup = {}
+    for _, row in cost_table.iterrows():
+        key = (str(row["tech_or_candidate_id"]), str(row["node_id"]))
+        cost_lookup[key] = float(
+            pd.to_numeric(row.get("unit_cost_usd", 0), errors="coerce") or 0
+        )
+
+    # Build node-average fallback: {node_id: mean cost across all techs}
+    node_costs = defaultdict(list)
+    for (_, nid), cost in cost_lookup.items():
+        node_costs[nid].append(cost)
+    node_avg = {nid: sum(costs) / len(costs) for nid, costs in node_costs.items()}
+
+    # Process each appointment
+    tech_agg = defaultdict(lambda: {
+        "appointments": 0,
+        "travel_cost_usd": 0.0,
+    })
+    tech_info = {}  # display_name -> {tech_id, base, is_former}
+
+    for _, row in demand_appts.iterrows():
+        raw_name = str(row.get("Service Resource: Name", "")).strip()
+        if not raw_name or raw_name == "nan":
+            continue
+
+        display_name, tech_id, base_str, is_former = resolve_tech(raw_name)
+
+        # Compute node_id
+        state_norm = str(row.get("state_norm", ""))
+        skill_class = str(row.get("skill_class", ""))
+        node_id = f"{state_norm}__{skill_class}"
+
+        # Look up cost
+        if tech_id:
+            cost = cost_lookup.get((tech_id, node_id))
+            if cost is None:
+                cost = node_avg.get(node_id, 0.0)
+        else:
+            cost = node_avg.get(node_id, 0.0)
+
+        tech_agg[display_name]["appointments"] += 1
+        tech_agg[display_name]["travel_cost_usd"] += cost
+
+        if display_name not in tech_info:
+            tech_info[display_name] = {
+                "tech_id": tech_id,
+                "base": base_str,
+                "is_former": is_former,
+            }
+
+    # Build tech_stats
+    tech_stats = {}
+    for display_name, agg in tech_agg.items():
+        info = tech_info.get(display_name, {})
+        tech_stats[display_name] = {
+            "name": display_name,
+            "base": info.get("base", "Unknown"),
+            "appointments": agg["appointments"],
+            "travel_cost_usd": round(agg["travel_cost_usd"], 2),
+            "is_former": info.get("is_former", False),
+            "tech_id": info.get("tech_id"),
+        }
+
+    total_travel_cost = sum(s["travel_cost_usd"] for s in tech_stats.values())
+    annualized_travel_cost = total_travel_cost / data_span_years if data_span_years > 0 else total_travel_cost
+    total_appointments = sum(s["appointments"] for s in tech_stats.values())
+    potential_savings = annualized_travel_cost - n0_travel_cost
+
+    return {
+        "tech_stats": tech_stats,
+        "total_appointments": total_appointments,
+        "unique_techs": len(tech_stats),
+        "total_travel_cost_usd": round(total_travel_cost, 2),
+        "annualized_travel_cost_usd": round(annualized_travel_cost, 2),
+        "n0_optimized_travel_cost_usd": round(n0_travel_cost, 2),
+        "potential_savings_usd": round(potential_savings, 2),
+        "data_span_years": data_span_years,
+    }
+
+
+def build_historical_tech_color_map(historical_data, existing_color_map):
+    """Assign colors to historical techs, reusing optimization colors where possible."""
+    explicit_colors = dict(getattr(config, "TECH_ASSIGNMENT_COLOR_MAP", {}))
+    former_bases = dict(getattr(config, "HISTORICAL_FORMER_TECH_BASES", {}))
+    name_map = dict(getattr(config, "TECH_NAME_MAP", {}))
+    color_map = {}
+
+    for display_name, stat in historical_data["tech_stats"].items():
+        tech_id = stat.get("tech_id")
+        canonical = name_map.get(display_name, display_name)
+        is_former = stat.get("is_former", False)
+
+        if tech_id and tech_id in existing_color_map:
+            color_map[display_name] = existing_color_map[tech_id]
+        elif is_former:
+            # Look up _hist_ prefixed color
+            hist_key = "_hist_" + canonical.lower().replace(" ", "_")
+            if hist_key in explicit_colors:
+                color_map[display_name] = explicit_colors[hist_key]
+            else:
+                color_map[display_name] = "#64748b"
+        elif tech_id and tech_id in explicit_colors:
+            color_map[display_name] = explicit_colors[tech_id]
+        else:
+            color_map[display_name] = "#64748b"
+
+    return color_map
+
+
+def add_historical_assignment_layer(m, territory_data, historical_data, color_map, ui_preset):
+    """Add a single FeatureGroup with dots for all historical appointments.
+
+    Returns the JS layer variable name for toggling.
+    """
+    demand_appts = territory_data["demand_appts"]
+
+    dots_fg = folium.FeatureGroup(
+        "Territory Dots Historical", show=False, control=False
+    )
+
+    for _, row in demand_appts.iterrows():
+        lat = row.get("lat")
+        lon = row.get("lon")
+        if pd.isna(lat) or pd.isna(lon):
+            continue
+
+        raw_name = str(row.get("Service Resource: Name", "")).strip()
+        if not raw_name or raw_name == "nan":
+            continue
+
+        color = color_map.get(raw_name, "#64748b")
+        stroke_color = get_assignment_dot_stroke(color, ui_preset)
+
+        account = str(row.get("Account: Account Name", "N/A"))
+        appt_id = str(row.get("appointment_id", row.get("Appointment Number", "")))
+        service_type = str(row.get("Service Type", ""))
+        city = str(row.get("city", ""))
+        state = str(row.get("state_norm", ""))
+        skill_class = str(row.get("skill_class", ""))
+
+        popup_html = (
+            f"<b>{account}</b><br>"
+            f"Appt: {appt_id}<br>"
+            f"Type: {service_type}<br>"
+            f"Location: {city}, {state}<br>"
+            f"Skill: {skill_class}<br>"
+            f"Actual tech: <b>{raw_name}</b>"
+        )
+
+        folium.CircleMarker(
+            location=[float(lat), float(lon)],
+            radius=ui_preset["assignment_dot_radius"],
+            color=stroke_color,
+            fill=True,
+            fill_color=color,
+            fill_opacity=ui_preset["assignment_dot_opacity"],
+            weight=ui_preset["assignment_dot_stroke_width"],
+            opacity=0.95,
+            stroke=True,
+            popup=folium.Popup(popup_html, max_width=300),
+            tooltip=f"{raw_name}: {account}",
+        ).add_to(dots_fg)
+
+    dots_fg.add_to(m)
+    return dots_fg.get_name()
+
+
 def get_assignment_dot_stroke(fill_hex, ui_preset):
     """Choose a dark stroke for light fills and a white stroke for dark fills."""
     value = str(fill_hex or "").strip().lstrip("#")
@@ -1926,6 +2172,60 @@ def build_simulation_panel_css(ui_preset):
       #kpi-modal-close:hover {{
         color: #0f172a;
       }}
+      #view-toggle {{
+        margin-bottom: 12px;
+      }}
+      #view-toggle-buttons {{
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 6px;
+      }}
+      .view-btn {{
+        border: 1px solid rgba(15, 23, 42, 0.12);
+        background: #f8fafc;
+        color: #102235;
+        padding: 8px 0;
+        border-radius: 999px;
+        font: 600 12px {ui_preset["font_family"]};
+        cursor: pointer;
+        transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.15s;
+      }}
+      .view-btn:hover {{
+        border-color: rgba(17, 32, 51, 0.32);
+        background: #f1f5f9;
+      }}
+      .view-btn.active {{
+        background: #183b58;
+        border-color: #183b58;
+        color: #fff;
+      }}
+      #historical-content {{
+        display: none;
+      }}
+      #historical-content.active {{
+        display: block;
+      }}
+      #optimized-content.hidden {{
+        display: none;
+      }}
+      .hist-kpi-grid {{
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        margin-top: 10px;
+      }}
+      #hist-coverage-list .coverage-row {{
+        display: grid;
+        grid-template-columns: 12px 1fr;
+        gap: 10px;
+        align-items: start;
+        padding: 8px 0;
+        border-top: 1px solid #edf2f7;
+      }}
+      #hist-coverage-list .coverage-row:first-child {{
+        padding-top: 0;
+        border-top: none;
+      }}
       @media (max-width: 900px) {{
         #sim-panel {{
           display: none;
@@ -1966,93 +2266,141 @@ def build_simulation_panel_markup():
         </div>
       </div>
 
-      <div class="sim-section">
-        <div class="sim-section-label">Scenarios</div>
-        <div id="sim-buttons"></div>
-      </div>
-
-      <div class="sim-section">
-        <h3 class="sim-section-heading">Cost &amp; Load</h3>
-        <div id="sim-kpis" class="sim-card-grid">
-          <div class="sim-kpi kpi-clickable" data-kpi="total-cost">
-            <div class="label">Total Cost</div>
-            <div class="value" id="kpi-total">&mdash;</div>
-          </div>
-          <div class="sim-kpi kpi-clickable" data-kpi="cost-change">
-            <div class="label">Annual Cost Delta vs N=0</div>
-            <div class="value" id="kpi-annual-delta">&mdash;</div>
-          </div>
-          <div class="sim-kpi kpi-clickable" data-kpi="marginal-cost">
-            <div class="label">Incremental Cost vs Prior Scenario</div>
-            <div class="value" id="kpi-incremental">&mdash;</div>
-          </div>
-          <div class="sim-kpi kpi-clickable" data-kpi="hire-payroll">
-            <div class="label">Incremental Hire Payroll</div>
-            <div class="value" id="kpi-hire-cost">&mdash;</div>
-          </div>
-          <div class="sim-kpi kpi-clickable" data-kpi="mean-util">
-            <div class="label">Mean Load Ratio</div>
-            <div class="value" id="kpi-mean-load">&mdash;</div>
-          </div>
-          <div class="sim-kpi kpi-clickable" data-kpi="max-util">
-            <div class="label">Peak Load Ratio</div>
-            <div class="value" id="kpi-peak-load">&mdash;</div>
-          </div>
-          <div class="sim-kpi kpi-clickable" data-kpi="unmet" id="kpi-unmet-card">
-            <div class="label">Unmet Appointments</div>
-            <div class="value" id="kpi-unmet">&mdash;</div>
-          </div>
+      <div id="view-toggle" style="display:none;">
+        <div id="view-toggle-buttons">
+          <button class="view-btn active" data-view="optimized">Optimized</button>
+          <button class="view-btn" data-view="historical">Historical</button>
         </div>
       </div>
 
-      <div class="sim-section">
-        <h3 class="sim-section-heading">Install Upside</h3>
-        <p class="sim-section-caption">Family-weighted patient-sim install-only view</p>
-        <div id="sim-kpis-revenue" class="sim-card-grid">
-          <div class="sim-kpi kpi-clickable" data-kpi="installs">
-            <div class="label">Install Units Enabled</div>
-            <div class="value" id="kpi-install-units">&mdash;</div>
+      <div id="optimized-content">
+        <div class="sim-section">
+          <div class="sim-section-label">Scenarios</div>
+          <div id="sim-buttons"></div>
+        </div>
+
+        <div class="sim-section">
+          <h3 class="sim-section-heading">Cost &amp; Load</h3>
+          <div id="sim-kpis" class="sim-card-grid">
+            <div class="sim-kpi kpi-clickable" data-kpi="total-cost">
+              <div class="label">Total Cost</div>
+              <div class="value" id="kpi-total">&mdash;</div>
+            </div>
+            <div class="sim-kpi kpi-clickable" data-kpi="cost-change">
+              <div class="label">Annual Cost Delta vs N=0</div>
+              <div class="value" id="kpi-annual-delta">&mdash;</div>
+            </div>
+            <div class="sim-kpi kpi-clickable" data-kpi="marginal-cost">
+              <div class="label">Incremental Cost vs Prior Scenario</div>
+              <div class="value" id="kpi-incremental">&mdash;</div>
+            </div>
+            <div class="sim-kpi kpi-clickable" data-kpi="hire-payroll">
+              <div class="label">Incremental Hire Payroll</div>
+              <div class="value" id="kpi-hire-cost">&mdash;</div>
+            </div>
+            <div class="sim-kpi kpi-clickable" data-kpi="mean-util">
+              <div class="label">Mean Load Ratio</div>
+              <div class="value" id="kpi-mean-load">&mdash;</div>
+            </div>
+            <div class="sim-kpi kpi-clickable" data-kpi="max-util">
+              <div class="label">Peak Load Ratio</div>
+              <div class="value" id="kpi-peak-load">&mdash;</div>
+            </div>
+            <div class="sim-kpi kpi-clickable" data-kpi="unmet" id="kpi-unmet-card">
+              <div class="label">Unmet Appointments</div>
+              <div class="value" id="kpi-unmet">&mdash;</div>
+            </div>
           </div>
-          <div class="sim-kpi kpi-clickable" data-kpi="install-revenue">
-            <div class="label">Install Revenue Enabled</div>
-            <div class="value" id="kpi-install-revenue">&mdash;</div>
+        </div>
+
+        <div class="sim-section">
+          <h3 class="sim-section-heading">Install Upside</h3>
+          <p class="sim-section-caption">Family-weighted patient-sim install-only view</p>
+          <div id="sim-kpis-revenue" class="sim-card-grid">
+            <div class="sim-kpi kpi-clickable" data-kpi="installs">
+              <div class="label">Install Units Enabled</div>
+              <div class="value" id="kpi-install-units">&mdash;</div>
+            </div>
+            <div class="sim-kpi kpi-clickable" data-kpi="install-revenue">
+              <div class="label">Install Revenue Enabled</div>
+              <div class="value" id="kpi-install-revenue">&mdash;</div>
+            </div>
+            <div class="sim-kpi kpi-clickable" data-kpi="install-profit">
+              <div class="label">Install Profit Enabled</div>
+              <div class="value" id="kpi-install-profit">&mdash;</div>
+            </div>
+            <div class="sim-kpi kpi-clickable" data-kpi="net-value">
+              <div class="label">Net Economic Value</div>
+              <div class="value" id="kpi-net-value">&mdash;</div>
+            </div>
+            <div class="sim-kpi kpi-clickable" data-kpi="break-even">
+              <div class="label">Break-Even Units</div>
+              <div class="value" id="kpi-break-even">&mdash;</div>
+            </div>
+            <div class="sim-kpi kpi-clickable" data-kpi="roi">
+              <div class="label">ROI</div>
+              <div class="value" id="kpi-roi">&mdash;</div>
+            </div>
           </div>
-          <div class="sim-kpi kpi-clickable" data-kpi="install-profit">
-            <div class="label">Install Profit Enabled</div>
-            <div class="value" id="kpi-install-profit">&mdash;</div>
+        </div>
+
+        <div class="sim-section">
+          <h3 class="sim-section-heading">Recommended Bases</h3>
+          <div id="sim-recs" class="sim-list-box">
+            <div class="sim-empty">No new-hire placements in this scenario.</div>
           </div>
-          <div class="sim-kpi kpi-clickable" data-kpi="net-value">
-            <div class="label">Net Economic Value</div>
-            <div class="value" id="kpi-net-value">&mdash;</div>
-          </div>
-          <div class="sim-kpi kpi-clickable" data-kpi="break-even">
-            <div class="label">Break-Even Units</div>
-            <div class="value" id="kpi-break-even">&mdash;</div>
-          </div>
-          <div class="sim-kpi kpi-clickable" data-kpi="roi">
-            <div class="label">ROI</div>
-            <div class="value" id="kpi-roi">&mdash;</div>
-          </div>
+        </div>
+
+        <div class="sim-section" id="sim-coverage-section" style="display:none;">
+          <h3 class="sim-section-heading">Coverage Assignments</h3>
+          <p class="sim-section-caption">Top assignees stay visible so the dot colors remain readable.</p>
+          <div id="sim-tech-legend" class="sim-list-box"></div>
+          <button id="sim-tech-toggle" class="sim-link-btn" style="display:none;">Show all</button>
+        </div>
+
+        <div id="sim-footnote">
+          Selected scenario results from the cost-first optimization. Load ratios are modeled
+          capacity proxies. Install cards show family-weighted patient-sim install-only upside.
         </div>
       </div>
 
-      <div class="sim-section">
-        <h3 class="sim-section-heading">Recommended Bases</h3>
-        <div id="sim-recs" class="sim-list-box">
-          <div class="sim-empty">No new-hire placements in this scenario.</div>
+      <div id="historical-content">
+        <div class="sim-section">
+          <div class="sim-section-label">Historical Assignments</div>
+          <p class="sim-section-caption">Actual technician dispatch record</p>
         </div>
-      </div>
 
-      <div class="sim-section" id="sim-coverage-section" style="display:none;">
-        <h3 class="sim-section-heading">Coverage Assignments</h3>
-        <p class="sim-section-caption">Top assignees stay visible so the dot colors remain readable.</p>
-        <div id="sim-tech-legend" class="sim-list-box"></div>
-        <button id="sim-tech-toggle" class="sim-link-btn" style="display:none;">Show all</button>
-      </div>
+        <div class="sim-section">
+          <h3 class="sim-section-heading">Travel Cost Comparison</h3>
+          <div class="hist-kpi-grid">
+            <div class="sim-kpi">
+              <div class="label">Total Appointments</div>
+              <div class="value" id="hist-kpi-appts">&mdash;</div>
+            </div>
+            <div class="sim-kpi">
+              <div class="label">Hist. Travel Cost</div>
+              <div class="value" id="hist-kpi-cost">&mdash;</div>
+            </div>
+            <div class="sim-kpi">
+              <div class="label">Optimized Cost (N=0)</div>
+              <div class="value" id="hist-kpi-optimized">&mdash;</div>
+            </div>
+            <div class="sim-kpi">
+              <div class="label">Potential Savings</div>
+              <div class="value" id="hist-kpi-savings">&mdash;</div>
+            </div>
+          </div>
+        </div>
 
-      <div id="sim-footnote">
-        Selected scenario results from the cost-first optimization. Load ratios are modeled
-        capacity proxies. Install cards show family-weighted patient-sim install-only upside.
+        <div class="sim-section" id="hist-coverage-section">
+          <h3 class="sim-section-heading">Coverage Assignments</h3>
+          <div id="hist-coverage-list" class="sim-list-box"></div>
+          <button id="hist-tech-toggle" class="sim-link-btn" style="display:none;">Show all</button>
+        </div>
+
+        <div id="hist-footnote" style="margin-top:16px;padding-top:12px;border-top:1px solid #edf2f7;font-size:11px;line-height:1.45;color:#64748b;">
+          * Former technician (approximate base location). All cost figures annualized.
+        </div>
       </div>
     </div>
 
@@ -2076,9 +2424,15 @@ def build_simulation_panel_script(
     ordered_keys,
     default_key,
     ui_preset,
+    historical_payload_js=None,
+    historical_dots_js=None,
+    historical_tech_colors_js=None,
 ):
     """Return the panel JavaScript."""
     explanations_js = json.dumps(build_simulation_kpi_explanations())
+    hist_payload = historical_payload_js or "null"
+    hist_dots = historical_dots_js or "null"
+    hist_colors = historical_tech_colors_js or "{}"
     return f"""
     <script>
     (function() {{
@@ -2107,6 +2461,15 @@ def build_simulation_panel_script(
       let territoryDotLayers = {{}};
       let airportLayer = null;
       let airportVisible = airportDefaultVisible;
+
+      /* --- Historical view state --- */
+      const historicalData = {hist_payload};
+      const historicalDotLayerName = {hist_dots};
+      const historicalTechColors = {hist_colors};
+      let activeView = "optimized";
+      let historicalDotLayer = null;
+      let lastOptimizedScenario = defaultScenario;
+      let histCoverageExpanded = false;
 
       function money(v) {{
         const n = Math.abs(Number(v || 0));
@@ -2437,6 +2800,141 @@ def build_simulation_panel_script(
         }});
       }}
 
+      /* --- Historical view functions --- */
+
+      function switchView(view) {{
+        if (view === activeView) return;
+        activeView = view;
+
+        const optimizedEl = document.getElementById("optimized-content");
+        const historicalEl = document.getElementById("historical-content");
+        if (!optimizedEl || !historicalEl) return;
+
+        document.querySelectorAll(".view-btn").forEach((btn) => {{
+          btn.classList.toggle("active", btn.getAttribute("data-view") === view);
+        }});
+
+        if (view === "historical") {{
+          /* Remember which optimized scenario was active */
+          const activeBtn = document.querySelector(".sim-btn.active");
+          if (activeBtn) lastOptimizedScenario = activeBtn.getAttribute("data-scenario");
+
+          /* Hide ALL optimization layers */
+          orderedScenarios.forEach((s) => {{
+            const layer = scenarioLayers[s];
+            if (layer && mapRef && mapRef.hasLayer(layer)) mapRef.removeLayer(layer);
+            const dotLayer = territoryDotLayers[s];
+            if (dotLayer && mapRef && mapRef.hasLayer(dotLayer)) mapRef.removeLayer(dotLayer);
+          }});
+
+          /* Show historical dot layer */
+          if (historicalDotLayer && mapRef && !mapRef.hasLayer(historicalDotLayer)) {{
+            mapRef.addLayer(historicalDotLayer);
+          }}
+
+          optimizedEl.classList.add("hidden");
+          historicalEl.classList.add("active");
+          renderHistoricalKpis();
+          renderHistoricalCoverage();
+        }} else {{
+          /* Hide historical dot layer */
+          if (historicalDotLayer && mapRef && mapRef.hasLayer(historicalDotLayer)) {{
+            mapRef.removeLayer(historicalDotLayer);
+          }}
+
+          optimizedEl.classList.remove("hidden");
+          historicalEl.classList.remove("active");
+          showScenario(lastOptimizedScenario);
+        }}
+      }}
+
+      function renderHistoricalKpis() {{
+        if (!historicalData) return;
+        const apptsEl = document.getElementById("hist-kpi-appts");
+        const costEl = document.getElementById("hist-kpi-cost");
+        const optimizedEl = document.getElementById("hist-kpi-optimized");
+        const savingsEl = document.getElementById("hist-kpi-savings");
+        if (apptsEl) apptsEl.textContent = Number(historicalData.total_appointments || 0).toLocaleString();
+        if (costEl) costEl.textContent = money(historicalData.annualized_travel_cost_usd);
+        if (optimizedEl) optimizedEl.textContent = money(historicalData.n0_optimized_travel_cost_usd);
+        if (savingsEl) {{
+          const savings = Number(historicalData.potential_savings_usd || 0);
+          savingsEl.textContent = money(savings);
+          if (savings > 0) {{
+            savingsEl.style.color = "#1f7a40";
+          }} else if (savings < 0) {{
+            savingsEl.style.color = "#b42318";
+          }} else {{
+            savingsEl.style.color = "#102235";
+          }}
+        }}
+      }}
+
+      function renderHistoricalCoverage() {{
+        if (!historicalData || !historicalData.tech_stats) return;
+        const listEl = document.getElementById("hist-coverage-list");
+        const toggleEl = document.getElementById("hist-tech-toggle");
+        if (!listEl) return;
+
+        const entries = Object.values(historicalData.tech_stats).sort(
+          (a, b) => Number(b.appointments || 0) - Number(a.appointments || 0)
+        );
+
+        if (!entries.length) {{
+          listEl.innerHTML = '<div class="sim-empty">No historical assignment data.</div>';
+          if (toggleEl) toggleEl.style.display = "none";
+          return;
+        }}
+
+        const visibleEntries = histCoverageExpanded ? entries : entries.slice(0, coverageDefaultCount);
+
+        listEl.innerHTML = visibleEntries.map((stat) => {{
+          const color = historicalTechColors[stat.name] || "#64748b";
+          const stroke = getDotStroke(color);
+          const base = stat.base ? String(stat.base) : "Base unavailable";
+          const former = stat.is_former ? " *" : "";
+          return `
+            <div class="coverage-row">
+              <span class="coverage-dot" style="background:${{color}}; border-color:${{stroke}};"></span>
+              <div>
+                <div class="coverage-name">${{stat.name}}${{former}}</div>
+                <div class="coverage-meta">${{Number(stat.appointments || 0).toFixed(0)}} appointments &middot; ${{base}}</div>
+              </div>
+            </div>`;
+        }}).join("");
+
+        if (toggleEl) {{
+          if (entries.length > coverageDefaultCount) {{
+            toggleEl.style.display = "inline-block";
+            toggleEl.textContent = histCoverageExpanded
+              ? "Show fewer"
+              : `Show all ${{entries.length}} techs`;
+          }} else {{
+            toggleEl.style.display = "none";
+          }}
+        }}
+      }}
+
+      function wireViewToggle() {{
+        const toggleContainer = document.getElementById("view-toggle");
+        if (!toggleContainer || !historicalData) return;
+        toggleContainer.style.display = "block";
+        document.querySelectorAll(".view-btn").forEach((btn) => {{
+          btn.addEventListener("click", () => {{
+            switchView(btn.getAttribute("data-view"));
+          }});
+        }});
+      }}
+
+      function wireHistCoverageToggle() {{
+        const btn = document.getElementById("hist-tech-toggle");
+        if (!btn) return;
+        btn.addEventListener("click", () => {{
+          histCoverageExpanded = !histCoverageExpanded;
+          renderHistoricalCoverage();
+        }});
+      }}
+
       function initWhenReady(remainingAttempts) {{
         const missing = resolveLayers();
         if (missing > 0 && remainingAttempts > 0) {{
@@ -2451,6 +2949,11 @@ def build_simulation_panel_script(
           return;
         }}
 
+        /* Resolve historical dot layer */
+        if (historicalDotLayerName && window[historicalDotLayerName]) {{
+          historicalDotLayer = window[historicalDotLayerName];
+        }}
+
         renderButtons();
         const unmetCard = document.getElementById("kpi-unmet-card");
         if (unmetCard && !showUnmetKpi) {{
@@ -2460,6 +2963,8 @@ def build_simulation_panel_script(
         wireCoverageToggle();
         wireHubToggle();
         wireKpiModal();
+        wireViewToggle();
+        wireHistCoverageToggle();
         showScenario(defaultScenario);
         syncAirportLayerVisibility();
       }}
@@ -2478,6 +2983,9 @@ def add_simulation_panel(
     tech_color_map=None,
     airport_layer_name=None,
     ui_preset=None,
+    historical_data=None,
+    historical_layer_name=None,
+    historical_tech_colors=None,
 ):
     """Inject scenario controls and KPI cards into the map page."""
     if not simulation_payload or not scenario_layer_names:
@@ -2505,6 +3013,11 @@ def add_simulation_panel(
         else "{}"
     )
 
+    # Historical view JS payloads
+    hist_payload_js = json.dumps(historical_data) if historical_data else None
+    hist_dots_js = json.dumps(historical_layer_name) if historical_layer_name else None
+    hist_colors_js = json.dumps(historical_tech_colors) if historical_tech_colors else None
+
     panel_html = (
         build_simulation_panel_css(ui_preset)
         + build_simulation_panel_markup()
@@ -2518,6 +3031,9 @@ def add_simulation_panel(
             ordered_keys,
             default_key,
             ui_preset,
+            historical_payload_js=hist_payload_js,
+            historical_dots_js=hist_dots_js,
+            historical_tech_colors_js=hist_colors_js,
         )
     )
     m.get_root().html.add_child(folium.Element(panel_html))
@@ -2701,6 +3217,27 @@ def main():
             else:
                 print("  Territory assignment data not available; territory layers skipped.")
 
+            # Historical assignments view
+            historical_data = None
+            historical_layer_name = None
+            historical_color_map = None
+            out_dir = config.OPTIMIZATION_DIR
+            if getattr(config, "HISTORICAL_VIEW_ENABLED", False) and territory_data:
+                print("  Loading historical assignment data...")
+                historical_data = load_historical_data(territory_data, out_dir)
+                if historical_data:
+                    print(
+                        f"  Historical: {historical_data['total_appointments']} appointments, "
+                        f"{historical_data['unique_techs']} techs, "
+                        f"annualized cost ${historical_data['annualized_travel_cost_usd']:,.0f}"
+                    )
+                    historical_color_map = build_historical_tech_color_map(
+                        historical_data, tech_color_map if territory_data else {}
+                    )
+                    historical_layer_name = add_historical_assignment_layer(
+                        m, territory_data, historical_data, historical_color_map, ui_preset
+                    )
+
             scenario_layer_names = add_simulation_layers(m, simulation_payload, ui_preset)
             add_simulation_panel(
                 m, simulation_payload, scenario_layer_names,
@@ -2708,6 +3245,9 @@ def main():
                 tech_color_map=tech_color_map if territory_data else None,
                 airport_layer_name=airport_layer.get_name() if airport_layer else None,
                 ui_preset=ui_preset,
+                historical_data=historical_data,
+                historical_layer_name=historical_layer_name,
+                historical_tech_colors=historical_color_map,
             )
             print(f"  Loaded scenarios: {', '.join(sorted(simulation_payload.keys(), key=lambda x: int(x) if x.isdigit() else 999))}")
         else:

@@ -77,6 +77,16 @@ TECH_NAME_MAP = {
     "Elier Alvarez Martin": "Elier Martin",
 }
 
+# Historical view: show actual past assignments alongside MILP scenarios.
+HISTORICAL_VIEW_ENABLED = True
+
+# Approximate home bases for former technicians (for display in coverage list).
+HISTORICAL_FORMER_TECH_BASES = {
+    "David Bazany": {"city": "Dallas", "state": "TX"},
+    "John Aleksa": {"city": "Newark", "state": "NJ"},
+    "Trent Osborne": {"city": "Fort Smith", "state": "AR"},
+}
+
 # Former technicians to exclude from current-state maps/outputs
 INACTIVE_TECH_NAMES = {
     "David Bazany",
@@ -434,6 +444,10 @@ TECH_ASSIGNMENT_COLOR_MAP = {
     "airport_iad": "#9CCB19",          # lime
     "demand_bossier_city_la": "#C2185B",  # rose
     "demand_janesville_wi": "#7C4DFF",    # violet
+    # Former techs (historical view only)
+    "_hist_david_bazany": "#6D4C41",      # coffee brown
+    "_hist_john_aleksa": "#546E7A",       # steel grey
+    "_hist_trent_osborne": "#8E24AA",     # deep purple
 }
 
 # Reserve palette only for future unknown assignee ids.
