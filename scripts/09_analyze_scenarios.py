@@ -248,6 +248,19 @@ def main() -> None:
     )
     with open(assumptions_path, "r") as f:
         assumptions = json.load(f)
+    input_summary_path = out_dir / "optimization_input_summary.json"
+    input_provenance = {}
+    if input_summary_path.exists():
+        with open(input_summary_path, "r") as f:
+            input_summary = json.load(f)
+        input_provenance = {
+            "appointments_source": input_summary.get("appointments_source"),
+            "appointments_source_kind": input_summary.get("appointments_source_kind"),
+            "tech_source": input_summary.get("tech_source"),
+            "tech_source_kind": input_summary.get("tech_source_kind"),
+            "tech_source_is_cached": bool(input_summary.get("tech_source_is_cached", False)),
+            "source_warnings": list(input_summary.get("source_warnings", [])),
+        }
 
     data_span_years = load_data_span_years(out_dir)
     print(f"Data span: {data_span_years:.2f} years — all figures will be annualized")
@@ -328,6 +341,21 @@ def main() -> None:
     if base_row.empty:
         raise ValueError("Scenario summary must include N=0 baseline.")
     base_cost = float(base_row.iloc[0]["economic_total_with_overhead_usd"])
+    baseline_solver = {
+        "scenario_hires": 0,
+        "solver_proven_optimal": bool(
+            pd.to_numeric(base_row.iloc[0].get("solver_proven_optimal"), errors="coerce") == 1
+        ),
+        "solver_status": int(
+            pd.to_numeric(base_row.iloc[0].get("solver_status"), errors="coerce")
+            if not pd.isna(pd.to_numeric(base_row.iloc[0].get("solver_status"), errors="coerce"))
+            else 0
+        ),
+        "solver_mip_gap": scalar_or_none(
+            pd.to_numeric(base_row.iloc[0].get("solver_mip_gap"), errors="coerce")
+        ),
+        "solver_message": str(base_row.iloc[0].get("solver_message", "")).strip(),
+    }
 
     summary["savings_vs_n0_usd"] = base_cost - summary["economic_total_with_overhead_usd"]
     summary["savings_vs_n0_pct"] = np.where(
@@ -492,6 +520,8 @@ def main() -> None:
         "best_scenario_hires": best_hires,
         "selection_mode": selection_mode,
         "full_cost_model_active": bool(assumptions.get("full_cost_model", False)),
+        "input_provenance": input_provenance,
+        "baseline_n0_solver": baseline_solver,
         "best_total_cost_with_overhead_usd": float(best_row["economic_total_with_overhead_usd"]),
         "lowest_observed_cost_hires": observed_best_hires,
         "lowest_observed_cost_with_overhead_usd": float(observed_best_row["economic_total_with_overhead_usd"]),
@@ -628,6 +658,7 @@ def main() -> None:
         f"- Best scenario cost with overhead: **${best_row['economic_total_with_overhead_usd']:,.2f}**",
         f"- Savings vs N=0: **${report['best_savings_vs_n0_usd']:,.2f} ({report['best_savings_vs_n0_pct']:.2f}%)**",
         f"- Data period: **{data_span_years:.2f} years**",
+        f"- Baseline N=0 proven optimal: **{baseline_solver['solver_proven_optimal']}**",
         "",
         "## Capacity Model",
         "",

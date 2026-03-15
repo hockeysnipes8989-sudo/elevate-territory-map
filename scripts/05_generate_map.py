@@ -10,7 +10,12 @@ from pandas.errors import EmptyDataError
 
 sys.path.insert(0, os.path.dirname(__file__))
 import config
-from optimization_utils import canonicalize_tech_name, compute_entity_node_costs, prepare_demand
+from optimization_utils import (
+    canonicalize_tech_name,
+    compute_entity_node_costs,
+    haversine_miles,
+    prepare_demand,
+)
 
 
 SIM_SUMMARY_ENHANCED = "scenario_summary_enhanced.csv"
@@ -20,6 +25,9 @@ SIM_CANDIDATES = "candidate_bases.csv"
 BLANK_SLATE_PLACEMENTS = "scenario_placements.csv"
 BLANK_SLATE_SUMMARY = "scenario_summary.csv"
 BLANK_SLATE_ASSUMPTIONS = "model_assumptions.json"
+SIM_UTILIZATION = "scenario_tech_utilization.csv"
+SIM_ASSUMPTIONS = "model_assumptions.json"
+OPT_INPUT_SUMMARY = "optimization_input_summary.json"
 
 
 def classify_service_type(service_type):
@@ -792,11 +800,49 @@ def load_simulation_data():
     summary_path = os.path.join(sim_dir, SIM_SUMMARY)
     placements_path = os.path.join(sim_dir, SIM_PLACEMENTS)
     candidates_path = os.path.join(sim_dir, SIM_CANDIDATES)
+    utilization_path = os.path.join(sim_dir, SIM_UTILIZATION)
+    assumptions_path = os.path.join(sim_dir, SIM_ASSUMPTIONS)
+    input_summary_path = os.path.join(sim_dir, OPT_INPUT_SUMMARY)
 
     if not os.path.exists(placements_path):
         return None
+    provenance = {
+        "tech_source_kind": "unknown",
+        "tech_source_is_cached": False,
+        "source_warnings": [],
+    }
+    if os.path.exists(input_summary_path):
+        with open(input_summary_path, "r") as f:
+            input_summary = json.load(f)
+        provenance = {
+            "tech_source_kind": str(input_summary.get("tech_source_kind", "unknown")),
+            "tech_source_is_cached": bool(input_summary.get("tech_source_is_cached", False)),
+            "source_warnings": list(input_summary.get("source_warnings", [])),
+        }
+
+    analysis_is_stale = False
+    analysis_staleness_reason = ""
     if os.path.exists(summary_enhanced_path):
-        summary_df = pd.read_csv(summary_enhanced_path)
+        dependency_paths = [
+            path
+            for path in [summary_path, placements_path, utilization_path, assumptions_path]
+            if os.path.exists(path)
+        ]
+        newest_dependency_mtime = max(
+            [os.path.getmtime(path) for path in dependency_paths],
+            default=0.0,
+        )
+        enhanced_mtime = os.path.getmtime(summary_enhanced_path)
+        if enhanced_mtime < newest_dependency_mtime:
+            analysis_is_stale = True
+            analysis_staleness_reason = (
+                "scenario_summary_enhanced.csv is older than raw scenario outputs. "
+                "Showing raw cost results until Step 09 is rerun."
+            )
+            print("  Simulation panel: enhanced summary is stale; using raw scenario summary.")
+            summary_df = pd.read_csv(summary_path)
+        else:
+            summary_df = pd.read_csv(summary_enhanced_path)
     elif os.path.exists(summary_path):
         summary_df = pd.read_csv(summary_path)
     else:
@@ -959,8 +1005,19 @@ def load_simulation_data():
             v = r.get(col, default)
             return default if pd.isna(v) else float(v)
 
+        def safe_int(r, col, default=0):
+            v = pd.to_numeric(r.get(col, default), errors="coerce")
+            return int(default) if pd.isna(v) else int(v)
+
         payload[str(scenario)] = {
             "scenario_hires": scenario,
+            "solver_proven_optimal": safe_int(row, "solver_proven_optimal", default=0) == 1,
+            "solver_status": safe_int(row, "solver_status", default=0),
+            "solver_mip_gap": safe_float(row, "solver_mip_gap", default=None),
+            "solver_message": str(row.get("solver_message", "")).strip(),
+            "analysis_is_stale": analysis_is_stale,
+            "analysis_staleness_reason": analysis_staleness_reason,
+            "source_provenance": provenance,
             "kpis": {
                 "economic_total_with_overhead_usd": float(
                     row.get("economic_total_with_overhead_usd", 0)
@@ -1008,6 +1065,14 @@ def safe_read_csv(path, columns=None):
         return pd.DataFrame(columns=columns or [])
 
 
+def safe_number(value, default=0.0):
+    """Convert numeric-ish values to float while treating NaN as missing."""
+    raw = pd.to_numeric(value, errors="coerce")
+    if pd.isna(raw):
+        return float(default)
+    return float(raw)
+
+
 def load_blank_slate_data():
     """Load the single blank-slate scenario summary for the map panel."""
     if not getattr(config, "BLANK_SLATE_ENABLED", False):
@@ -1018,6 +1083,7 @@ def load_blank_slate_data():
     placements_path = os.path.join(blank_dir, BLANK_SLATE_PLACEMENTS)
     assumptions_path = os.path.join(blank_dir, BLANK_SLATE_ASSUMPTIONS)
     candidates_path = os.path.join(config.OPTIMIZATION_DIR, SIM_CANDIDATES)
+    input_summary_path = os.path.join(config.OPTIMIZATION_DIR, OPT_INPUT_SUMMARY)
 
     required = [summary_path, placements_path, assumptions_path, candidates_path]
     if any(not os.path.exists(path) for path in required):
@@ -1044,6 +1110,19 @@ def load_blank_slate_data():
     with open(assumptions_path, "r") as f:
         assumptions = json.load(f)
     data_span_years = float(assumptions.get("data_span_years", 1.0) or 1.0)
+    source_provenance = {
+        "tech_source_kind": "unknown",
+        "tech_source_is_cached": False,
+        "source_warnings": [],
+    }
+    if os.path.exists(input_summary_path):
+        with open(input_summary_path, "r") as f:
+            input_summary = json.load(f)
+        source_provenance = {
+            "tech_source_kind": str(input_summary.get("tech_source_kind", "unknown")),
+            "tech_source_is_cached": bool(input_summary.get("tech_source_is_cached", False)),
+            "source_warnings": list(input_summary.get("source_warnings", [])),
+        }
 
     summary_df["scenario_hires"] = pd.to_numeric(summary_df["scenario_hires"], errors="coerce")
     summary_df = summary_df.dropna(subset=["scenario_hires"]).copy()
@@ -1085,12 +1164,6 @@ def load_blank_slate_data():
             return float(raw)
         return float(raw) / data_span_years
 
-    def number(value, default=0.0):
-        raw = pd.to_numeric(value, errors="coerce")
-        if pd.isna(raw):
-            return float(default)
-        return float(raw)
-
     placements = []
     for _, p in placements_df.iterrows():
         placements.append(
@@ -1112,14 +1185,19 @@ def load_blank_slate_data():
     return {
         "scenario_hires": scenario,
         "data_span_years": data_span_years,
-        "total_appointments": int(round(number(row.get("total_appointments", 0)))),
+        "total_appointments": int(round(safe_number(row.get("total_appointments", 0)))),
         "annualized_total_cost_usd": round(annualize(total_cost_raw), 2),
         "annualized_travel_cost_usd": round(annualize(row.get("travel_cost_usd", 0)), 2),
         "annualized_hire_cost_usd": round(annualize(row.get("hire_cost_usd", 0)), 2),
         "total_placements": total_placements,
         "placements": placements,
-        "solver_status": int(round(number(row.get("solver_status", 0)))),
+        "solver_proven_optimal": safe_number(row.get("solver_proven_optimal", 0), 0) == 1,
+        "solver_status": int(round(safe_number(row.get("solver_status", 0)))),
+        "solver_mip_gap": safe_number(row.get("solver_mip_gap"), default=np.nan)
+        if not pd.isna(pd.to_numeric(row.get("solver_mip_gap"), errors="coerce"))
+        else None,
         "solver_message": str(row.get("solver_message", "")).strip(),
+        "source_provenance": source_provenance,
     }
 
 
@@ -1323,7 +1401,12 @@ def resolve_appointment_assignments(territory_data):
                     if remaining.get(aid, 0) <= 0:
                         continue
                     bcoord = base_coords[aid]
-                    dist = (appt["lat"] - bcoord[0]) ** 2 + (appt["lon"] - bcoord[1]) ** 2
+                    dist = haversine_miles(
+                        float(appt["lat"]),
+                        float(appt["lon"]),
+                        float(bcoord[0]),
+                        float(bcoord[1]),
+                    )
                     if dist < best_dist or (dist == best_dist and (best_aid is None or aid < best_aid)):
                         best_dist = dist
                         best_aid = aid
@@ -1407,21 +1490,69 @@ def load_historical_data(territory_data, out_dir):
     with open(summary_json_path, "r") as f:
         opt_summary = json.load(f)
     data_span_years = float(opt_summary.get("data_span_years", 1.0))
+    source_provenance = {
+        "tech_source_kind": str(opt_summary.get("tech_source_kind", "unknown")),
+        "tech_source_is_cached": bool(opt_summary.get("tech_source_is_cached", False)),
+        "source_warnings": list(opt_summary.get("source_warnings", [])),
+    }
 
     enhanced_path = os.path.join(out_dir, "scenario_summary_enhanced.csv")
-    if not os.path.exists(enhanced_path):
-        print("  Historical view: missing scenario_summary_enhanced.csv, skipping.")
+    summary_path = os.path.join(out_dir, SIM_SUMMARY)
+    if not os.path.exists(enhanced_path) and not os.path.exists(summary_path):
+        print("  Historical view: missing scenario summary outputs, skipping.")
         return None
-    enhanced_df = pd.read_csv(enhanced_path)
-    n0_rows = enhanced_df[
-        pd.to_numeric(enhanced_df["scenario_hires"], errors="coerce") == 0
+
+    history_summary_source = "scenario_summary_enhanced.csv"
+    history_summary_stale = False
+    history_summary_stale_reason = ""
+    if os.path.exists(enhanced_path) and os.path.exists(summary_path):
+        dependency_paths = [
+            path
+            for path in [
+                summary_path,
+                os.path.join(out_dir, SIM_PLACEMENTS),
+                os.path.join(out_dir, SIM_UTILIZATION),
+                os.path.join(out_dir, SIM_ASSUMPTIONS),
+            ]
+            if os.path.exists(path)
+        ]
+        newest_dependency_mtime = max(
+            [os.path.getmtime(path) for path in dependency_paths],
+            default=0.0,
+        )
+        if os.path.getmtime(enhanced_path) < newest_dependency_mtime:
+            history_summary_source = "scenario_summary.csv"
+            history_summary_stale = True
+            history_summary_stale_reason = (
+                "Historical comparison is using raw scenario_summary.csv because "
+                "scenario_summary_enhanced.csv is stale."
+            )
+            summary_df = pd.read_csv(summary_path)
+        else:
+            summary_df = pd.read_csv(enhanced_path)
+    elif os.path.exists(enhanced_path):
+        summary_df = pd.read_csv(enhanced_path)
+    else:
+        history_summary_source = "scenario_summary.csv"
+        summary_df = pd.read_csv(summary_path)
+
+    n0_rows = summary_df[
+        pd.to_numeric(summary_df["scenario_hires"], errors="coerce") == 0
     ]
     if n0_rows.empty:
-        print("  Historical view: no N=0 row in scenario_summary_enhanced.csv, skipping.")
+        print(f"  Historical view: no N=0 row in {history_summary_source}, skipping.")
         return None
-    n0_travel_cost = float(
-        pd.to_numeric(n0_rows.iloc[0].get("travel_cost_usd", 0), errors="coerce") or 0
+    n0_travel_cost = safe_number(n0_rows.iloc[0].get("travel_cost_usd", 0), default=0.0)
+    n0_solver_proven_optimal = safe_number(
+        n0_rows.iloc[0].get("solver_proven_optimal", 0),
+        default=0.0,
+    ) == 1
+    n0_solver_status = int(safe_number(n0_rows.iloc[0].get("solver_status", 0), default=0.0))
+    n0_solver_mip_gap_raw = pd.to_numeric(
+        n0_rows.iloc[0].get("solver_mip_gap"), errors="coerce"
     )
+    n0_solver_mip_gap = None if pd.isna(n0_solver_mip_gap_raw) else float(n0_solver_mip_gap_raw)
+    n0_solver_message = str(n0_rows.iloc[0].get("solver_message", "")).strip()
 
     def format_base_label(city, state, fallback):
         city_text = "" if city is None or pd.isna(city) else str(city).strip()
@@ -1457,9 +1588,7 @@ def load_historical_data(territory_data, out_dir):
     cost_lookup = {}
     for _, row in cost_table.iterrows():
         key = (str(row["tech_or_candidate_id"]), str(row["node_id"]))
-        cost_lookup[key] = float(
-            pd.to_numeric(row.get("unit_cost_usd", 0), errors="coerce") or 0
-        )
+        cost_lookup[key] = safe_number(row.get("unit_cost_usd", 0), default=0.0)
 
     demand_appts["canonical_tech_name"] = demand_appts["Service Resource: Name"].apply(
         canonicalize_tech_name
@@ -1679,6 +1808,14 @@ def load_historical_data(territory_data, out_dir):
         "n0_optimized_travel_cost_usd": round(n0_travel_cost, 2),
         "potential_savings_usd": round(potential_savings, 2),
         "data_span_years": data_span_years,
+        "n0_solver_proven_optimal": n0_solver_proven_optimal,
+        "n0_solver_status": n0_solver_status,
+        "n0_solver_mip_gap": n0_solver_mip_gap,
+        "n0_solver_message": n0_solver_message,
+        "summary_source": history_summary_source,
+        "summary_is_stale": history_summary_stale,
+        "summary_stale_reason": history_summary_stale_reason,
+        "source_provenance": source_provenance,
     }
 
 
@@ -2033,7 +2170,7 @@ def add_territory_assignment_layers(
                 ]
                 if not util_row.empty:
                     utilization = float(
-                        pd.to_numeric(util_row["utilization"].iloc[0], errors="coerce") or 0
+                        safe_number(util_row["utilization"].iloc[0], default=0.0)
                     )
 
             tech_stats[assignee_id] = {
@@ -2125,8 +2262,9 @@ def build_simulation_kpi_explanations():
             "title": "Total Cost",
             "body": (
                 "<p><b>What:</b> The model's annual cost for this scenario.</p>"
-                "<p><b>Formula:</b> Travel Cost + Time-Zone Penalties + Hire Payroll + "
-                "Configured Overhead + Any Unmet-Appointment Penalties</p>"
+                "<p><b>Formula:</b> Travel Cost + Time-Zone Penalties + Hub-Connectivity "
+                "Penalties + Hire Payroll + Configured Overhead + Any "
+                "Unmet-Appointment Penalties</p>"
                 "<p><b>Interpretation:</b> Lower is better in the core cost-first optimization. "
                 "This is the number the solver is minimizing before the install-upside view is applied.</p>"
             ),
@@ -2365,6 +2503,20 @@ def build_simulation_panel_css(ui_preset):
         margin: 4px 0 0 0;
         font-size: 11px;
         color: #64748b;
+      }}
+      .sim-status-banner {{
+        display: none;
+        margin: 10px 0 14px 0;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid #f5d0a8;
+        background: #fff7ed;
+        color: #9a3412;
+        font-size: 11px;
+        line-height: 1.45;
+      }}
+      .sim-status-banner.visible {{
+        display: block;
       }}
       #sim-buttons {{
         display: grid;
@@ -2705,6 +2857,7 @@ def build_simulation_panel_markup():
       </div>
 
       <div id="optimized-content">
+        <div id="sim-status-banner" class="sim-status-banner"></div>
         <div class="sim-section">
           <div class="sim-section-label">Scenarios</div>
           <div id="sim-buttons"></div>
@@ -2784,7 +2937,7 @@ def build_simulation_panel_markup():
 
         <div class="sim-section" id="sim-coverage-section" style="display:none;">
           <h3 class="sim-section-heading">Coverage Assignments</h3>
-          <p class="sim-section-caption">Top assignees stay visible so the dot colors remain readable.</p>
+          <p class="sim-section-caption">Top assignees stay visible so the dot colors remain readable. Coverage dots are reconstructed from node-level solver quotas for visualization, not literal dispatch routes.</p>
           <div id="sim-tech-legend" class="sim-list-box"></div>
           <button id="sim-tech-toggle" class="sim-link-btn" style="display:none;">Show all</button>
         </div>
@@ -2796,6 +2949,7 @@ def build_simulation_panel_markup():
       </div>
 
       <div id="historical-content">
+        <div id="hist-status-banner" class="sim-status-banner"></div>
         <div class="sim-section">
           <div class="sim-section-label">Historical Assignments</div>
           <p class="sim-section-caption">Actual technician dispatch record</p>
@@ -2835,6 +2989,7 @@ def build_simulation_panel_markup():
       </div>
 
       <div id="blank-content">
+        <div id="blank-status-banner" class="sim-status-banner"></div>
         <div class="sim-section">
           <div class="sim-section-label">Blank Slate</div>
           <p class="sim-section-caption">Modeled rebuild with all hires placed from scratch</p>
@@ -2868,7 +3023,7 @@ def build_simulation_panel_markup():
         </div>
 
         <div id="blank-footnote" style="margin-top:16px;padding-top:12px;border-top:1px solid #edf2f7;font-size:11px;line-height:1.45;color:#64748b;">
-          Blank Slate uses the same modeled travel-cost rules as the optimizer, but treats all hires as new fully trained technicians and does not use current technician locations.
+          Blank Slate uses the same modeled travel-cost rules as the optimizer, but treats all hires as new fully trained technicians and does not use current technician locations. Coverage dots are reconstructed from node-level solver quotas for visualization.
         </div>
       </div>
     </div>
@@ -3037,6 +3192,47 @@ def build_simulation_panel_script(
         }}
       }}
 
+      function renderStatusBanner(elementId, messages) {{
+        const banner = document.getElementById(elementId);
+        if (!banner) return;
+        const clean = (messages || []).filter((msg) => !!msg);
+        if (!clean.length) {{
+          banner.innerHTML = "";
+          banner.classList.remove("visible");
+          return;
+        }}
+        banner.innerHTML = clean.map((msg) => `<div>${{msg}}</div>`).join("");
+        banner.classList.add("visible");
+      }}
+
+      function buildSourceMessages(sourceProvenance) {{
+        const messages = [];
+        if (!sourceProvenance) return messages;
+        if (sourceProvenance.tech_source_is_cached) {{
+          messages.push("Roster provenance: using cached generated tech_master.csv fallback, not a live workbook source.");
+        }}
+        const warnings = Array.isArray(sourceProvenance.source_warnings)
+          ? sourceProvenance.source_warnings
+          : [];
+        warnings.forEach((warning) => messages.push(String(warning)));
+        return messages;
+      }}
+
+      function buildSolverMessage(item, label) {{
+        if (!item || item.solver_proven_optimal) return "";
+        const parts = [`${{label}} is provisional because the solver did not prove optimality.`];
+        if (item.solver_status !== undefined && item.solver_status !== null) {{
+          parts.push(`status ${{item.solver_status}}`);
+        }}
+        if (item.solver_mip_gap !== undefined && item.solver_mip_gap !== null && !Number.isNaN(Number(item.solver_mip_gap))) {{
+          parts.push(`gap ${{Number(item.solver_mip_gap).toFixed(6)}}`);
+        }}
+        if (item.solver_message) {{
+          parts.push(String(item.solver_message));
+        }}
+        return parts.join(" · ");
+      }}
+
       function renderKpis(scenario) {{
         const item = scenarioData[scenario];
         if (!item) return;
@@ -3079,6 +3275,17 @@ def build_simulation_panel_script(
         breakEvenEl.textContent = hasInstallUpside ? Number(k.break_even_install_units || 0).toFixed(1) : "—";
         roiEl.textContent = hasInstallUpside ? pct(k.roi_install_pct, 0) : "—";
         setSignedValueColor(netValueEl, k.net_economic_value_install_usd);
+
+        const bannerMessages = [];
+        if (item.analysis_is_stale && item.analysis_staleness_reason) {{
+          bannerMessages.push(item.analysis_staleness_reason);
+        }}
+        const solverMessage = buildSolverMessage(item, `Scenario N=${{scenario}}`);
+        if (solverMessage) {{
+          bannerMessages.push(solverMessage);
+        }}
+        bannerMessages.push(...buildSourceMessages(item.source_provenance));
+        renderStatusBanner("sim-status-banner", bannerMessages);
       }}
 
       function renderRecommendations(scenario) {{
@@ -3399,7 +3606,7 @@ def build_simulation_panel_script(
         if (optimizedEl) optimizedEl.textContent = money(historicalData.n0_optimized_travel_cost_usd);
         if (savingsEl) {{
           const savings = Number(historicalData.potential_savings_usd || 0);
-          savingsEl.textContent = money(savings);
+          savingsEl.textContent = savings < 0 ? signedMoney(savings) : money(savings);
           if (savings > 0) {{
             savingsEl.style.color = "#1f7a40";
           }} else if (savings < 0) {{
@@ -3408,6 +3615,25 @@ def build_simulation_panel_script(
             savingsEl.style.color = "#102235";
           }}
         }}
+        const bannerMessages = [];
+        if (historicalData.summary_is_stale && historicalData.summary_stale_reason) {{
+          bannerMessages.push(historicalData.summary_stale_reason);
+        }}
+        if (!historicalData.n0_solver_proven_optimal) {{
+          const parts = ["Historical comparison baseline N=0 is provisional."];
+          if (historicalData.n0_solver_status !== undefined && historicalData.n0_solver_status !== null) {{
+            parts.push(`status ${{historicalData.n0_solver_status}}`);
+          }}
+          if (historicalData.n0_solver_mip_gap !== undefined && historicalData.n0_solver_mip_gap !== null && !Number.isNaN(Number(historicalData.n0_solver_mip_gap))) {{
+            parts.push(`gap ${{Number(historicalData.n0_solver_mip_gap).toFixed(6)}}`);
+          }}
+          if (historicalData.n0_solver_message) {{
+            parts.push(String(historicalData.n0_solver_message));
+          }}
+          bannerMessages.push(parts.join(" · "));
+        }}
+        bannerMessages.push(...buildSourceMessages(historicalData.source_provenance));
+        renderStatusBanner("hist-status-banner", bannerMessages);
       }}
 
       function renderHistoricalCoverage() {{
@@ -3466,6 +3692,13 @@ def build_simulation_panel_script(
         if (totalEl) totalEl.textContent = money(blankSlateData.annualized_total_cost_usd);
         if (travelEl) travelEl.textContent = money(blankSlateData.annualized_travel_cost_usd);
         if (placementsEl) placementsEl.textContent = Number(blankSlateData.total_placements || 0).toLocaleString();
+        const bannerMessages = [];
+        const solverMessage = buildSolverMessage(blankSlateData, "Blank Slate");
+        if (solverMessage) {{
+          bannerMessages.push(solverMessage);
+        }}
+        bannerMessages.push(...buildSourceMessages(blankSlateData.source_provenance));
+        renderStatusBanner("blank-status-banner", bannerMessages);
       }}
 
       function renderBlankSlatePlacements() {{

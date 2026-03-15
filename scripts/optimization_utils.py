@@ -208,7 +208,6 @@ def choose_airport_for_location(location: object, airports_df: pd.DataFrame) -> 
             )
             if not city_match.empty:
                 return str(city_match.iloc[0]["airport_code"])
-            return str(same_state.iloc[0]["airport_code"])
     if city_norm:
         near_city = airports_df[airports_df["city_norm"].str.contains(city_norm, na=False)]
         if not near_city.empty:
@@ -241,17 +240,33 @@ def nearest_airport_code(
     """Find nearest airport code and distance in KM."""
     if pd.isna(lat) or pd.isna(lon):
         return None, None
+    state_norm = normalize_state(state_hint) if state_hint else None
+    country_hint = country_from_state(state_norm) if state_norm else None
+
     subset = airports_df
-    if state_hint:
-        narrowed = airports_df[airports_df["state_abbr"] == state_hint]
-        if not narrowed.empty:
-            subset = narrowed
-    distances = subset.apply(
+    if country_hint:
+        same_country = airports_df[airports_df["country"] == country_hint]
+        if not same_country.empty:
+            subset = same_country
+
+    ranked = subset.copy()
+    ranked["distance_km"] = ranked.apply(
         lambda r: haversine_km(float(lat), float(lon), float(r["lat"]), float(r["lon"])),
         axis=1,
     )
-    idx = distances.idxmin()
-    return str(subset.loc[idx, "airport_code"]), float(distances.loc[idx])
+    if state_norm:
+        ranked["same_state_preference"] = np.where(
+            ranked["state_abbr"].eq(state_norm),
+            0,
+            1,
+        )
+    else:
+        ranked["same_state_preference"] = 1
+    ranked = ranked.sort_values(
+        ["distance_km", "same_state_preference", "airport_code"]
+    ).reset_index(drop=True)
+    best = ranked.iloc[0]
+    return str(best["airport_code"]), float(best["distance_km"])
 
 
 def get_airport_operational_zone(airport_code: object) -> dict:

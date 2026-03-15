@@ -54,6 +54,8 @@ EXCLUDED_US_TERRITORIES = {
     "VI",
 }
 
+TECH_SKILL_COLUMNS = ["HPS", "LearningSpace", "All other Patient Sims"]
+
 
 def resolve_path(candidates: list[str], label: str) -> str:
     """Return first existing file path."""
@@ -71,6 +73,35 @@ def yesno_to_bool(value: object) -> bool:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return False
     return str(value).strip().lower() == "yes"
+
+
+def derive_hps_skill_names(appointments_workbook_path: str | None) -> set[str]:
+    """Infer which technicians have handled HPS work from historical appointments."""
+    if not appointments_workbook_path or not os.path.exists(appointments_workbook_path):
+        return set()
+
+    derived = pd.read_excel(
+        appointments_workbook_path,
+        sheet_name=DERIVED_APPOINTMENTS_SHEET,
+        usecols=["Appointment Number", "Service Resource: Name"],
+    )
+    raw = pd.read_excel(
+        appointments_workbook_path,
+        sheet_name=RAW_APPOINTMENTS_SHEET,
+        usecols=["Appointment Number", "Description", "Subject"],
+    )
+    merged = derived.merge(raw, on="Appointment Number", how="left")
+    parsed = merged.apply(
+        lambda r: classify_skill(r.get("Description"), r.get("Subject")),
+        axis=1,
+        result_type="expand",
+    )
+    merged = pd.concat([merged, parsed], axis=1)
+    names = merged.loc[
+        pd.to_numeric(merged["required_hps"], errors="coerce").fillna(0).astype(int) == 1,
+        "Service Resource: Name",
+    ].apply(canonicalize_tech_name)
+    return {name for name in names if name}
 
 def classify_skill(description: object, subject: object) -> dict:
     """Classify skill requirements from text."""
@@ -402,8 +433,16 @@ def build_tech_master(
     airports_df: pd.DataFrame,
     contractor_scope: str,
     anchor_allocations: pd.DataFrame | None = None,
-) -> pd.DataFrame:
+    appointments_workbook_path: str | None = None,
+) -> tuple[pd.DataFrame, dict]:
     """Build canonical technician table."""
+    source_meta = {
+        "tech_source_path": str(tech_path),
+        "tech_source_kind": "unknown",
+        "tech_source_is_cached": False,
+        "source_warnings": [],
+    }
+    tech = None
     if str(tech_path).lower().endswith(".csv"):
         cached = pd.read_csv(tech_path)
         required_cols = {
@@ -429,45 +468,78 @@ def build_tech_master(
             "notes",
         }
         missing = sorted(required_cols - set(cached.columns))
-        if missing:
-            raise ValueError(
-                f"Cached tech_master CSV at {tech_path} is missing required columns: {missing}"
+        if not missing:
+            valid_airports = set(airports_df["airport_code"].astype(str))
+            airport_series = cached["base_airport_iata"].fillna("").astype(str).str.strip()
+            invalid_mask = airport_series.ne("") & ~airport_series.isin(valid_airports)
+            if invalid_mask.any():
+                invalid_values = sorted(set(airport_series[invalid_mask].tolist()))
+                cached.loc[invalid_mask, "base_airport_iata"] = ""
+                print(
+                    "  NOTE: cleared unsupported cached airport code(s): "
+                    + ", ".join(invalid_values)
+                )
+                source_meta["source_warnings"].append(
+                    "Cleared unsupported cached airport code(s): " + ", ".join(invalid_values)
+                )
+            print("  NOTE: using cached tech_master CSV fallback.")
+            source_meta["tech_source_kind"] = "cached_tech_master_csv"
+            source_meta["tech_source_is_cached"] = True
+            enriched = enrich_tech_policy_fields(
+                cached.sort_values("tech_name").reset_index(drop=True),
+                airports_df,
+                contractor_scope,
             )
-        valid_airports = set(airports_df["airport_code"].astype(str))
-        airport_series = cached["base_airport_iata"].fillna("").astype(str).str.strip()
-        invalid_mask = airport_series.ne("") & ~airport_series.isin(valid_airports)
-        if invalid_mask.any():
-            invalid_values = sorted(set(airport_series[invalid_mask].tolist()))
-            cached.loc[invalid_mask, "base_airport_iata"] = ""
-            print(
-                "  NOTE: cleared unsupported cached airport code(s): "
-                + ", ".join(invalid_values)
+            return (
+                apply_anchor_allocations(
+                    enriched,
+                    anchor_allocations if anchor_allocations is not None else pd.DataFrame(),
+                ),
+                source_meta,
             )
-        print("  NOTE: using cached tech_master CSV fallback.")
-        enriched = enrich_tech_policy_fields(
-            cached.sort_values("tech_name").reset_index(drop=True),
-            airports_df,
-            contractor_scope,
-        )
-        return apply_anchor_allocations(
-            enriched,
-            anchor_allocations if anchor_allocations is not None else pd.DataFrame(),
-        )
 
-    tech = None
+        roster_cols = {"name", "location", "comment"}
+        if roster_cols.issubset(cached.columns):
+            tech = cached.rename(
+                columns={
+                    "name": "Tech",
+                    "location": "Location",
+                    "comment": "Comments",
+                    "status": "Status",
+                }
+            ).copy()
+            keep_cols = ["Tech", "Location", "Comments"]
+            if "Status" in tech.columns:
+                keep_cols.append("Status")
+                tech = tech[
+                    tech["Status"].fillna("").astype(str).str.strip().str.lower().isin(
+                        {"active", "special"}
+                    )
+                ].copy()
+            tech = tech[keep_cols]
+            source_meta["tech_source_kind"] = "cleaned_current_roster_csv"
+        else:
+            raise ValueError(
+                f"Unsupported technician CSV format at {tech_path}. Missing required columns: {missing}"
+            )
 
     # Preferred "Tech/Location/Comments" workbook layout.
-    try:
-        raw = pd.read_excel(tech_path, sheet_name=0, header=None)
-        if len(raw) >= 3:
-            headers = ["" if pd.isna(h) else str(h).strip() for h in raw.iloc[1].tolist()]
-            parsed = raw.iloc[2:].copy()
-            parsed.columns = headers
-            parsed = parsed.dropna(how="all")
-            if {"Tech", "Location", "Comments"}.issubset(parsed.columns):
-                tech = parsed[["Tech", "Location", "Comments"]].copy()
-    except Exception:
-        tech = None
+    if tech is None:
+        try:
+            raw = pd.read_excel(tech_path, sheet_name=0, header=None)
+            if len(raw) >= 3:
+                headers = ["" if pd.isna(h) else str(h).strip() for h in raw.iloc[1].tolist()]
+                parsed = raw.iloc[2:].copy()
+                parsed.columns = headers
+                parsed = parsed.dropna(how="all")
+                if {"Tech", "Location", "Comments"}.issubset(parsed.columns):
+                    keep_cols = ["Tech", "Location", "Comments"] + [
+                        col for col in TECH_SKILL_COLUMNS if col in parsed.columns
+                    ]
+                    tech = parsed[keep_cols].copy()
+                    source_meta["tech_source_kind"] = "source_truth_workbook"
+        except Exception:
+            tech = None
 
     # Fallback legacy layout from Service Appointments report.
     if tech is None:
@@ -485,16 +557,127 @@ def build_tech_master(
                 "Service Resource Name": "Tech",
                 "Comment": "Comments",
             }
-        )[["Tech", "Location", "Comments"]].copy()
+        )[
+            ["Tech", "Location", "Comments"]
+            + [col for col in TECH_SKILL_COLUMNS if col in fallback.columns]
+        ].copy()
         print(
             "  NOTE: technician workbook did not match source-of-truth schema; "
             "using Resources-sheet fallback columns."
+        )
+        source_meta["tech_source_kind"] = "resources_sheet_workbook_fallback"
+        source_meta["source_warnings"].append(
+            "Technician workbook did not match source-truth schema; used Resources-sheet fallback."
         )
 
     for col in tech.columns:
         tech[col] = tech[col].apply(lambda v: "" if pd.isna(v) else str(v).strip())
 
+    report_comment_lookup: dict[str, str] = {}
+    if source_meta["tech_source_kind"] == "cleaned_current_roster_csv" and os.path.exists(
+        config.SERVICE_APPTS_REPORT
+    ):
+        try:
+            report_resources = pd.read_excel(
+                config.SERVICE_APPTS_REPORT,
+                sheet_name=config.APPTS_REPORT_RESOURCES_SHEET,
+                usecols=["Service Resource Name", "Comment"],
+            )
+            for _, report_row in report_resources.iterrows():
+                canonical_name = canonicalize_tech_name(report_row.get("Service Resource Name", ""))
+                comment_text = (
+                    ""
+                    if pd.isna(report_row.get("Comment"))
+                    else str(report_row.get("Comment", "")).strip()
+                )
+                if canonical_name and comment_text:
+                    report_comment_lookup[canonical_name] = comment_text
+            for idx, row in tech.iterrows():
+                if str(row.get("Comments", "")).strip():
+                    continue
+                canonical_name = canonicalize_tech_name(row.get("Tech", ""))
+                fallback_comment = report_comment_lookup.get(canonical_name, "")
+                if fallback_comment:
+                    tech.at[idx, "Comments"] = fallback_comment
+        except Exception as exc:
+            warning = (
+                "Could not supplement technician comments from "
+                f"{config.SERVICE_APPTS_REPORT}: {exc}"
+            )
+            print(f"  WARNING: {warning}")
+            source_meta["source_warnings"].append(warning)
+
+    hps_skill_names = derive_hps_skill_names(appointments_workbook_path)
+
+    missing_skill_cols = [col for col in TECH_SKILL_COLUMNS if col not in tech.columns]
+    for col in missing_skill_cols:
+        tech[col] = ""
+
+    cached_skill_lookup: dict[str, dict[str, str]] = {}
+    cached_skill_path = Path(config.OPTIMIZATION_DIR) / "tech_master.csv"
+    if (
+        cached_skill_path.exists()
+        and source_meta["tech_source_kind"] != "cleaned_current_roster_csv"
+    ):
+        try:
+            cached_master = pd.read_csv(cached_skill_path)
+            for _, cached_row in cached_master.iterrows():
+                cached_name = canonicalize_tech_name(
+                    cached_row.get("tech_name", cached_row.get("source_name", ""))
+                )
+                if not cached_name:
+                    continue
+                cached_skill_lookup[cached_name] = {
+                    "HPS": "Yes" if int(pd.to_numeric(cached_row.get("skill_hps", 0), errors="coerce") or 0) else "",
+                    "LearningSpace": "Yes"
+                    if int(pd.to_numeric(cached_row.get("skill_ls", 0), errors="coerce") or 0)
+                    else "",
+                    "All other Patient Sims": "Yes"
+                    if int(pd.to_numeric(cached_row.get("skill_patient", 0), errors="coerce") or 0)
+                    else "",
+                }
+        except Exception as exc:
+            warning = (
+                "Could not load cached tech_master skill fallback from "
+                f"{cached_skill_path}: {exc}"
+            )
+            print(f"  WARNING: {warning}")
+            source_meta["source_warnings"].append(warning)
+
+    supplemented_skill_count = 0
+    if cached_skill_lookup:
+        for idx, row in tech.iterrows():
+            canonical_name = canonicalize_tech_name(row.get("Tech", ""))
+            if not canonical_name or canonical_name not in cached_skill_lookup:
+                continue
+            cached_skills = cached_skill_lookup[canonical_name]
+            for col in TECH_SKILL_COLUMNS:
+                current_value = str(row.get(col, "")).strip()
+                if current_value:
+                    continue
+                fallback_value = cached_skills.get(col, "")
+                if fallback_value:
+                    tech.at[idx, col] = fallback_value
+                    supplemented_skill_count += 1
+
+    if missing_skill_cols:
+        if supplemented_skill_count:
+            warning = (
+                "Explicit technician skill columns missing from source roster: "
+                + ", ".join(missing_skill_cols)
+                + f". Backfilled {supplemented_skill_count} value(s) from cached tech_master.csv and derived the rest from comments/history where possible; unresolved blanks default to no."
+            )
+        else:
+            warning = (
+                "Explicit technician skill columns missing from source roster: "
+                + ", ".join(missing_skill_cols)
+                + ". Derived skills from comments/history where possible; unresolved blanks default to no."
+            )
+        print(f"  WARNING: {warning}")
+        source_meta["source_warnings"].append(warning)
+
     rows = []
+    unresolved_airports: list[str] = []
     for _, row in tech.iterrows():
         name_raw = row.get("Tech", "").strip()
         if not name_raw:
@@ -519,6 +702,8 @@ def build_tech_master(
                     f"'{airport_code}' (not in MAJOR_AIRPORTS); leaving airport blank."
                 )
                 airport_code = None
+        elif location:
+            unresolved_airports.append(f"{canonical_name} ({location})")
 
         is_contractor = "contractor" in name_raw.lower()
         availability = 0.5 if is_contractor else 1.0
@@ -532,6 +717,34 @@ def build_tech_master(
             availability = 0.20  # Repair center hybrid, 20-25% field when fully staffed (conservative)
 
         note = row.get("Comments", "").strip()
+        supplemental_comment = report_comment_lookup.get(canonical_name, "")
+        skill_comment_text = " | ".join(
+            part for part in [note, supplemental_comment] if str(part).strip()
+        )
+        note_lower = skill_comment_text.lower()
+        status_raw = str(row.get("Status", "")).strip().lower()
+        if status_raw in {"inactive", "former"} or "no longer with elevate" in note_lower:
+            continue
+
+        hps_value = str(row.get("HPS", "")).strip()
+        if not hps_value and canonical_name in hps_skill_names:
+            hps_value = "Yes"
+        if not hps_value and "hps" in note_lower:
+            hps_value = "Yes"
+
+        ls_value = str(row.get("LearningSpace", "")).strip()
+        if not ls_value and ("learningspace" in note_lower or "learning space" in note_lower):
+            ls_value = "Yes"
+
+        patient_value = str(row.get("All other Patient Sims", "")).strip()
+        if not patient_value and (
+            "patient simulator" in note_lower
+            or "learningspace" in note_lower
+            or "learning space" in note_lower
+            or source_meta["tech_source_kind"] == "cleaned_current_roster_csv"
+        ):
+            patient_value = "Yes"
+
         florida_only = int("only covers florida" in note.lower())
 
         rows.append(
@@ -547,9 +760,9 @@ def build_tech_master(
                 "base_airport_iata": airport_code or "",
                 "base_lat": airport_lat,
                 "base_lon": airport_lon,
-                "skill_hps": int(yesno_to_bool(row.get("HPS"))),
-                "skill_ls": int(yesno_to_bool(row.get("LearningSpace"))),
-                "skill_patient": int(yesno_to_bool(row.get("All other Patient Sims"))),
+                "skill_hps": int(yesno_to_bool(hps_value)),
+                "skill_ls": int(yesno_to_bool(ls_value)),
+                "skill_patient": int(yesno_to_bool(patient_value)),
                 "availability_fte": float(availability),
                 "fixed_base": 1,
                 "can_relocate": 0,
@@ -561,9 +774,19 @@ def build_tech_master(
 
     tech_master = pd.DataFrame(rows).sort_values("tech_name").reset_index(drop=True)
     tech_master = enrich_tech_policy_fields(tech_master, airports_df, contractor_scope)
-    return apply_anchor_allocations(
-        tech_master,
-        anchor_allocations if anchor_allocations is not None else pd.DataFrame(),
+    if unresolved_airports:
+        warning = (
+            "Could not resolve base airport for: "
+            + ", ".join(sorted(unresolved_airports))
+        )
+        print(f"  WARNING: {warning}")
+        source_meta["source_warnings"].append(warning)
+    return (
+        apply_anchor_allocations(
+            tech_master,
+            anchor_allocations if anchor_allocations is not None else pd.DataFrame(),
+        ),
+        source_meta,
     )
 
 
@@ -718,7 +941,7 @@ def build_candidate_bases(
     airports_df: pd.DataFrame,
     demand_df: pd.DataFrame,
     top_demand_cities: int,
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, dict]:
     """Build candidate base pool = major airports + top demand cities."""
     airports = airports_df.copy()
     airports["candidate_id"] = airports["airport_code"].map(lambda c: f"airport_{c.lower()}")
@@ -747,7 +970,7 @@ def build_candidate_bases(
         ]
     ].copy()
 
-    demand_city = (
+    demand_city_raw = (
         demand_df.dropna(subset=["city", "state_norm", "lat", "lon"])
         .groupby(["city", "state_norm", "country"])
         .agg(
@@ -760,6 +983,7 @@ def build_candidate_bases(
         .sort_values("demand_hours", ascending=False)
         .head(top_demand_cities)
     )
+    demand_city = demand_city_raw.copy()
     demand_city["airport_iata"] = demand_city.apply(
         lambda r: nearest_airport_code(r["lat"], r["lon"], airports_df, r["state_norm"])[0],
         axis=1,
@@ -774,12 +998,15 @@ def build_candidate_bases(
     demand_city = demand_city.rename(columns={"state_norm": "state"})
 
     major_city_state = set(zip(major["city"].map(normalize_name), major["state"]))
+    pre_filter_count = int(len(demand_city))
     demand_city = demand_city[
         ~demand_city.apply(
             lambda r: (normalize_name(r["city"]), r["state"]) in major_city_state,
             axis=1,
         )
     ]
+    demand_city = demand_city.reset_index(drop=True)
+    demand_city["demand_rank"] = range(1, len(demand_city) + 1)
     demand_city = demand_city[
         [
             "candidate_id",
@@ -799,7 +1026,14 @@ def build_candidate_bases(
 
     candidates = pd.concat([major, demand_city], ignore_index=True)
     candidates = candidates.drop_duplicates(subset=["candidate_id"]).reset_index(drop=True)
-    return enrich_candidate_zone_fields(candidates, airports_df)
+    candidate_meta = {
+        "requested_top_demand_cities": int(top_demand_cities),
+        "selected_pre_dedupe_demand_cities": int(len(demand_city_raw)),
+        "dropped_due_major_airport_overlap": int(pre_filter_count - len(demand_city)),
+        "final_demand_city_candidates": int(len(demand_city)),
+        "final_candidate_bases": int(len(candidates)),
+    }
+    return enrich_candidate_zone_fields(candidates, airports_df), candidate_meta
 
 
 def classify_historical_roster_status(comment: object) -> str:
@@ -1296,22 +1530,26 @@ def main() -> None:
             args.tech_xlsx,
             os.environ.get("ELEVATE_TECH_SOURCE"),
             DEFAULT_TECH_XLSX,
-            os.path.join(config.OPTIMIZATION_DIR, "tech_master.csv"),
+            config.CLEAN_TECHS_CSV,
             config.SERVICE_APPTS_REPORT,
+            os.path.join(config.OPTIMIZATION_DIR, "tech_master.csv"),
         ],
         "technician workbook",
     )
 
     airports_df = build_airports_df(config.MAJOR_AIRPORTS)
     anchor_allocations = load_anchor_allocations(config.TECHNICIAN_ANCHOR_ALLOCATIONS_CSV)
-    tech_master = build_tech_master(
+    tech_master, tech_source_meta = build_tech_master(
         tech_path,
         airports_df,
         args.contractor_assignment_scope,
         anchor_allocations=anchor_allocations,
+        appointments_workbook_path=appts_path,
     )
     demand = build_demand_appointments(appts_path, config.GEOCODED_APPTS_CSV, airports_df)
-    candidates = build_candidate_bases(airports_df, demand, args.top_demand_cities)
+    candidates, candidate_meta = build_candidate_bases(
+        airports_df, demand, args.top_demand_cities
+    )
     historical_roster = build_historical_roster(config.SERVICE_APPTS_REPORT, airports_df, demand)
 
     # Compute data time span for annualization
@@ -1344,6 +1582,14 @@ def main() -> None:
     summary = {
         "appointments_source": appts_path,
         "tech_source": tech_path,
+        "appointments_source_kind": (
+            "repo_raw_workbook"
+            if os.path.abspath(appts_path) == os.path.abspath(config.SERVICE_APPTS_DISPATCH)
+            else "external_workbook_override"
+        ),
+        "tech_source_kind": tech_source_meta["tech_source_kind"],
+        "tech_source_is_cached": bool(tech_source_meta["tech_source_is_cached"]),
+        "source_warnings": list(tech_source_meta.get("source_warnings", [])),
         "technician_anchor_allocations_source": (
             config.TECHNICIAN_ANCHOR_ALLOCATIONS_CSV
             if os.path.exists(config.TECHNICIAN_ANCHOR_ALLOCATIONS_CSV)
@@ -1361,6 +1607,7 @@ def main() -> None:
             "ls_required_appointments": int(demand["required_ls"].sum()),
             "hps_ls_required_appointments": int((demand["skill_class"] == "hps_ls").sum()),
         },
+        "candidate_pool": candidate_meta,
         "contractor_assignment_scope": args.contractor_assignment_scope,
         "contractor_policy_defaults": {
             "travel_cost_policy": config.TRAVEL_COST_POLICY_CONTRACTOR,

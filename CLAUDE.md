@@ -40,8 +40,15 @@ This file is the working context handoff for future chats.
   - exposes one quiet `Flight hubs` chip in the panel header for airport hubs
   - hides the heavier diagnostic map layers and floating legend boxes
   - supports `ELEVATE_MAP_UI_MODE=debug` for the old inspection-heavy layer set
+- Step 05 now ships three stakeholder views:
+  - `Optimized`
+  - `Historical`
+  - `Blank Slate`
+  - and it surfaces provisional-solver + source-provenance warnings directly in the panel
 - AVS is treated as Learning Space for dispatch skill logic.
-- New hires cannot serve HPS nodes.
+- Normal scenarios keep the `new hires cannot serve HPS` rule.
+- Blank Slate lifts that HPS restriction because it represents fully trained hypothetical hires.
+- Step 08 now also applies a flight-only hub-connectivity penalty based on the origin airport tier.
 - Step 09 uses the newer **patient-sim family mix** install-upside model.
 - Step 09 is now **install-only** for primary upside. Service-contract profit is not in the main model.
 
@@ -160,6 +167,7 @@ Do not commit sensitive external files.
 /opt/miniconda3/bin/python3 scripts/11_build_full_cost_table.py
 /opt/miniconda3/bin/python3 scripts/08_optimize_locations.py --min-new-hires 0 --max-new-hires 4 --max-hires-per-base 1 --time-limit-sec 600
 /opt/miniconda3/bin/python3 scripts/09_analyze_scenarios.py
+/opt/miniconda3/bin/python3 scripts/08_optimize_locations.py --blank-slate --min-new-hires 16 --max-new-hires 16 --max-hires-per-base 1 --time-limit-sec 600
 /opt/miniconda3/bin/python3 scripts/05_generate_map.py
 ```
 
@@ -177,6 +185,8 @@ Important notes:
 - `duration_hours` is carried forward as the model's calendar-window workload field
 - AVS appointments are remapped to Learning Space skill requirements
 - Canada and excluded territories stay out of optimization scope
+- Step 06 prefers `data/processed/technicians.csv` as the current-state roster source when no external roster workbook is configured
+- missing current-roster skill columns are derived from roster comments plus historical dispatch activity
 - tech, demand, and candidate outputs now also carry airport-based operational-zone fields
 - HTX contractor rows now carry per-tech scope, travel-policy, and zone-policy fields
 - anchored-tech rows can also carry:
@@ -210,6 +220,7 @@ Objective:
 - travel cost
 - out-of-region penalties
 - operational-zone penalties
+- hub-connectivity penalties on `fly` assignments
 - hire payroll
 - unmet penalties
 
@@ -285,7 +296,8 @@ Important Step 09 framing:
 - AVS = Learning Space for dispatch modeling
 - existing techs need HPS skill for HPS nodes
 - existing techs need LS skill for LS nodes
-- new hires cannot serve HPS nodes
+- normal scenarios: new hires cannot serve HPS nodes
+- blank slate: new hires can serve HPS nodes
 
 ### Capacity / Load Rules
 
@@ -305,6 +317,10 @@ Important Step 09 framing:
   - `>=300` fly
 - airport-based operational zone buckets are the active Phase 1 time-zone realism proxy
 - Arizona stays pinned to a fixed Mountain operational bucket for this rule
+- hub-connectivity penalties apply only on `fly` assignments:
+  - large hub: `$0`
+  - medium hub: `$75`
+  - small hub: `$150`
 
 ### Contractor Rules
 
@@ -331,43 +347,46 @@ From the current generated outputs:
 - Data span: `2.078` years
 - All `1,466` US appointments are served in every scenario
 - Scenario range: `N=0..4`
-- Best scenario under the repo's proven-optimal rule: `N=1`
-- `recommended_hire_locations.csv` currently points to `Cleveland, OH` for `N=1`
+- Lowest annualized modeled cost is currently `N=0`, but that row is still provisional because the solver hit the time limit before proving optimality
+- `recommended_hire_locations.csv` still points to `Cleveland, OH` for the current `N=1` placement reference
 - Current `N=4` placement set: `Washington, DC`, `Atlanta, GA`, `Bossier City, LA`, `Janesville, WI`
-- N=0 annualized total cost: `$465,894.36`
-- Mean existing-tech legacy utilization field at N=0: `0.8575`
-- Max existing-tech legacy utilization field at N=0: `0.99999`
+- N=0 annualized total cost: `$464,668.06`
+- Mean existing-tech legacy utilization field at N=0: `0.8600`
+- Max existing-tech legacy utilization field at N=0: `1.0000`
 - Weighted average install effort: `1.52` calendar days
 - Weighted average install revenue: `$47,277`
 - Weighted average install profit per install: `$18,911`
+- Blank Slate annualized total cost: `$2,480,867`
+- Blank Slate annualized travel cost: `$134,627`
 - Install history source: raw workbook merge from:
   - `report1770130594436`
   - `Derived Fields`
 
 ### Current Annualized Cost Table
 
-| N | Annual Travel | Annual Zone Penalty | Annual Payroll | Annual Total |
-|---|--------------:|--------------------:|---------------:|-------------:|
-| 0 | $465,028 | $866 | $0 | $465,894 |
-| 1 | $392,859 | $866 | $146,640 | $540,365 |
-| 2 | $342,651 | $866 | $293,280 | $636,798 |
-| 3 | $299,410 | $866 | $439,920 | $740,197 |
-| 4 | $258,142 | $1,227 | $586,560 | $845,929 |
+| N | Annual Travel | Annual Time-Zone Penalty | Annual Hub Penalty | Annual Payroll | Annual Total |
+|---|--------------:|-------------------------:|-------------------:|---------------:|-------------:|
+| 0 | $462,863 | $0 | $1,805 | $0 | $464,668 |
+| 1 | $390,603 | $0 | $36 | $146,640 | $537,279 |
+| 2 | $340,376 | $0 | $36 | $293,280 | $633,692 |
+| 3 | $297,084 | $0 | $36 | $439,920 | $737,040 |
+| 4 | $255,809 | $361 | $36 | $586,560 | $842,766 |
 
 ### Current Annualized Install-Upside Table
 
 | N | Install Units Enabled | Net Cost Increase | Net Economic Value | Break-Even Install Units |
 |---|----------------------:|------------------:|-------------------:|-------------------------:|
 | 0 | 0.0 | $0 | $0 | 0.0 |
-| 1 | 34.5 | $74,471 | $578,598 | 3.9 |
-| 2 | 69.1 | $170,903 | $1,135,593 | 9.0 |
-| 3 | 103.5 | $274,302 | $1,682,954 | 14.5 |
-| 4 | 135.5 | $380,035 | $2,182,210 | 20.1 |
+| 1 | 25.0 | $72,611 | $399,421 | 3.8 |
+| 2 | 40.6 | $169,024 | $597,894 | 8.9 |
+| 3 | 53.8 | $272,372 | $745,232 | 14.4 |
+| 4 | 55.0 | $378,098 | $661,992 | 20.0 |
 
 ## Important Output Files
 
 - `data/processed/optimization/optimization_input_summary.json`
 - `data/processed/optimization/model_assumptions.json`
+- `data/processed/optimization/historical_roster.csv`
 - `data/processed/optimization/full_cost_table.csv`
 - `data/processed/optimization/scenario_summary.csv`
 - `data/processed/optimization/scenario_summary_enhanced.csv`
@@ -386,6 +405,7 @@ From the current generated outputs:
 - `data/processed/optimization/recommended_hire_locations.csv`
 - `data/processed/optimization/analysis_report.json`
 - `data/processed/optimization/analysis_report.md`
+- `data/processed/optimization/blank_slate/`
 - `docs/index.html`
 
 ## Known Caveats
@@ -396,9 +416,10 @@ From the current generated outputs:
 4. Operational zones are broad airport-based buckets, not exact clock math.
 5. HTX contractor economics use a compressed-and-capped proxy, not a literal reimbursement ledger.
 6. The flight model is origin-based, not destination-specific.
-7. AVS / Learning Space stays in dispatch demand but is excluded from patient-sim install revenue modeling.
-8. Install upside is enabled capacity, not guaranteed sales.
-9. Per-family install economics remain provisional until finance replaces them.
+7. Some scenario rows, including the current `N=0` baseline and Blank Slate, can remain provisional if the solver reaches the time limit before proving optimality.
+8. AVS / Learning Space stays in dispatch demand but is excluded from patient-sim install revenue modeling.
+9. Install upside is enabled capacity, not guaranteed sales.
+10. Per-family install economics remain provisional until finance replaces them.
 
 ## If Starting a New Chat
 
@@ -409,7 +430,8 @@ State these first:
 3. Capacity is normalized against that same demand pool using `availability_fte` and `target_utilization`.
 4. The active pipeline is **06 → 11 → 08 → 09 → 05**.
 5. Step 08 now uses airport-based operational zone buckets as a realism layer.
-6. HTX contractors are national flexible resources with compressed/capped travel-cost friction, not Texas-only and not free.
-7. Step 09 uses the family-based patient-sim install-only upside model.
-8. HPS is kept in historical reporting but excluded from the forward mix by default.
-9. Old moderate/conservative/aggressive install fields still exist only as compatibility aliases.
+6. Step 08 also adds a flight-only hub-connectivity penalty based on the origin airport tier.
+7. HTX contractors are national flexible resources with compressed/capped travel-cost friction, not Texas-only and not free.
+8. Step 09 uses the family-based patient-sim install-only upside model.
+9. HPS is kept in historical reporting but excluded from the forward mix by default.
+10. Old moderate/conservative/aggressive install fields still exist only as compatibility aliases.

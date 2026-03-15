@@ -12,7 +12,7 @@ Interactive US/Canada service map plus a hiring and dispatch optimization pipeli
 3. Builds optimization inputs and a trip-cost table.
 4. Runs Step 08 hiring scenarios for `N=0..4` new hires.
 5. Translates freed capacity into patient-simulator install upside.
-6. Publishes the scenario panel and map in `docs/index.html`.
+6. Publishes the optimized, historical, and blank-slate views in `docs/index.html`.
 
 Step 05 now builds a **stakeholder-first** map by default:
 - visible by default: scenario coverage dots, selected-scenario hire markers, technician home bases
@@ -80,6 +80,7 @@ python scripts/06_build_optimization_inputs.py
 python scripts/11_build_full_cost_table.py
 python scripts/08_optimize_locations.py --min-new-hires 0 --max-new-hires 4 --max-hires-per-base 1 --time-limit-sec 600
 python scripts/09_analyze_scenarios.py
+python scripts/08_optimize_locations.py --blank-slate --min-new-hires 16 --max-new-hires 16 --max-hires-per-base 1 --time-limit-sec 600
 python scripts/05_generate_map.py
 ```
 
@@ -96,6 +97,12 @@ Ground-transport detail inside the drive tiers:
 Special-tech inputs:
 - `data/raw/technician_anchor_allocations.csv` stores anchor-site / reserved-duty metadata for technicians who are not fully general field resources
 
+Step 06 current-roster sourcing:
+- prefers an external roster workbook if one is configured
+- otherwise uses `data/processed/technicians.csv` as the current-state roster source
+- only falls back to the old `Service Appointments report - final.xlsx` roster sheet or cached `tech_master.csv` when needed
+- derives missing skill flags from roster comments plus historical dispatch activity when the source roster does not carry explicit skill columns
+
 ## Current Model Rules
 
 - Annual burdened planning cost per incremental new hire: `$146,640`
@@ -107,7 +114,8 @@ Special-tech inputs:
 - Canada excluded from optimization scope
 - Current verified technician roster: `16`
 - Total effective FTE in the current modeled roster: `12.55`
-- New hires cannot serve HPS nodes
+- Normal scenarios keep the `new hires cannot serve HPS` rule
+- Blank Slate lifts that HPS restriction because it represents fully trained hypothetical hires
 - AVS is treated as Learning Space for dispatch skill logic
 - New-hire concentration cap defaults to `1` per base
 - HTX contractors remain in Step 08 as real capacity
@@ -115,6 +123,7 @@ Special-tech inputs:
 - HTX contractors use a compressed-and-capped travel-cost proxy plus a dispatch surcharge
 - Standard employees and new hires are free at `0-1` operational zone jumps, penalized at `2`, and blocked at `3+`
 - Contractors use a softer operational-zone rule: free at `0-1`, penalized at `2`, heavily penalized at `3+`
+- Step 08 also adds a small airport-connectivity hub penalty on `fly` assignments from weaker origin airports
 - Anchored technicians can reserve part of their FTE at a named site while limiting their remaining field work to an explicit nearby state set
 
 ## Step 08 Capacity Logic
@@ -187,36 +196,38 @@ From the current checked-in optimization outputs:
 - Data span: **2.078 years**
 - Scenario window: `N=0..4`
 - All `1,466` US appointments are served in every scenario
-- Best scenario under the repo's proven-optimal rule: **N=1**
-- Recommended `N=1` hire location file currently points to: **Cleveland, OH**
+- Lowest annualized modeled cost is currently **N=0**, but that baseline is still **provisional** because the solver hit the time limit before proving optimality
+- `recommended_hire_locations.csv` still provides the current `N=1` placement reference: **Cleveland, OH**
 - Current `N=4` placement set: **Washington, DC; Atlanta, GA; Bossier City, LA; Janesville, WI**
-- N=0 annualized total cost: **$465,894**
-- Mean existing-tech legacy utilization field at N=0: **0.8575**
-- Max existing-tech legacy utilization field at N=0: **0.99999**
+- N=0 annualized total cost: **$464,668**
+- Mean existing-tech legacy utilization field at N=0: **0.8600**
+- Max existing-tech legacy utilization field at N=0: **1.0000**
 - Weighted average install effort: **1.52 calendar days**
 - Weighted average install revenue: **$47,277**
 - Weighted average install profit per install: **$18,911**
 - History source for the install model: **raw workbook merge** (`report1770130594436` + `Derived Fields`)
+- Blank Slate annualized total cost: **$2,480,867** across **16** placements
+- Blank Slate annualized travel cost: **$134,627**
 
 ### Scenario Cost Summary
 
-| N | Annual Travel | Annual Zone Penalty | Annual Payroll | Annual Total |
-|---|--------------:|--------------------:|---------------:|-------------:|
-| 0 | $465,028 | $866 | $0 | $465,894 |
-| 1 | $392,859 | $866 | $146,640 | $540,365 |
-| 2 | $342,651 | $866 | $293,280 | $636,798 |
-| 3 | $299,410 | $866 | $439,920 | $740,197 |
-| 4 | $258,142 | $1,227 | $586,560 | $845,929 |
+| N | Annual Travel | Annual Time-Zone Penalty | Annual Hub Penalty | Annual Payroll | Annual Total |
+|---|--------------:|-------------------------:|-------------------:|---------------:|-------------:|
+| 0 | $462,863 | $0 | $1,805 | $0 | $464,668 |
+| 1 | $390,603 | $0 | $36 | $146,640 | $537,279 |
+| 2 | $340,376 | $0 | $36 | $293,280 | $633,692 |
+| 3 | $297,084 | $0 | $36 | $439,920 | $737,040 |
+| 4 | $255,809 | $361 | $36 | $586,560 | $842,766 |
 
 ### Scenario Install-Upside Summary
 
 | N | Install Units Enabled | Net Cost Increase | Net Economic Value | Break-Even Install Units |
 |---|----------------------:|------------------:|-------------------:|-------------------------:|
 | 0 | 0.0 | $0 | $0 | 0.0 |
-| 1 | 34.5 | $74,471 | $578,598 | 3.9 |
-| 2 | 69.1 | $170,903 | $1,135,593 | 9.0 |
-| 3 | 103.5 | $274,302 | $1,682,954 | 14.5 |
-| 4 | 135.5 | $380,035 | $2,182,210 | 20.1 |
+| 1 | 25.0 | $72,611 | $399,421 | 3.8 |
+| 2 | 40.6 | $169,024 | $597,894 | 8.9 |
+| 3 | 53.8 | $272,372 | $745,232 | 14.4 |
+| 4 | 55.0 | $378,098 | $661,992 | 20.0 |
 
 ## Key Caveats
 
@@ -237,6 +248,7 @@ From the current checked-in optimization outputs:
 - `data/processed/optimization/tech_master.csv`
 - `data/processed/optimization/demand_appointments.csv`
 - `data/processed/optimization/candidate_bases.csv`
+- `data/processed/optimization/historical_roster.csv`
 - `data/processed/optimization/full_cost_table.csv`
 - `data/processed/optimization/scenario_summary.csv`
 - `data/processed/optimization/scenario_summary_enhanced.csv`
@@ -255,6 +267,7 @@ From the current checked-in optimization outputs:
 - `data/processed/optimization/recommended_hire_locations.csv`
 - `data/processed/optimization/analysis_report.json`
 - `data/processed/optimization/analysis_report.md`
+- `data/processed/optimization/blank_slate/`
 - `docs/index.html`
 
 ## Deeper Documentation

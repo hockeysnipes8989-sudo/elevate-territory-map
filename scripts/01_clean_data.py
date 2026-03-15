@@ -154,18 +154,27 @@ def load_technicians():
         df = df[["Tech", "Location", "Comments"]].copy()
         df.columns = ["name", "location", "comment"]
         print(f"  Source: {source_path}")
-    elif use_cached_master:
-        df = load_cached_tech_master(cached_path)
-        print(f"  Source fallback: {cached_path}")
     else:
-        # Backward-compatible fallback to legacy Resources sheet.
-        df = pd.read_excel(
-            config.SERVICE_APPTS_REPORT,
-            sheet_name=config.APPTS_REPORT_RESOURCES_SHEET,
-        )
-        df = df[["Service Resource Name", "Location", "Comment"]].copy()
-        df.columns = ["name", "location", "comment"]
-        print(f"  Source fallback: {config.SERVICE_APPTS_REPORT}::{config.APPTS_REPORT_RESOURCES_SHEET}")
+        raw_report_path = config.SERVICE_APPTS_REPORT
+        use_repo_report = bool(raw_report_path and os.path.exists(raw_report_path))
+        if use_repo_report:
+            # Backward-compatible fallback to legacy Resources sheet.
+            df = pd.read_excel(
+                raw_report_path,
+                sheet_name=config.APPTS_REPORT_RESOURCES_SHEET,
+            )
+            df = df[["Service Resource Name", "Location", "Comment"]].copy()
+            df.columns = ["name", "location", "comment"]
+            print(
+                f"  Source fallback: {raw_report_path}::{config.APPTS_REPORT_RESOURCES_SHEET}"
+            )
+        elif use_cached_master:
+            df = load_cached_tech_master(cached_path)
+            print(f"  WARNING: using cached technician roster fallback: {cached_path}")
+        else:
+            raise FileNotFoundError(
+                "Could not resolve a technician roster workbook or cached tech_master.csv."
+            )
 
     df["name"] = df["name"].fillna("").astype(str).str.strip()
     df["location"] = df["location"].fillna("").astype(str).str.strip()

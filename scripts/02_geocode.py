@@ -4,11 +4,21 @@ import os
 import sys
 import time
 import pandas as pd
-from geopy.geocoders import Nominatim
-from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 
 sys.path.insert(0, os.path.dirname(__file__))
 import config
+
+try:
+    from geopy.geocoders import Nominatim
+    from geopy.exc import GeocoderTimedOut, GeocoderServiceError
+except ModuleNotFoundError:
+    Nominatim = None
+
+    class GeocoderTimedOut(Exception):
+        """Fallback exception used when geopy is unavailable."""
+
+    class GeocoderServiceError(Exception):
+        """Fallback exception used when geopy is unavailable."""
 
 
 def load_cache():
@@ -93,6 +103,10 @@ def apply_account_coordinate_overrides(appts):
 
 
 def main():
+    if Nominatim is None:
+        raise ModuleNotFoundError(
+            "geopy is required to run scripts/02_geocode.py. Install dependencies from requirements.txt."
+        )
     geolocator = Nominatim(user_agent=config.GEOCODE_USER_AGENT)
     cache = load_cache()
     removed_bad_keys = prune_malformed_cache_entries(cache)
