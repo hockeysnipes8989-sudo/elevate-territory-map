@@ -18,6 +18,110 @@ import config
 from optimization_utils import normalize_state
 
 
+EXISTING_ASSIGNMENT_COLUMNS = [
+    "scenario_hires",
+    "tech_id",
+    "tech_name",
+    "employment_type",
+    "base_state",
+    "base_airport_iata",
+    "assignment_scope_mode",
+    "assignment_scope_states",
+    "anchor_site_name",
+    "anchor_reserved_fte",
+    "external_field_fte",
+    "node_id",
+    "state_norm",
+    "skill_class",
+    "assigned_appointments",
+    "assigned_hours",
+    "unit_travel_cost_usd",
+    "unit_out_region_penalty_usd",
+    "unit_timezone_penalty_usd",
+    "zone_policy",
+    "zone_jump_count",
+    "base_operational_zone_label",
+    "node_operational_zone_label",
+    "travel_cost_policy",
+    "trip_mode",
+    "ground_transport_mode",
+    "median_dist_mi",
+    "trip_span_days",
+    "rental_days",
+    "employee_style_unit_cost_usd",
+    "effective_unit_cost_usd",
+    "total_travel_cost_usd",
+    "total_out_region_penalty_usd",
+    "total_timezone_penalty_usd",
+]
+
+NEW_HIRE_ASSIGNMENT_COLUMNS = [
+    "scenario_hires",
+    "candidate_id",
+    "candidate_type",
+    "candidate_city",
+    "candidate_state",
+    "airport_iata",
+    "node_id",
+    "state_norm",
+    "skill_class",
+    "assigned_appointments",
+    "assigned_hours",
+    "unit_travel_cost_usd",
+    "unit_out_region_penalty_usd",
+    "unit_timezone_penalty_usd",
+    "zone_policy",
+    "zone_jump_count",
+    "base_operational_zone_label",
+    "node_operational_zone_label",
+    "travel_cost_policy",
+    "trip_mode",
+    "ground_transport_mode",
+    "median_dist_mi",
+    "trip_span_days",
+    "rental_days",
+    "employee_style_unit_cost_usd",
+    "effective_unit_cost_usd",
+    "total_travel_cost_usd",
+    "total_out_region_penalty_usd",
+    "total_timezone_penalty_usd",
+]
+
+PLACEMENT_COLUMNS = [
+    "scenario_hires",
+    "candidate_id",
+    "candidate_type",
+    "city",
+    "state",
+    "airport_iata",
+    "hires_allocated",
+    "assigned_appointments",
+    "assigned_hours",
+]
+
+UTILIZATION_COLUMNS = [
+    "scenario_hires",
+    "tech_id",
+    "tech_name",
+    "capacity_hours",
+    "assigned_hours",
+    "utilization",
+]
+
+CONTRACTOR_USAGE_COLUMNS = [
+    "scenario_hires",
+    "tech_id",
+    "tech_name",
+    "assigned_appointments",
+    "assigned_hours",
+    "total_travel_cost_usd",
+    "avg_zone_jump",
+    "share_two_zone_plus",
+    "share_three_zone_plus",
+    "states_served",
+]
+
+
 def load_inputs(output_dir: Path) -> dict:
     """Load all prerequisite optimization inputs."""
     files = {
@@ -52,6 +156,34 @@ def load_inputs(output_dir: Path) -> dict:
         )
 
     return result
+
+
+def blank_slate_output_dir(base_dir: Path) -> Path:
+    """Return the dedicated output directory for blank-slate solves."""
+    return base_dir / getattr(config, "BLANK_SLATE_SUBDIR", "blank_slate")
+
+
+def empty_frame(columns: list[str]) -> pd.DataFrame:
+    """Return an empty DataFrame that still preserves CSV headers."""
+    return pd.DataFrame(columns=columns)
+
+
+def compute_hours_per_unit(
+    total_demand_hours: float,
+    total_availability: float,
+    target_utilization: float,
+    hire_count: int,
+    blank_slate: bool,
+) -> float:
+    """Compute modeled capacity hours per unit for the active scenario."""
+    if total_availability > 0:
+        return total_demand_hours / (total_availability * target_utilization)
+    if blank_slate and hire_count > 0:
+        return total_demand_hours / (hire_count * target_utilization)
+    raise RuntimeError(
+        "No existing technician capacity is available for this solve. "
+        "Use --blank-slate with a positive hire count for a pure new-hire rebuild."
+    )
 
 
 def build_demand_nodes(demand: pd.DataFrame) -> pd.DataFrame:
@@ -282,18 +414,29 @@ def solve_scenario(
     annual_hire_cost_usd: float,
     max_hires_per_base: int,
     time_limit_sec: int,
+    blank_slate: bool = False,
 ) -> dict:
     """Solve one MILP scenario for a fixed new-hire count."""
     nodes = nodes.reset_index(drop=True).copy()
     tech = tech.reset_index(drop=True).copy()
     candidates = candidates.reset_index(drop=True).copy()
+    if blank_slate:
+        tech = tech[
+            pd.to_numeric(tech["availability_fte"], errors="coerce").fillna(0.0) > 0
+        ].reset_index(drop=True)
 
     total_demand_hours = float(nodes["demand_hours"].sum())
     total_availability = float(tech["availability_fte"].sum())
     # The solver normalizes capacity against the same appointment-duration
     # demand pool used on the workload side. The resulting utilization output is
     # a modeled load ratio, not a literal payroll or timesheet utilization rate.
-    hours_per_unit = total_demand_hours / max(total_availability * target_utilization, 1e-6)
+    hours_per_unit = compute_hours_per_unit(
+        total_demand_hours=total_demand_hours,
+        total_availability=total_availability,
+        target_utilization=target_utilization,
+        hire_count=hire_count,
+        blank_slate=blank_slate,
+    )
 
     tech["capacity_hours"] = tech["availability_fte"] * hours_per_unit
     new_hire_capacity_hours = hours_per_unit
@@ -361,9 +504,6 @@ def solve_scenario(
             )
 
     # New-hire assignment vars.
-    # New hires are NOT eligible for HPS-required nodes (skill_class "hps" or
-    # "hps_ls") — they lack HPS certification. They CAN serve "regular" and "ls"
-    # nodes.
     for ci in candidate_indices:
         crow = candidates.loc[ci]
         for ni, nrow in nodes.iterrows():
@@ -372,8 +512,8 @@ def solve_scenario(
             z_idx[(ci, ni)] = idx
             var_names.append(f"z__{crow['candidate_id']}__{nrow['node_id']}")
             lb.append(0.0)
-            # Block new hires from HPS-required nodes.
-            if node_requires_hps:
+            # In blank-slate mode every hire is hypothetical and treated as fully trained.
+            if node_requires_hps and not blank_slate:
                 ub.append(0.0)
             else:
                 ub.append(float(nrow["appointment_count"]))
@@ -391,7 +531,7 @@ def solve_scenario(
                 nrow.get("node_operational_zone_rank"),
             )
             zone_feasible, zone_penalty = evaluate_zone_policy(jump, config.ZONE_POLICY_STANDARD)
-            if node_requires_hps or not zone_feasible:
+            if (node_requires_hps and not blank_slate) or not zone_feasible:
                 ub[-1] = 0.0
             obj.append(base_cost + penalty + zone_penalty)
             meta.append(
@@ -644,8 +784,8 @@ def solve_scenario(
         val = float(solution[idx])
         unmet_appointments += val
 
-    existing_df = pd.DataFrame(existing_rows)
-    new_df = pd.DataFrame(new_rows)
+    existing_df = pd.DataFrame(existing_rows, columns=EXISTING_ASSIGNMENT_COLUMNS)
+    new_df = pd.DataFrame(new_rows, columns=NEW_HIRE_ASSIGNMENT_COLUMNS)
 
     # Legacy "utilization" output by tech. This is assigned modeled workload
     # divided by modeled capacity under the same calendar-window framework.
@@ -665,7 +805,7 @@ def solve_scenario(
                 "utilization": assigned / cap if cap > 0 else np.nan,
             }
         )
-    util_df = pd.DataFrame(util_rows)
+    util_df = pd.DataFrame(util_rows, columns=UTILIZATION_COLUMNS)
 
     placement_rows = []
     if not new_df.empty:
@@ -699,13 +839,13 @@ def solve_scenario(
                 "assigned_hours": float(metrics["assigned_hours"]),
             }
         )
-    placements_df = pd.DataFrame(placement_rows)
+    placements_df = pd.DataFrame(placement_rows, columns=PLACEMENT_COLUMNS)
 
     hire_cost = float(sum(int(round(v)) for v in y_values.values()) * annual_hire_cost_usd)
     unmet_cost = float(unmet_appointments * unmet_penalty)
     modeled_total = float(travel_cost + out_region_cost + timezone_penalty_cost + hire_cost + unmet_cost)
 
-    contractor_usage_df = pd.DataFrame()
+    contractor_usage_df = empty_frame(CONTRACTOR_USAGE_COLUMNS)
     if not existing_df.empty:
         contractor_df = existing_df[
             existing_df["employment_type"].astype(str).str.lower().eq("contractor")
@@ -755,19 +895,15 @@ def solve_scenario(
                 0.0,
             )
             contractor_usage_df = contractor_usage_df[
-                [
-                    "scenario_hires",
-                    "tech_id",
-                    "tech_name",
-                    "assigned_appointments",
-                    "assigned_hours",
-                    "total_travel_cost_usd",
-                    "avg_zone_jump",
-                    "share_two_zone_plus",
-                    "share_three_zone_plus",
-                    "states_served",
-                ]
+                CONTRACTOR_USAGE_COLUMNS
             ]
+
+    mean_existing_utilization = (
+        float(np.nanmean(util_df["utilization"].values)) if not util_df.empty else 0.0
+    )
+    max_existing_utilization = (
+        float(np.nanmax(util_df["utilization"].values)) if not util_df.empty else 0.0
+    )
 
     summary = {
         "scenario_hires": int(hire_count),
@@ -788,8 +924,8 @@ def solve_scenario(
         "modeled_total_cost_usd": modeled_total,
         "hours_per_capacity_unit": float(hours_per_unit),
         "new_hire_capacity_hours": float(new_hire_capacity_hours),
-        "mean_existing_utilization": float(np.nanmean(util_df["utilization"].values)),
-        "max_existing_utilization": float(np.nanmax(util_df["utilization"].values)),
+        "mean_existing_utilization": mean_existing_utilization,
+        "max_existing_utilization": max_existing_utilization,
     }
 
     return {
@@ -845,6 +981,14 @@ def main() -> None:
         default=None,
         help="Legacy override for contractor assignment scope.",
     )
+    parser.add_argument(
+        "--blank-slate",
+        action="store_true",
+        help=(
+            "Solve a pure rebuild scenario: zero current-tech capacity, allow "
+            "new hires on HPS nodes, and write outputs to the blank_slate subdirectory."
+        ),
+    )
     args = parser.parse_args()
     if args.annual_hire_cost_usd < 0:
         raise ValueError("--annual-hire-cost-usd must be non-negative.")
@@ -854,11 +998,20 @@ def main() -> None:
         raise ValueError("--max-hires-per-base must be at least 1.")
     if not (0 < args.target_utilization <= 1.0):
         raise ValueError("--target-utilization must be in range (0, 1.0].")
+    if args.blank_slate:
+        if args.min_new_hires != args.max_new_hires:
+            raise ValueError("--blank-slate requires --min-new-hires and --max-new-hires to match.")
+        if args.max_new_hires <= 0:
+            raise ValueError("--blank-slate requires a positive hire count.")
+        if args.max_hires_per_base != 1:
+            raise ValueError("--blank-slate requires --max-hires-per-base 1.")
 
-    out_dir = Path(args.output_dir)
-    inputs = load_inputs(out_dir)
+    input_dir = Path(args.output_dir)
+    out_dir = blank_slate_output_dir(input_dir) if args.blank_slate else input_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    inputs = load_inputs(input_dir)
 
-    input_summary_path = out_dir / "optimization_input_summary.json"
+    input_summary_path = input_dir / "optimization_input_summary.json"
     if input_summary_path.exists():
         with open(input_summary_path) as f:
             input_summary = json.load(f)
@@ -939,6 +1092,10 @@ def main() -> None:
             tech.loc[contractor_mask, "assignment_scope_mode"] = config.ASSIGNMENT_SCOPE_MODE_NATIONAL
             tech.loc[contractor_mask, "assignment_scope_state"] = ""
 
+    if args.blank_slate:
+        print("  Blank slate mode: zeroing existing technician availability.")
+        tech["availability_fte"] = 0.0
+
     demand_nodes = build_demand_nodes(demand)
 
     full_cost_lookup = build_full_cost_lookup(inputs["full_cost_df"])
@@ -969,7 +1126,13 @@ def main() -> None:
     hire_cost_for_period = args.annual_hire_cost_usd * data_span_years
     print(f"  Annual hire cost: ${args.annual_hire_cost_usd:,.0f} × {data_span_years:.2f} years = ${hire_cost_for_period:,.0f} for optimization period")
 
-    for hire_count in range(args.min_new_hires, args.max_new_hires + 1):
+    scenario_counts = (
+        [args.max_new_hires]
+        if args.blank_slate
+        else list(range(args.min_new_hires, args.max_new_hires + 1))
+    )
+
+    for hire_count in scenario_counts:
         print(f"Solving scenario N={hire_count} new hires...")
 
         # Pre-check: if we can't possibly satisfy hire_count given candidates and cap, skip.
@@ -998,6 +1161,7 @@ def main() -> None:
                 annual_hire_cost_usd=hire_cost_for_period,
                 max_hires_per_base=args.max_hires_per_base,
                 time_limit_sec=args.time_limit_sec,
+                blank_slate=args.blank_slate,
             )
         except RuntimeError as exc:
             msg = f"Solver error for N={hire_count}: {exc}"
@@ -1029,11 +1193,31 @@ def main() -> None:
             all_contractors.append(result["contractor_usage"])
 
     summary_df = pd.DataFrame(scenario_summaries).sort_values("scenario_hires")
-    existing_df = pd.concat(all_existing, ignore_index=True) if all_existing else pd.DataFrame()
-    new_df = pd.concat(all_new, ignore_index=True) if all_new else pd.DataFrame()
-    placements_df = pd.concat(all_placements, ignore_index=True) if all_placements else pd.DataFrame()
-    util_df = pd.concat(all_util, ignore_index=True) if all_util else pd.DataFrame()
-    contractor_usage_df = pd.concat(all_contractors, ignore_index=True) if all_contractors else pd.DataFrame()
+    existing_df = (
+        pd.concat(all_existing, ignore_index=True)
+        if all_existing
+        else empty_frame(EXISTING_ASSIGNMENT_COLUMNS)
+    )
+    new_df = (
+        pd.concat(all_new, ignore_index=True)
+        if all_new
+        else empty_frame(NEW_HIRE_ASSIGNMENT_COLUMNS)
+    )
+    placements_df = (
+        pd.concat(all_placements, ignore_index=True)
+        if all_placements
+        else empty_frame(PLACEMENT_COLUMNS)
+    )
+    util_df = (
+        pd.concat(all_util, ignore_index=True)
+        if all_util
+        else empty_frame(UTILIZATION_COLUMNS)
+    )
+    contractor_usage_df = (
+        pd.concat(all_contractors, ignore_index=True)
+        if all_contractors
+        else empty_frame(CONTRACTOR_USAGE_COLUMNS)
+    )
 
     summary_out = out_dir / "scenario_summary.csv"
     existing_out = out_dir / "scenario_assignments_existing.csv"
@@ -1074,6 +1258,9 @@ def main() -> None:
     assumptions = {
         "min_new_hires": args.min_new_hires,
         "max_new_hires": args.max_new_hires,
+        "blank_slate": bool(args.blank_slate),
+        "blank_slate_hire_count": int(args.max_new_hires) if args.blank_slate else None,
+        "blank_slate_unique_bases": bool(args.blank_slate),
         "target_utilization": args.target_utilization,
         "out_of_region_penalty": args.out_of_region_penalty,
         "unmet_penalty": args.unmet_penalty,

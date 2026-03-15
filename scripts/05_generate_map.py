@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 import folium
 from collections import defaultdict
+from pandas.errors import EmptyDataError
 
 sys.path.insert(0, os.path.dirname(__file__))
 import config
@@ -16,6 +17,9 @@ SIM_SUMMARY_ENHANCED = "scenario_summary_enhanced.csv"
 SIM_SUMMARY = "scenario_summary.csv"
 SIM_PLACEMENTS = "scenario_placements.csv"
 SIM_CANDIDATES = "candidate_bases.csv"
+BLANK_SLATE_PLACEMENTS = "scenario_placements.csv"
+BLANK_SLATE_SUMMARY = "scenario_summary.csv"
+BLANK_SLATE_ASSUMPTIONS = "model_assumptions.json"
 
 
 def classify_service_type(service_type):
@@ -986,6 +990,192 @@ def load_simulation_data():
     return payload
 
 
+def get_blank_slate_dir():
+    """Return the processed-output directory for blank-slate scenarios."""
+    return os.path.join(
+        config.OPTIMIZATION_DIR,
+        getattr(config, "BLANK_SLATE_SUBDIR", "blank_slate"),
+    )
+
+
+def safe_read_csv(path, columns=None):
+    """Read a CSV and gracefully handle empty header-only outputs."""
+    if not os.path.exists(path):
+        return pd.DataFrame(columns=columns or [])
+    try:
+        return pd.read_csv(path)
+    except EmptyDataError:
+        return pd.DataFrame(columns=columns or [])
+
+
+def load_blank_slate_data():
+    """Load the single blank-slate scenario summary for the map panel."""
+    if not getattr(config, "BLANK_SLATE_ENABLED", False):
+        return None
+
+    blank_dir = get_blank_slate_dir()
+    summary_path = os.path.join(blank_dir, BLANK_SLATE_SUMMARY)
+    placements_path = os.path.join(blank_dir, BLANK_SLATE_PLACEMENTS)
+    assumptions_path = os.path.join(blank_dir, BLANK_SLATE_ASSUMPTIONS)
+    candidates_path = os.path.join(config.OPTIMIZATION_DIR, SIM_CANDIDATES)
+
+    required = [summary_path, placements_path, assumptions_path, candidates_path]
+    if any(not os.path.exists(path) for path in required):
+        return None
+
+    summary_df = safe_read_csv(summary_path)
+    placements_df = safe_read_csv(
+        placements_path,
+        columns=[
+            "scenario_hires",
+            "candidate_id",
+            "city",
+            "state",
+            "airport_iata",
+            "hires_allocated",
+            "assigned_appointments",
+            "assigned_hours",
+        ],
+    )
+    candidates_df = safe_read_csv(candidates_path)
+    if summary_df.empty or "scenario_hires" not in summary_df.columns or candidates_df.empty:
+        return None
+
+    with open(assumptions_path, "r") as f:
+        assumptions = json.load(f)
+    data_span_years = float(assumptions.get("data_span_years", 1.0) or 1.0)
+
+    summary_df["scenario_hires"] = pd.to_numeric(summary_df["scenario_hires"], errors="coerce")
+    summary_df = summary_df.dropna(subset=["scenario_hires"]).copy()
+    if summary_df.empty:
+        return None
+    summary_df["scenario_hires"] = summary_df["scenario_hires"].astype(int)
+
+    if "solver_status" in summary_df.columns:
+        summary_df = summary_df[
+            pd.to_numeric(summary_df["solver_status"], errors="coerce") != -1
+        ].copy()
+    if summary_df.empty:
+        return None
+
+    summary_df = summary_df.sort_values("scenario_hires").reset_index(drop=True)
+    row = summary_df.iloc[-1]
+    scenario = int(row["scenario_hires"])
+
+    placements_df["scenario_hires"] = pd.to_numeric(
+        placements_df.get("scenario_hires"), errors="coerce"
+    )
+    placements_df = placements_df.dropna(subset=["scenario_hires"]).copy()
+    placements_df["scenario_hires"] = placements_df["scenario_hires"].astype(int)
+    placements_df = placements_df.merge(
+        candidates_df[["candidate_id", "lat", "lon"]],
+        on="candidate_id",
+        how="left",
+    )
+    placements_df = placements_df.dropna(subset=["lat", "lon"]).copy()
+    placements_df = placements_df[
+        placements_df["scenario_hires"] == scenario
+    ].sort_values(["assigned_hours", "assigned_appointments", "city"], ascending=[False, False, True])
+
+    def annualize(value, default=0.0):
+        raw = pd.to_numeric(value, errors="coerce")
+        if pd.isna(raw):
+            return float(default)
+        if data_span_years <= 0:
+            return float(raw)
+        return float(raw) / data_span_years
+
+    def number(value, default=0.0):
+        raw = pd.to_numeric(value, errors="coerce")
+        if pd.isna(raw):
+            return float(default)
+        return float(raw)
+
+    placements = []
+    for _, p in placements_df.iterrows():
+        placements.append(
+            {
+                "candidate_id": str(p.get("candidate_id", "")),
+                "city": str(p.get("city", "")),
+                "state": str(p.get("state", "")),
+                "airport_iata": str(p.get("airport_iata", "")),
+                "hires_allocated": float(p.get("hires_allocated", 0)),
+                "assigned_appointments": float(p.get("assigned_appointments", 0)),
+                "assigned_hours": float(p.get("assigned_hours", 0)),
+                "lat": float(p.get("lat")),
+                "lon": float(p.get("lon")),
+            }
+        )
+
+    total_placements = int(round(sum(p["hires_allocated"] for p in placements)))
+    total_cost_raw = row.get("economic_total_with_overhead_usd", row.get("modeled_total_cost_usd", 0))
+    return {
+        "scenario_hires": scenario,
+        "data_span_years": data_span_years,
+        "total_appointments": int(round(number(row.get("total_appointments", 0)))),
+        "annualized_total_cost_usd": round(annualize(total_cost_raw), 2),
+        "annualized_travel_cost_usd": round(annualize(row.get("travel_cost_usd", 0)), 2),
+        "annualized_hire_cost_usd": round(annualize(row.get("hire_cost_usd", 0)), 2),
+        "total_placements": total_placements,
+        "placements": placements,
+        "solver_status": int(round(number(row.get("solver_status", 0)))),
+        "solver_message": str(row.get("solver_message", "")).strip(),
+    }
+
+
+def load_assignment_data(assignment_dir, static_dir=None, scenario_min=None, scenario_max=None, label="Territory viz"):
+    """Load assignment CSVs and shared optimization inputs for territory visualization."""
+    static_dir = static_dir or assignment_dir
+    files = {
+        "existing": os.path.join(assignment_dir, "scenario_assignments_existing.csv"),
+        "newhires": os.path.join(assignment_dir, "scenario_assignments_newhires.csv"),
+        "demand_appts": os.path.join(static_dir, "demand_appointments.csv"),
+        "tech_master": os.path.join(static_dir, "tech_master.csv"),
+        "historical_roster": os.path.join(static_dir, "historical_roster.csv"),
+        "candidates": os.path.join(static_dir, "candidate_bases.csv"),
+        "utilization": os.path.join(assignment_dir, "scenario_tech_utilization.csv"),
+    }
+
+    for key in ("demand_appts", "tech_master"):
+        if not os.path.exists(files[key]):
+            print(f"  {label}: missing {os.path.basename(files[key])}, skipping.")
+            return None
+
+    if not os.path.exists(files["existing"]) and not os.path.exists(files["newhires"]):
+        print(f"  {label}: missing assignment CSVs, skipping.")
+        return None
+
+    data = {}
+    data["existing"] = safe_read_csv(files["existing"])
+    data["newhires"] = safe_read_csv(files["newhires"])
+    data["demand_appts"] = safe_read_csv(files["demand_appts"])
+    data["tech_master"] = safe_read_csv(files["tech_master"])
+    data["historical_roster"] = safe_read_csv(files["historical_roster"])
+    data["candidates"] = safe_read_csv(files["candidates"])
+    data["utilization"] = safe_read_csv(files["utilization"])
+
+    available_scenarios = set()
+    for key in ("existing", "newhires"):
+        frame = data[key]
+        if frame.empty or "scenario_hires" not in frame.columns:
+            continue
+        values = pd.to_numeric(frame["scenario_hires"], errors="coerce").dropna().astype(int)
+        available_scenarios.update(values.tolist())
+
+    if scenario_min is not None:
+        available_scenarios = {s for s in available_scenarios if s >= scenario_min}
+    if scenario_max is not None:
+        available_scenarios = {s for s in available_scenarios if s <= scenario_max}
+
+    data["available_scenarios"] = sorted(available_scenarios)
+    if not data["available_scenarios"]:
+        print(f"  {label}: no scenarios available, skipping.")
+        return None
+
+    print(f"  {label}: loaded assignment data for scenarios {data['available_scenarios']}")
+    return data
+
+
 # ---------------------------------------------------------------------------
 # Territory visualization: per-tech assignment dots
 # ---------------------------------------------------------------------------
@@ -993,63 +1183,26 @@ def load_simulation_data():
 
 def load_territory_assignment_data():
     """Load assignment CSVs and demand appointments for territory visualization."""
-    sim_dir = config.OPTIMIZATION_DIR
-    files = {
-        "existing": os.path.join(sim_dir, "scenario_assignments_existing.csv"),
-        "newhires": os.path.join(sim_dir, "scenario_assignments_newhires.csv"),
-        "demand_appts": os.path.join(sim_dir, "demand_appointments.csv"),
-        "tech_master": os.path.join(sim_dir, "tech_master.csv"),
-        "historical_roster": os.path.join(sim_dir, "historical_roster.csv"),
-        "candidates": os.path.join(sim_dir, "candidate_bases.csv"),
-        "utilization": os.path.join(sim_dir, "scenario_tech_utilization.csv"),
-    }
-
-    # Critical files: existing assignments + demand appointments + tech master
-    for key in ("existing", "demand_appts", "tech_master"):
-        if not os.path.exists(files[key]):
-            print(f"  Territory viz: missing {os.path.basename(files[key])}, skipping.")
-            return None
-
-    data = {}
-    data["existing"] = pd.read_csv(files["existing"])
-    data["newhires"] = (
-        pd.read_csv(files["newhires"]) if os.path.exists(files["newhires"]) else pd.DataFrame()
-    )
-    data["demand_appts"] = pd.read_csv(files["demand_appts"])
-    data["tech_master"] = pd.read_csv(files["tech_master"])
-    data["historical_roster"] = (
-        pd.read_csv(files["historical_roster"])
-        if os.path.exists(files["historical_roster"])
-        else pd.DataFrame()
-    )
-    data["candidates"] = (
-        pd.read_csv(files["candidates"]) if os.path.exists(files["candidates"]) else pd.DataFrame()
-    )
-    data["utilization"] = (
-        pd.read_csv(files["utilization"]) if os.path.exists(files["utilization"]) else pd.DataFrame()
+    return load_assignment_data(
+        assignment_dir=config.OPTIMIZATION_DIR,
+        static_dir=config.OPTIMIZATION_DIR,
+        scenario_min=getattr(config, "SIM_SCENARIO_MIN", 0),
+        scenario_max=getattr(config, "SIM_SCENARIO_MAX", 4),
+        label="Territory viz",
     )
 
-    # Determine available scenarios (intersection of assignment data with configured range)
-    min_s = getattr(config, "SIM_SCENARIO_MIN", 0)
-    max_s = getattr(config, "SIM_SCENARIO_MAX", 4)
-    existing_scenarios = set(
-        pd.to_numeric(data["existing"]["scenario_hires"], errors="coerce").dropna().astype(int)
-    )
-    if not data["newhires"].empty and "scenario_hires" in data["newhires"].columns:
-        newhire_scenarios = set(
-            pd.to_numeric(data["newhires"]["scenario_hires"], errors="coerce").dropna().astype(int)
-        )
-        existing_scenarios = existing_scenarios | newhire_scenarios
-    data["available_scenarios"] = sorted(
-        s for s in existing_scenarios if min_s <= s <= max_s
-    )
 
-    if not data["available_scenarios"]:
-        print("  Territory viz: no scenarios in configured range, skipping.")
+def load_blank_slate_assignment_data():
+    """Load blank-slate assignments without applying the normal scenario-range filter."""
+    if not getattr(config, "BLANK_SLATE_ENABLED", False):
         return None
-
-    print(f"  Territory viz: loaded assignment data for scenarios {data['available_scenarios']}")
-    return data
+    return load_assignment_data(
+        assignment_dir=get_blank_slate_dir(),
+        static_dir=config.OPTIMIZATION_DIR,
+        scenario_min=None,
+        scenario_max=None,
+        label="Blank slate territory viz",
+    )
 
 
 def resolve_appointment_assignments(territory_data):
@@ -1185,7 +1338,7 @@ def resolve_appointment_assignments(territory_data):
     return result
 
 
-def build_tech_color_map(territory_data, palette):
+def build_tech_color_map(territory_data, palette, include_existing=True):
     """Assign a stable, high-contrast color to each assignee."""
     tech_master = territory_data["tech_master"]
     newhires_df = territory_data["newhires"]
@@ -1195,10 +1348,12 @@ def build_tech_color_map(territory_data, palette):
     )
 
     # Existing techs with availability > 0, sorted alphabetically
-    active_techs = tech_master[
-        pd.to_numeric(tech_master["availability_fte"], errors="coerce").fillna(0) > 0
-    ].copy()
-    sorted_tech_ids = sorted(active_techs["tech_id"].astype(str).tolist())
+    sorted_tech_ids = []
+    if include_existing:
+        active_techs = tech_master[
+            pd.to_numeric(tech_master["availability_fte"], errors="coerce").fillna(0) > 0
+        ].copy()
+        sorted_tech_ids = sorted(active_techs["tech_id"].astype(str).tolist())
 
     # New hire candidate IDs from assignments
     candidate_ids = set()
@@ -1728,7 +1883,15 @@ def get_assignment_dot_stroke(fill_hex, ui_preset):
     return ui_preset["assignment_dot_light_stroke"]
 
 
-def add_territory_assignment_layers(m, assignment_map, territory_data, tech_color_map, ui_preset):
+def add_territory_assignment_layers(
+    m,
+    assignment_map,
+    territory_data,
+    tech_color_map,
+    ui_preset,
+    default_visible_scenario=None,
+    layer_name_prefix="Territory Dots",
+):
     """Add per-scenario territory dot layers to the map.
 
     Returns {scenario_str: {"dots_layer": js_name, "tech_stats": {...}}}.
@@ -1785,7 +1948,9 @@ def add_territory_assignment_layers(m, assignment_map, territory_data, tech_colo
     for scenario in scenarios:
         scenario_str = str(scenario)
         appt_assignments = assignment_map.get(scenario, {})
-        is_default = scenario == scenarios[0]
+        is_default = (
+            default_visible_scenario is not None and scenario == default_visible_scenario
+        )
 
         # Gather per-tech appointment locations and details
         tech_appts = defaultdict(list)  # assignee_id -> [(lat, lon, appt_id)]
@@ -1796,7 +1961,7 @@ def add_territory_assignment_layers(m, assignment_map, territory_data, tech_colo
 
         # --- Dots layer ---
         dots_fg = folium.FeatureGroup(
-            name=f"Territory Dots N={scenario}",
+            name=f"{layer_name_prefix} N={scenario}",
             show=is_default,
             control=False,
         )
@@ -1888,26 +2053,40 @@ def add_territory_assignment_layers(m, assignment_map, territory_data, tech_colo
     return result
 
 
-def add_simulation_layers(m, simulation_payload, ui_preset):
+def add_simulation_layers(
+    m,
+    simulation_payload,
+    ui_preset,
+    default_visible_key=None,
+    marker_color_map=None,
+    layer_name_prefix="Simulation Scenario",
+):
     """Add one marker layer per simulation scenario and return layer JS names."""
     if not simulation_payload:
         return {}
 
     scenario_layers = {}
     ordered_keys = sorted(simulation_payload.keys(), key=lambda x: int(x))
-    default_key = "0" if "0" in simulation_payload else ordered_keys[0]
+    if default_visible_key is None:
+        default_key = "0" if "0" in simulation_payload else ordered_keys[0]
+    else:
+        default_key = default_visible_key
 
     for key in ordered_keys:
         scenario = int(key)
-        color = ui_preset["new_hire_marker_color"]
+        default_color = ui_preset["new_hire_marker_color"]
         fg = folium.FeatureGroup(
-            name=f"Simulation Scenario N={scenario}",
+            name=f"{layer_name_prefix} N={scenario}",
             show=(key == default_key),
             control=False,
         )
 
         placements = simulation_payload[key]["placements"]
         for p in placements:
+            color = (
+                (marker_color_map or {}).get(p.get("candidate_id"))
+                or default_color
+            )
             hires = max(float(p["hires_allocated"]), 1.0)
             diameter = int(max(24, min(44, 20 + 6 * hires)))
             font_size = int(max(13, min(24, 11 + 3 * hires)))
@@ -2422,7 +2601,7 @@ def build_simulation_panel_css(ui_preset):
       }}
       #view-toggle-buttons {{
         display: grid;
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 6px;
       }}
       .view-btn {{
@@ -2448,6 +2627,12 @@ def build_simulation_panel_css(ui_preset):
         display: none;
       }}
       #historical-content.active {{
+        display: block;
+      }}
+      #blank-content {{
+        display: none;
+      }}
+      #blank-content.active {{
         display: block;
       }}
       #optimized-content.hidden {{
@@ -2515,6 +2700,7 @@ def build_simulation_panel_markup():
         <div id="view-toggle-buttons">
           <button class="view-btn active" data-view="optimized">Optimized</button>
           <button class="view-btn" data-view="historical">Historical</button>
+          <button class="view-btn" data-view="blank">Blank Slate</button>
         </div>
       </div>
 
@@ -2647,6 +2833,44 @@ def build_simulation_panel_markup():
           Active techs use current bases. Former and special historical-only techs use archived bases when available; estimated bases are labeled. All cost figures annualized.
         </div>
       </div>
+
+      <div id="blank-content">
+        <div class="sim-section">
+          <div class="sim-section-label">Blank Slate</div>
+          <p class="sim-section-caption">Modeled rebuild with all hires placed from scratch</p>
+        </div>
+
+        <div class="sim-section">
+          <h3 class="sim-section-heading">Modeled Cost</h3>
+          <div class="hist-kpi-grid">
+            <div class="sim-kpi">
+              <div class="label">Total Appointments</div>
+              <div class="value" id="blank-kpi-appts">&mdash;</div>
+            </div>
+            <div class="sim-kpi">
+              <div class="label">Annualized Total Cost</div>
+              <div class="value" id="blank-kpi-total">&mdash;</div>
+            </div>
+            <div class="sim-kpi">
+              <div class="label">Annualized Travel Cost</div>
+              <div class="value" id="blank-kpi-travel">&mdash;</div>
+            </div>
+            <div class="sim-kpi">
+              <div class="label">Placements</div>
+              <div class="value" id="blank-kpi-placements">&mdash;</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="sim-section">
+          <h3 class="sim-section-heading">Placement List</h3>
+          <div id="blank-placement-list" class="sim-list-box"></div>
+        </div>
+
+        <div id="blank-footnote" style="margin-top:16px;padding-top:12px;border-top:1px solid #edf2f7;font-size:11px;line-height:1.45;color:#64748b;">
+          Blank Slate uses the same modeled travel-cost rules as the optimizer, but treats all hires as new fully trained technicians and does not use current technician locations.
+        </div>
+      </div>
     </div>
 
     <div id="kpi-modal-overlay">
@@ -2674,6 +2898,9 @@ def build_simulation_panel_script(
     historical_bases_js=None,
     historical_tech_colors_js=None,
     tech_markers_layer_name=None,
+    blank_slate_payload_js=None,
+    blank_slate_placement_layer_js=None,
+    blank_slate_dots_layer_js=None,
 ):
     """Return the panel JavaScript."""
     explanations_js = json.dumps(build_simulation_kpi_explanations())
@@ -2682,6 +2909,9 @@ def build_simulation_panel_script(
     hist_bases = historical_bases_js or "null"
     hist_colors = historical_tech_colors_js or "{}"
     tech_markers_js = json.dumps(tech_markers_layer_name) if tech_markers_layer_name else "null"
+    blank_payload = blank_slate_payload_js or "null"
+    blank_placements = blank_slate_placement_layer_js or "null"
+    blank_dots = blank_slate_dots_layer_js or "null"
     return f"""
     <script>
     (function() {{
@@ -2716,10 +2946,15 @@ def build_simulation_panel_script(
       const historicalDotLayerName = {hist_dots};
       const historicalBasesLayerName = {hist_bases};
       const historicalTechColors = {hist_colors};
+      const blankSlateData = {blank_payload};
+      const blankSlatePlacementLayerName = {blank_placements};
+      const blankSlateDotsLayerName = {blank_dots};
       const techMarkersLayerName = {tech_markers_js};
       let activeView = "optimized";
       let historicalDotLayer = null;
       let historicalBasesLayer = null;
+      let blankSlatePlacementLayer = null;
+      let blankSlateDotsLayer = null;
       let techMarkersLayer = null;
       let lastOptimizedScenario = defaultScenario;
       let histCoverageExpanded = false;
@@ -3055,37 +3290,68 @@ def build_simulation_panel_script(
 
       /* --- Historical view functions --- */
 
+      function hideOptimizedLayers() {{
+        orderedScenarios.forEach((s) => {{
+          const layer = scenarioLayers[s];
+          if (layer && mapRef && mapRef.hasLayer(layer)) {{
+            mapRef.removeLayer(layer);
+          }}
+          const dotLayer = territoryDotLayers[s];
+          if (dotLayer && mapRef && mapRef.hasLayer(dotLayer)) {{
+            mapRef.removeLayer(dotLayer);
+          }}
+        }});
+      }}
+
+      function hideHistoricalLayers() {{
+        if (historicalDotLayer && mapRef && mapRef.hasLayer(historicalDotLayer)) {{
+          mapRef.removeLayer(historicalDotLayer);
+        }}
+        if (historicalBasesLayer && mapRef && mapRef.hasLayer(historicalBasesLayer)) {{
+          mapRef.removeLayer(historicalBasesLayer);
+        }}
+      }}
+
+      function hideBlankSlateLayers() {{
+        if (blankSlatePlacementLayer && mapRef && mapRef.hasLayer(blankSlatePlacementLayer)) {{
+          mapRef.removeLayer(blankSlatePlacementLayer);
+        }}
+        if (blankSlateDotsLayer && mapRef && mapRef.hasLayer(blankSlateDotsLayer)) {{
+          mapRef.removeLayer(blankSlateDotsLayer);
+        }}
+      }}
+
       function switchView(view) {{
         if (view === activeView) return;
         activeView = view;
 
         const optimizedEl = document.getElementById("optimized-content");
         const historicalEl = document.getElementById("historical-content");
-        if (!optimizedEl || !historicalEl) return;
+        const blankEl = document.getElementById("blank-content");
+        if (!optimizedEl || !historicalEl || !blankEl) return;
 
         document.querySelectorAll(".view-btn").forEach((btn) => {{
           btn.classList.toggle("active", btn.getAttribute("data-view") === view);
         }});
 
-        if (view === "historical") {{
-          /* Remember which optimized scenario was active */
+        if (view !== "optimized") {{
           const activeBtn = document.querySelector(".sim-btn.active");
           if (activeBtn) lastOptimizedScenario = activeBtn.getAttribute("data-scenario");
+        }}
 
-          /* Hide ALL optimization layers */
-          orderedScenarios.forEach((s) => {{
-            const layer = scenarioLayers[s];
-            if (layer && mapRef && mapRef.hasLayer(layer)) mapRef.removeLayer(layer);
-            const dotLayer = territoryDotLayers[s];
-            if (dotLayer && mapRef && mapRef.hasLayer(dotLayer)) mapRef.removeLayer(dotLayer);
-          }});
+        hideOptimizedLayers();
+        hideHistoricalLayers();
+        hideBlankSlateLayers();
 
-          /* Hide current tech base markers */
+        optimizedEl.classList.toggle("hidden", view !== "optimized");
+        historicalEl.classList.toggle("active", view === "historical");
+        blankEl.classList.toggle("active", view === "blank");
+
+        if (view === "historical") {{
           if (techMarkersLayer && mapRef && mapRef.hasLayer(techMarkersLayer)) {{
             mapRef.removeLayer(techMarkersLayer);
           }}
 
-          /* Show historical dot layer and historical tech bases */
           if (historicalDotLayer && mapRef && !mapRef.hasLayer(historicalDotLayer)) {{
             mapRef.addLayer(historicalDotLayer);
           }}
@@ -3093,28 +3359,33 @@ def build_simulation_panel_script(
             mapRef.addLayer(historicalBasesLayer);
           }}
 
-          optimizedEl.classList.add("hidden");
-          historicalEl.classList.add("active");
           renderHistoricalKpis();
           renderHistoricalCoverage();
-        }} else {{
-          /* Hide historical layers */
-          if (historicalDotLayer && mapRef && mapRef.hasLayer(historicalDotLayer)) {{
-            mapRef.removeLayer(historicalDotLayer);
-          }}
-          if (historicalBasesLayer && mapRef && mapRef.hasLayer(historicalBasesLayer)) {{
-            mapRef.removeLayer(historicalBasesLayer);
-          }}
-
-          /* Restore current tech base markers */
-          if (techMarkersLayer && mapRef && !mapRef.hasLayer(techMarkersLayer)) {{
-            mapRef.addLayer(techMarkersLayer);
-          }}
-
-          optimizedEl.classList.remove("hidden");
-          historicalEl.classList.remove("active");
-          showScenario(lastOptimizedScenario);
+          return;
         }}
+
+        if (view === "blank") {{
+          if (techMarkersLayer && mapRef && mapRef.hasLayer(techMarkersLayer)) {{
+            mapRef.removeLayer(techMarkersLayer);
+          }}
+
+          if (blankSlatePlacementLayer && mapRef && !mapRef.hasLayer(blankSlatePlacementLayer)) {{
+            mapRef.addLayer(blankSlatePlacementLayer);
+          }}
+          if (blankSlateDotsLayer && mapRef && !mapRef.hasLayer(blankSlateDotsLayer)) {{
+            mapRef.addLayer(blankSlateDotsLayer);
+          }}
+
+          renderBlankSlateKpis();
+          renderBlankSlatePlacements();
+          return;
+        }}
+
+        if (techMarkersLayer && mapRef && !mapRef.hasLayer(techMarkersLayer)) {{
+          mapRef.addLayer(techMarkersLayer);
+        }}
+
+        showScenario(lastOptimizedScenario);
       }}
 
       function renderHistoricalKpis() {{
@@ -3185,9 +3456,58 @@ def build_simulation_panel_script(
         }}
       }}
 
+      function renderBlankSlateKpis() {{
+        if (!blankSlateData) return;
+        const apptsEl = document.getElementById("blank-kpi-appts");
+        const totalEl = document.getElementById("blank-kpi-total");
+        const travelEl = document.getElementById("blank-kpi-travel");
+        const placementsEl = document.getElementById("blank-kpi-placements");
+        if (apptsEl) apptsEl.textContent = Number(blankSlateData.total_appointments || 0).toLocaleString();
+        if (totalEl) totalEl.textContent = money(blankSlateData.annualized_total_cost_usd);
+        if (travelEl) travelEl.textContent = money(blankSlateData.annualized_travel_cost_usd);
+        if (placementsEl) placementsEl.textContent = Number(blankSlateData.total_placements || 0).toLocaleString();
+      }}
+
+      function renderBlankSlatePlacements() {{
+        const listEl = document.getElementById("blank-placement-list");
+        if (!listEl) return;
+        if (!blankSlateData || !Array.isArray(blankSlateData.placements) || !blankSlateData.placements.length) {{
+          listEl.innerHTML = '<div class="sim-empty">No blank-slate placements available.</div>';
+          return;
+        }}
+        listEl.innerHTML = blankSlateData.placements.map((p) => {{
+          return `
+            <div class="sim-rec-row">
+              <div class="sim-rec-top">
+                <div class="sim-rec-city">${{p.city}}, ${{p.state}}</div>
+                <span class="sim-airport-chip">${{p.airport_iata}}</span>
+              </div>
+              <div class="sim-rec-stats">
+                <div>
+                  <span class="sim-stat-label">Hires</span>
+                  <span class="sim-stat-value">${{Math.round(p.hires_allocated || 0)}}</span>
+                </div>
+                <div>
+                  <span class="sim-stat-label">Hours</span>
+                  <span class="sim-stat-value">${{Number(p.assigned_hours || 0).toFixed(1)}}</span>
+                </div>
+                <div>
+                  <span class="sim-stat-label">Appointments</span>
+                  <span class="sim-stat-value">${{Number(p.assigned_appointments || 0).toFixed(1)}}</span>
+                </div>
+              </div>
+            </div>`;
+        }}).join("");
+      }}
+
       function wireViewToggle() {{
         const toggleContainer = document.getElementById("view-toggle");
-        if (!toggleContainer || !historicalData) return;
+        if (!toggleContainer) return;
+        const historicalBtn = toggleContainer.querySelector('[data-view="historical"]');
+        const blankBtn = toggleContainer.querySelector('[data-view="blank"]');
+        if (historicalBtn) historicalBtn.style.display = historicalData ? "" : "none";
+        if (blankBtn) blankBtn.style.display = blankSlateData ? "" : "none";
+        if (!historicalData && !blankSlateData) return;
         toggleContainer.style.display = "block";
         document.querySelectorAll(".view-btn").forEach((btn) => {{
           btn.addEventListener("click", () => {{
@@ -3226,6 +3546,12 @@ def build_simulation_panel_script(
         if (historicalBasesLayerName && window[historicalBasesLayerName]) {{
           historicalBasesLayer = window[historicalBasesLayerName];
         }}
+        if (blankSlatePlacementLayerName && window[blankSlatePlacementLayerName]) {{
+          blankSlatePlacementLayer = window[blankSlatePlacementLayerName];
+        }}
+        if (blankSlateDotsLayerName && window[blankSlateDotsLayerName]) {{
+          blankSlateDotsLayer = window[blankSlateDotsLayerName];
+        }}
         if (techMarkersLayerName && window[techMarkersLayerName]) {{
           techMarkersLayer = window[techMarkersLayerName];
         }}
@@ -3263,6 +3589,8 @@ def add_simulation_panel(
     historical_layer_name=None,
     historical_tech_colors=None,
     tech_markers_layer_name=None,
+    blank_slate_data=None,
+    blank_slate_layer_names=None,
 ):
     """Inject scenario controls and KPI cards into the map page."""
     if not simulation_payload or not scenario_layer_names:
@@ -3299,6 +3627,12 @@ def add_simulation_panel(
         hist_dots_js = json.dumps(historical_layer_name) if historical_layer_name else None
         hist_bases_js = None
     hist_colors_js = json.dumps(historical_tech_colors) if historical_tech_colors else None
+    blank_payload_js = json.dumps(blank_slate_data) if blank_slate_data else None
+    blank_placement_js = None
+    blank_dots_js = None
+    if blank_slate_layer_names and isinstance(blank_slate_layer_names, dict):
+        blank_placement_js = json.dumps(blank_slate_layer_names.get("placements_layer"))
+        blank_dots_js = json.dumps(blank_slate_layer_names.get("dots_layer"))
 
     panel_html = (
         build_simulation_panel_css(ui_preset)
@@ -3318,6 +3652,9 @@ def add_simulation_panel(
             historical_bases_js=hist_bases_js,
             historical_tech_colors_js=hist_colors_js,
             tech_markers_layer_name=tech_markers_layer_name,
+            blank_slate_payload_js=blank_payload_js,
+            blank_slate_placement_layer_js=blank_placement_js,
+            blank_slate_dots_layer_js=blank_dots_js,
         )
     )
     m.get_root().html.add_child(folium.Element(panel_html))
@@ -3481,6 +3818,7 @@ def main():
         print("Adding simulation scenario panel...")
         simulation_payload = load_simulation_data()
         if simulation_payload:
+            tech_color_map = None
             # Territory visualization
             if territory_data:
                 print("  Resolving appointment-to-tech assignments...")
@@ -3491,8 +3829,14 @@ def main():
                 total_assigned = sum(len(v) for v in assignment_map.values())
                 print(f"  Resolved {total_assigned} total appointment assignments across {len(assignment_map)} scenarios")
                 print("  Generating territory dot layers...")
+                default_scenario = min(territory_data["available_scenarios"])
                 territory_layer_info = add_territory_assignment_layers(
-                    m, assignment_map, territory_data, tech_color_map, ui_preset
+                    m,
+                    assignment_map,
+                    territory_data,
+                    tech_color_map,
+                    ui_preset,
+                    default_visible_scenario=default_scenario,
                 )
                 # Inject tech_stats into per-scenario payload entries for JS
                 for key, info in territory_layer_info.items():
@@ -3523,6 +3867,66 @@ def main():
                         m, territory_data, historical_data, historical_color_map, ui_preset
                     )
 
+            blank_slate_data = load_blank_slate_data()
+            blank_slate_layer_names = None
+            if blank_slate_data:
+                print(
+                    f"  Blank slate: {blank_slate_data['scenario_hires']} hires, "
+                    f"{blank_slate_data['total_placements']} placements, "
+                    f"annualized cost ${blank_slate_data['annualized_total_cost_usd']:,.0f}"
+                )
+                blank_territory_data = load_blank_slate_assignment_data()
+                blank_slate_color_map = build_tech_color_map(
+                    blank_territory_data,
+                    getattr(config, "BLANK_SLATE_ASSIGNMENT_PALETTE", ui_preset["territory_palette"]),
+                    include_existing=False,
+                ) if blank_territory_data else None
+                blank_slate_dots_info = None
+                if blank_territory_data:
+                    print("  Resolving blank-slate appointment assignments...")
+                    blank_assignment_map = resolve_appointment_assignments(blank_territory_data)
+                    blank_total_assigned = sum(len(v) for v in blank_assignment_map.values())
+                    print(
+                        f"  Resolved {blank_total_assigned} blank-slate appointment assignments across "
+                        f"{len(blank_assignment_map)} scenario(s)"
+                    )
+                    blank_slate_dots = add_territory_assignment_layers(
+                        m,
+                        blank_assignment_map,
+                        blank_territory_data,
+                        blank_slate_color_map,
+                        ui_preset,
+                        default_visible_scenario=None,
+                        layer_name_prefix="Blank Slate Dots",
+                    )
+                    blank_slate_dots_info = blank_slate_dots.get(
+                        str(blank_slate_data["scenario_hires"])
+                    )
+                blank_slate_payload = {
+                    str(blank_slate_data["scenario_hires"]): {
+                        "scenario_hires": blank_slate_data["scenario_hires"],
+                        "placements": blank_slate_data["placements"],
+                    }
+                }
+                blank_slate_marker_layers = add_simulation_layers(
+                    m,
+                    blank_slate_payload,
+                    ui_preset,
+                    default_visible_key="__hidden__",
+                    marker_color_map=blank_slate_color_map,
+                    layer_name_prefix="Blank Slate",
+                )
+                blank_slate_layer_names = {
+                    "placements_layer": blank_slate_marker_layers.get(
+                        str(blank_slate_data["scenario_hires"])
+                    ),
+                    "dots_layer": (
+                        blank_slate_dots_info.get("dots_layer")
+                        if blank_slate_dots_info
+                        else None
+                    ),
+                }
+
             scenario_layer_names = add_simulation_layers(m, simulation_payload, ui_preset)
             add_simulation_panel(
                 m, simulation_payload, scenario_layer_names,
@@ -3534,6 +3938,8 @@ def main():
                 historical_layer_name=historical_layer_info,
                 historical_tech_colors=historical_color_map,
                 tech_markers_layer_name=tech_markers_layer_name,
+                blank_slate_data=blank_slate_data,
+                blank_slate_layer_names=blank_slate_layer_names,
             )
             print(f"  Loaded scenarios: {', '.join(sorted(simulation_payload.keys(), key=lambda x: int(x) if x.isdigit() else 999))}")
         else:
