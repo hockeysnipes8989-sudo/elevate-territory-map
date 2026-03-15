@@ -206,6 +206,22 @@ EMPLOYEE_TWO_ZONE_JUMP_PENALTY_USD = 450.0
 CONTRACTOR_TWO_ZONE_JUMP_PENALTY_USD = 250.0
 CONTRACTOR_THREE_PLUS_ZONE_JUMP_PENALTY_USD = 1500.0
 
+# Hub connectivity penalty: surcharge per appointment for weak origin-airport
+# connectivity. Applied only to fly trips in Step 08.
+HUB_TIER_LARGE = "large_hub"
+HUB_TIER_MEDIUM = "medium_hub"
+HUB_TIER_SMALL = "small_hub"
+HUB_TIER_UNKNOWN = "unknown"
+HUB_PENALTY_LARGE = 0.0
+HUB_PENALTY_MEDIUM = 75.0
+HUB_PENALTY_SMALL = 150.0
+HUB_PENALTY_UNKNOWN = 75.0
+HUB_PENALTY_MAP = {
+    HUB_TIER_LARGE: HUB_PENALTY_LARGE,
+    HUB_TIER_MEDIUM: HUB_PENALTY_MEDIUM,
+    HUB_TIER_SMALL: HUB_PENALTY_SMALL,
+}
+
 ASSIGNMENT_SCOPE_MODE_NATIONAL = "national"
 ASSIGNMENT_SCOPE_MODE_STATE_LIMITED = "state_limited"
 ASSIGNMENT_SCOPE_MODE_STATE_SET_LIMITED = "state_set_limited"
@@ -556,78 +572,78 @@ ACCOUNT_EXACT_COORD_OVERRIDES = {
 # ---------------------------------------------------------------------------
 MAJOR_AIRPORTS = [
     # --- NORTHEAST ---
-    {"code": "BOS", "name": "Boston Logan",          "city": "Boston, MA",          "lat": 42.3656, "lon": -71.0096},
-    {"code": "JFK", "name": "New York JFK",           "city": "New York, NY",         "lat": 40.6413, "lon": -73.7781},
-    {"code": "LGA", "name": "New York LaGuardia",     "city": "New York, NY",         "lat": 40.7769, "lon": -73.8740},
-    {"code": "EWR", "name": "Newark Liberty",         "city": "Newark, NJ",           "lat": 40.6895, "lon": -74.1745},
-    {"code": "PHL", "name": "Philadelphia Intl",      "city": "Philadelphia, PA",     "lat": 39.8744, "lon": -75.2424},
-    {"code": "PIT", "name": "Pittsburgh Intl",        "city": "Pittsburgh, PA",       "lat": 40.4915, "lon": -80.2329},
-    {"code": "BUF", "name": "Buffalo Niagara",        "city": "Buffalo, NY",          "lat": 42.9405, "lon": -78.7322},
+    {"code": "BOS", "name": "Boston Logan",           "city": "Boston, MA",          "lat": 42.3656, "lon": -71.0096, "hub_tier": HUB_TIER_LARGE},
+    {"code": "JFK", "name": "New York JFK",           "city": "New York, NY",        "lat": 40.6413, "lon": -73.7781, "hub_tier": HUB_TIER_LARGE},
+    {"code": "LGA", "name": "New York LaGuardia",     "city": "New York, NY",        "lat": 40.7769, "lon": -73.8740, "hub_tier": HUB_TIER_LARGE},
+    {"code": "EWR", "name": "Newark Liberty",         "city": "Newark, NJ",          "lat": 40.6895, "lon": -74.1745, "hub_tier": HUB_TIER_LARGE},
+    {"code": "PHL", "name": "Philadelphia Intl",      "city": "Philadelphia, PA",    "lat": 39.8744, "lon": -75.2424, "hub_tier": HUB_TIER_LARGE},
+    {"code": "PIT", "name": "Pittsburgh Intl",        "city": "Pittsburgh, PA",      "lat": 40.4915, "lon": -80.2329, "hub_tier": HUB_TIER_MEDIUM},
+    {"code": "BUF", "name": "Buffalo Niagara",        "city": "Buffalo, NY",         "lat": 42.9405, "lon": -78.7322, "hub_tier": HUB_TIER_MEDIUM},
     # --- MID ATLANTIC ---
-    {"code": "DCA", "name": "Washington Reagan",      "city": "Washington, DC",       "lat": 38.8512, "lon": -77.0402},
-    {"code": "IAD", "name": "Washington Dulles",      "city": "Washington, DC",       "lat": 38.9531, "lon": -77.4565},
-    {"code": "BWI", "name": "Baltimore/Washington",   "city": "Baltimore, MD",        "lat": 39.1754, "lon": -76.6682},
+    {"code": "DCA", "name": "Washington Reagan",      "city": "Washington, DC",      "lat": 38.8512, "lon": -77.0402, "hub_tier": HUB_TIER_LARGE},
+    {"code": "IAD", "name": "Washington Dulles",      "city": "Washington, DC",      "lat": 38.9531, "lon": -77.4565, "hub_tier": HUB_TIER_LARGE},
+    {"code": "BWI", "name": "Baltimore/Washington",   "city": "Baltimore, MD",       "lat": 39.1754, "lon": -76.6682, "hub_tier": HUB_TIER_LARGE},
     # --- SOUTHEAST ---
-    {"code": "CLT", "name": "Charlotte Douglas",      "city": "Charlotte, NC",        "lat": 35.2140, "lon": -80.9431},
-    {"code": "RDU", "name": "Raleigh-Durham",         "city": "Raleigh, NC",          "lat": 35.8776, "lon": -78.7875},
-    {"code": "ATL", "name": "Atlanta Hartsfield",     "city": "Atlanta, GA",          "lat": 33.6407, "lon": -84.4277},
-    {"code": "MCO", "name": "Orlando Intl",           "city": "Orlando, FL",          "lat": 28.4312, "lon": -81.3081},
-    {"code": "TPA", "name": "Tampa Intl",             "city": "Tampa, FL",            "lat": 27.9755, "lon": -82.5332},
-    {"code": "MIA", "name": "Miami Intl",             "city": "Miami, FL",            "lat": 25.7959, "lon": -80.2870},
-    {"code": "JAX", "name": "Jacksonville Intl",      "city": "Jacksonville, FL",     "lat": 30.4941, "lon": -81.6879},
+    {"code": "CLT", "name": "Charlotte Douglas",      "city": "Charlotte, NC",       "lat": 35.2140, "lon": -80.9431, "hub_tier": HUB_TIER_LARGE},
+    {"code": "RDU", "name": "Raleigh-Durham",         "city": "Raleigh, NC",         "lat": 35.8776, "lon": -78.7875, "hub_tier": HUB_TIER_LARGE},
+    {"code": "ATL", "name": "Atlanta Hartsfield",     "city": "Atlanta, GA",         "lat": 33.6407, "lon": -84.4277, "hub_tier": HUB_TIER_LARGE},
+    {"code": "MCO", "name": "Orlando Intl",           "city": "Orlando, FL",         "lat": 28.4312, "lon": -81.3081, "hub_tier": HUB_TIER_LARGE},
+    {"code": "TPA", "name": "Tampa Intl",             "city": "Tampa, FL",           "lat": 27.9755, "lon": -82.5332, "hub_tier": HUB_TIER_LARGE},
+    {"code": "MIA", "name": "Miami Intl",             "city": "Miami, FL",           "lat": 25.7959, "lon": -80.2870, "hub_tier": HUB_TIER_LARGE},
+    {"code": "JAX", "name": "Jacksonville Intl",      "city": "Jacksonville, FL",    "lat": 30.4941, "lon": -81.6879, "hub_tier": HUB_TIER_MEDIUM},
     # --- MIDWEST ---
-    {"code": "ORD", "name": "Chicago O'Hare",         "city": "Chicago, IL",          "lat": 41.9742, "lon": -87.9073},
-    {"code": "MDW", "name": "Chicago Midway",         "city": "Chicago, IL",          "lat": 41.7868, "lon": -87.7522},
-    {"code": "DTW", "name": "Detroit Metro",          "city": "Detroit, MI",          "lat": 42.2124, "lon": -83.3534},
-    {"code": "CLE", "name": "Cleveland Hopkins",      "city": "Cleveland, OH",        "lat": 41.4117, "lon": -81.8498},
-    {"code": "CMH", "name": "Columbus Intl",          "city": "Columbus, OH",         "lat": 39.9980, "lon": -82.8919},
-    {"code": "CVG", "name": "Cincinnati/N. Kentucky", "city": "Cincinnati, OH",       "lat": 39.0488, "lon": -84.6678},
-    {"code": "IND", "name": "Indianapolis Intl",      "city": "Indianapolis, IN",     "lat": 39.7173, "lon": -86.2944},
-    {"code": "MKE", "name": "Milwaukee Mitchell",     "city": "Milwaukee, WI",        "lat": 42.9472, "lon": -87.8966},
-    {"code": "MSP", "name": "Minneapolis-St. Paul",   "city": "Minneapolis, MN",      "lat": 44.8848, "lon": -93.2223},
-    {"code": "STL", "name": "St. Louis Lambert",      "city": "St. Louis, MO",        "lat": 38.7487, "lon": -90.3700},
-    {"code": "MCI", "name": "Kansas City Intl",       "city": "Kansas City, MO",      "lat": 39.2976, "lon": -94.7139},
-    {"code": "ICT", "name": "Wichita Eisenhower",    "city": "Wichita, KS",          "lat": 37.6499, "lon": -97.4331},
-    {"code": "OMA", "name": "Omaha Eppley",           "city": "Omaha, NE",            "lat": 41.3032, "lon": -95.8940},
-    {"code": "DSM", "name": "Des Moines Intl",        "city": "Des Moines, IA",       "lat": 41.5340, "lon": -93.6631},
+    {"code": "ORD", "name": "Chicago O'Hare",         "city": "Chicago, IL",         "lat": 41.9742, "lon": -87.9073, "hub_tier": HUB_TIER_LARGE},
+    {"code": "MDW", "name": "Chicago Midway",         "city": "Chicago, IL",         "lat": 41.7868, "lon": -87.7522, "hub_tier": HUB_TIER_LARGE},
+    {"code": "DTW", "name": "Detroit Metro",          "city": "Detroit, MI",         "lat": 42.2124, "lon": -83.3534, "hub_tier": HUB_TIER_LARGE},
+    {"code": "CLE", "name": "Cleveland Hopkins",      "city": "Cleveland, OH",       "lat": 41.4117, "lon": -81.8498, "hub_tier": HUB_TIER_MEDIUM},
+    {"code": "CMH", "name": "Columbus Intl",          "city": "Columbus, OH",        "lat": 39.9980, "lon": -82.8919, "hub_tier": HUB_TIER_MEDIUM},
+    {"code": "CVG", "name": "Cincinnati/N. Kentucky", "city": "Cincinnati, OH",      "lat": 39.0488, "lon": -84.6678, "hub_tier": HUB_TIER_MEDIUM},
+    {"code": "IND", "name": "Indianapolis Intl",      "city": "Indianapolis, IN",    "lat": 39.7173, "lon": -86.2944, "hub_tier": HUB_TIER_MEDIUM},
+    {"code": "MKE", "name": "Milwaukee Mitchell",     "city": "Milwaukee, WI",       "lat": 42.9472, "lon": -87.8966, "hub_tier": HUB_TIER_LARGE},
+    {"code": "MSP", "name": "Minneapolis-St. Paul",   "city": "Minneapolis, MN",     "lat": 44.8848, "lon": -93.2223, "hub_tier": HUB_TIER_LARGE},
+    {"code": "STL", "name": "St. Louis Lambert",      "city": "St. Louis, MO",       "lat": 38.7487, "lon": -90.3700, "hub_tier": HUB_TIER_LARGE},
+    {"code": "MCI", "name": "Kansas City Intl",       "city": "Kansas City, MO",     "lat": 39.2976, "lon": -94.7139, "hub_tier": HUB_TIER_MEDIUM},
+    {"code": "ICT", "name": "Wichita Eisenhower",     "city": "Wichita, KS",         "lat": 37.6499, "lon": -97.4331, "hub_tier": HUB_TIER_MEDIUM},
+    {"code": "OMA", "name": "Omaha Eppley",           "city": "Omaha, NE",           "lat": 41.3032, "lon": -95.8940, "hub_tier": HUB_TIER_MEDIUM},
+    {"code": "DSM", "name": "Des Moines Intl",        "city": "Des Moines, IA",      "lat": 41.5340, "lon": -93.6631, "hub_tier": HUB_TIER_SMALL},
     # --- SOUTH / GULF COAST ---
-    {"code": "BNA", "name": "Nashville Intl",         "city": "Nashville, TN",        "lat": 36.1245, "lon": -86.6782},
-    {"code": "MEM", "name": "Memphis Intl",           "city": "Memphis, TN",          "lat": 35.0424, "lon": -89.9767},
-    {"code": "BHM", "name": "Birmingham Shuttlesworth","city": "Birmingham, AL",      "lat": 33.5629, "lon": -86.7527},
-    {"code": "MSY", "name": "New Orleans Intl",       "city": "New Orleans, LA",      "lat": 29.9934, "lon": -90.2580},
-    {"code": "SHV", "name": "Shreveport Regional",   "city": "Shreveport, LA",       "lat": 32.4466, "lon": -93.8261},
-    {"code": "IAH", "name": "Houston Intercontinental","city": "Houston, TX",         "lat": 29.9902, "lon": -95.3368},
-    {"code": "SAT", "name": "San Antonio Intl",       "city": "San Antonio, TX",      "lat": 29.5337, "lon": -98.4698},
-    {"code": "AUS", "name": "Austin-Bergstrom",       "city": "Austin, TX",           "lat": 30.1975, "lon": -97.6664},
-    {"code": "DFW", "name": "Dallas/Fort Worth",      "city": "Dallas, TX",           "lat": 32.8998, "lon": -97.0403},
-    {"code": "OKC", "name": "Oklahoma City Will Rogers","city": "Oklahoma City, OK",  "lat": 35.3931, "lon": -97.6007},
-    {"code": "TUL", "name": "Tulsa Intl",             "city": "Tulsa, OK",            "lat": 36.1984, "lon": -95.8881},
-    {"code": "LIT", "name": "Little Rock National",   "city": "Little Rock, AR",      "lat": 34.7294, "lon": -92.2242},
+    {"code": "BNA", "name": "Nashville Intl",         "city": "Nashville, TN",       "lat": 36.1245, "lon": -86.6782, "hub_tier": HUB_TIER_LARGE},
+    {"code": "MEM", "name": "Memphis Intl",           "city": "Memphis, TN",         "lat": 35.0424, "lon": -89.9767, "hub_tier": HUB_TIER_MEDIUM},
+    {"code": "BHM", "name": "Birmingham Shuttlesworth","city": "Birmingham, AL",     "lat": 33.5629, "lon": -86.7527, "hub_tier": HUB_TIER_SMALL},
+    {"code": "MSY", "name": "New Orleans Intl",       "city": "New Orleans, LA",     "lat": 29.9934, "lon": -90.2580, "hub_tier": HUB_TIER_MEDIUM},
+    {"code": "SHV", "name": "Shreveport Regional",    "city": "Shreveport, LA",      "lat": 32.4466, "lon": -93.8261, "hub_tier": HUB_TIER_SMALL},
+    {"code": "IAH", "name": "Houston Intercontinental","city": "Houston, TX",        "lat": 29.9902, "lon": -95.3368, "hub_tier": HUB_TIER_LARGE},
+    {"code": "SAT", "name": "San Antonio Intl",       "city": "San Antonio, TX",     "lat": 29.5337, "lon": -98.4698, "hub_tier": HUB_TIER_MEDIUM},
+    {"code": "AUS", "name": "Austin-Bergstrom",       "city": "Austin, TX",          "lat": 30.1975, "lon": -97.6664, "hub_tier": HUB_TIER_LARGE},
+    {"code": "DFW", "name": "Dallas/Fort Worth",      "city": "Dallas, TX",          "lat": 32.8998, "lon": -97.0403, "hub_tier": HUB_TIER_LARGE},
+    {"code": "OKC", "name": "Oklahoma City Will Rogers","city": "Oklahoma City, OK", "lat": 35.3931, "lon": -97.6007, "hub_tier": HUB_TIER_MEDIUM},
+    {"code": "TUL", "name": "Tulsa Intl",             "city": "Tulsa, OK",           "lat": 36.1984, "lon": -95.8881, "hub_tier": HUB_TIER_MEDIUM},
+    {"code": "LIT", "name": "Little Rock National",   "city": "Little Rock, AR",     "lat": 34.7294, "lon": -92.2242, "hub_tier": HUB_TIER_SMALL},
     # --- PLAINS / MOUNTAIN ---
-    {"code": "DEN", "name": "Denver Intl",            "city": "Denver, CO",           "lat": 39.8561, "lon": -104.6737},
-    {"code": "ABQ", "name": "Albuquerque Sunport",    "city": "Albuquerque, NM",      "lat": 35.0402, "lon": -106.6090},
-    {"code": "SLC", "name": "Salt Lake City Intl",    "city": "Salt Lake City, UT",   "lat": 40.7899, "lon": -111.9791},
-    {"code": "BIL", "name": "Billings Logan",         "city": "Billings, MT",         "lat": 45.8077, "lon": -108.5428},
-    {"code": "FAR", "name": "Fargo Hector",           "city": "Fargo, ND",            "lat": 46.9207, "lon": -96.8158},
-    {"code": "BIS", "name": "Bismarck Municipal",     "city": "Bismarck, ND",         "lat": 46.7727, "lon": -100.7467},
-    {"code": "YYC", "name": "Calgary Intl",           "city": "Calgary, AB",          "lat": 51.1315, "lon": -114.0106},
-    {"code": "YEG", "name": "Edmonton Intl",          "city": "Edmonton, AB",         "lat": 53.3097, "lon": -113.5800},
-    {"code": "YUL", "name": "Montreal-Trudeau",       "city": "Montreal, QC",         "lat": 45.4706, "lon": -73.7408},
-    {"code": "ONT", "name": "Ontario Intl",            "city": "Ontario, CA",          "lat": 34.0558, "lon": -117.6009},
+    {"code": "DEN", "name": "Denver Intl",            "city": "Denver, CO",          "lat": 39.8561, "lon": -104.6737, "hub_tier": HUB_TIER_LARGE},
+    {"code": "ABQ", "name": "Albuquerque Sunport",    "city": "Albuquerque, NM",     "lat": 35.0402, "lon": -106.6090, "hub_tier": HUB_TIER_MEDIUM},
+    {"code": "SLC", "name": "Salt Lake City Intl",    "city": "Salt Lake City, UT",  "lat": 40.7899, "lon": -111.9791, "hub_tier": HUB_TIER_LARGE},
+    {"code": "BIL", "name": "Billings Logan",         "city": "Billings, MT",        "lat": 45.8077, "lon": -108.5428, "hub_tier": HUB_TIER_SMALL},
+    {"code": "FAR", "name": "Fargo Hector",           "city": "Fargo, ND",           "lat": 46.9207, "lon": -96.8158, "hub_tier": HUB_TIER_SMALL},
+    {"code": "BIS", "name": "Bismarck Municipal",     "city": "Bismarck, ND",        "lat": 46.7727, "lon": -100.7467, "hub_tier": HUB_TIER_SMALL},
+    {"code": "YYC", "name": "Calgary Intl",           "city": "Calgary, AB",         "lat": 51.1315, "lon": -114.0106, "hub_tier": HUB_TIER_LARGE},
+    {"code": "YEG", "name": "Edmonton Intl",          "city": "Edmonton, AB",        "lat": 53.3097, "lon": -113.5800, "hub_tier": HUB_TIER_MEDIUM},
+    {"code": "YUL", "name": "Montreal-Trudeau",       "city": "Montreal, QC",        "lat": 45.4706, "lon": -73.7408, "hub_tier": HUB_TIER_LARGE},
+    {"code": "ONT", "name": "Ontario Intl",           "city": "Ontario, CA",         "lat": 34.0558, "lon": -117.6009, "hub_tier": HUB_TIER_MEDIUM},
     # --- WEST COAST ---
-    {"code": "PHX", "name": "Phoenix Sky Harbor",     "city": "Phoenix, AZ",          "lat": 33.4373, "lon": -112.0078},
-    {"code": "TUS", "name": "Tucson Intl",            "city": "Tucson, AZ",           "lat": 32.1161, "lon": -110.9410},
-    {"code": "LAS", "name": "Las Vegas Harry Reid",   "city": "Las Vegas, NV",        "lat": 36.0840, "lon": -115.1537},
-    {"code": "LAX", "name": "Los Angeles Intl",       "city": "Los Angeles, CA",      "lat": 33.9425, "lon": -118.4081},
-    {"code": "SAN", "name": "San Diego Intl",         "city": "San Diego, CA",        "lat": 32.7336, "lon": -117.1897},
-    {"code": "SFO", "name": "San Francisco Intl",     "city": "San Francisco, CA",    "lat": 37.6213, "lon": -122.3790},
-    {"code": "SJC", "name": "San Jose Mineta",        "city": "San Jose, CA",         "lat": 37.3626, "lon": -121.9290},
-    {"code": "SMF", "name": "Sacramento Intl",        "city": "Sacramento, CA",       "lat": 38.6954, "lon": -121.5908},
+    {"code": "PHX", "name": "Phoenix Sky Harbor",     "city": "Phoenix, AZ",         "lat": 33.4373, "lon": -112.0078, "hub_tier": HUB_TIER_LARGE},
+    {"code": "TUS", "name": "Tucson Intl",            "city": "Tucson, AZ",          "lat": 32.1161, "lon": -110.9410, "hub_tier": HUB_TIER_SMALL},
+    {"code": "LAS", "name": "Las Vegas Harry Reid",   "city": "Las Vegas, NV",       "lat": 36.0840, "lon": -115.1537, "hub_tier": HUB_TIER_LARGE},
+    {"code": "LAX", "name": "Los Angeles Intl",       "city": "Los Angeles, CA",     "lat": 33.9425, "lon": -118.4081, "hub_tier": HUB_TIER_LARGE},
+    {"code": "SAN", "name": "San Diego Intl",         "city": "San Diego, CA",       "lat": 32.7336, "lon": -117.1897, "hub_tier": HUB_TIER_LARGE},
+    {"code": "SFO", "name": "San Francisco Intl",     "city": "San Francisco, CA",   "lat": 37.6213, "lon": -122.3790, "hub_tier": HUB_TIER_LARGE},
+    {"code": "SJC", "name": "San Jose Mineta",        "city": "San Jose, CA",        "lat": 37.3626, "lon": -121.9290, "hub_tier": HUB_TIER_MEDIUM},
+    {"code": "SMF", "name": "Sacramento Intl",        "city": "Sacramento, CA",      "lat": 38.6954, "lon": -121.5908, "hub_tier": HUB_TIER_MEDIUM},
     # --- PACIFIC NORTHWEST ---
-    {"code": "SEA", "name": "Seattle-Tacoma",         "city": "Seattle, WA",          "lat": 47.4502, "lon": -122.3088},
-    {"code": "PDX", "name": "Portland Intl",          "city": "Portland, OR",         "lat": 45.5898, "lon": -122.5951},
-    {"code": "BOI", "name": "Boise Airport",          "city": "Boise, ID",            "lat": 43.5644, "lon": -116.2228},
-    {"code": "ANC", "name": "Anchorage Intl",         "city": "Anchorage, AK",        "lat": 61.1744, "lon": -149.9963},
+    {"code": "SEA", "name": "Seattle-Tacoma",         "city": "Seattle, WA",         "lat": 47.4502, "lon": -122.3088, "hub_tier": HUB_TIER_LARGE},
+    {"code": "PDX", "name": "Portland Intl",          "city": "Portland, OR",        "lat": 45.5898, "lon": -122.5951, "hub_tier": HUB_TIER_MEDIUM},
+    {"code": "BOI", "name": "Boise Airport",          "city": "Boise, ID",           "lat": 43.5644, "lon": -116.2228, "hub_tier": HUB_TIER_SMALL},
+    {"code": "ANC", "name": "Anchorage Intl",         "city": "Anchorage, AK",       "lat": 61.1744, "lon": -149.9963, "hub_tier": HUB_TIER_MEDIUM},
 ]
 
 AIRPORT_OPERATIONAL_ZONE_LABELS = {

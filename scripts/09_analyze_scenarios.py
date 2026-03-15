@@ -305,6 +305,7 @@ def main() -> None:
         "travel_cost_usd",
         "out_of_region_penalty_usd",
         "timezone_penalty_usd",
+        "hub_penalty_usd",
         "hire_cost_usd",
         "unmet_penalty_usd",
         "modeled_total_cost_usd",
@@ -317,6 +318,10 @@ def main() -> None:
     if not contractor_usage.empty and "total_travel_cost_usd" in contractor_usage.columns:
         contractor_usage["total_travel_cost_usd"] = (
             contractor_usage["total_travel_cost_usd"] / data_span_years
+        )
+    if not contractor_usage.empty and "total_hub_penalty_usd" in contractor_usage.columns:
+        contractor_usage["total_hub_penalty_usd"] = (
+            contractor_usage["total_hub_penalty_usd"] / data_span_years
         )
 
     base_row = summary.loc[summary["scenario_hires"] == 0]
@@ -591,6 +596,7 @@ def main() -> None:
                 "install_revenue_enabled_usd": float(scenario_row["install_revenue_enabled_usd"]),
                 "install_profit_enabled_usd": float(scenario_row["install_profit_enabled_usd"]),
                 "timezone_penalty_usd": float(scenario_row.get("timezone_penalty_usd", 0.0)),
+                "hub_penalty_usd": float(scenario_row.get("hub_penalty_usd", 0.0)),
                 "net_cost_increase_usd": float(scenario_row["net_cost_increase_usd"]),
                 "net_economic_value_install_usd": float(scenario_row["net_economic_value_install_usd"]),
                 "roi_install_pct": (

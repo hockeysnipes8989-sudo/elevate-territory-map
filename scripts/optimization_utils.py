@@ -275,6 +275,9 @@ def build_airports_df(major_airports: list[dict]) -> pd.DataFrame:
         city_parts = [p.strip() for p in city_raw.split(",")]
         city_name = city_parts[0] if city_parts else city_raw
         state_abbr = normalize_state(city_parts[1]) if len(city_parts) > 1 else None
+        hub_tier = str(
+            ap.get("hub_tier", config.HUB_TIER_MEDIUM)
+        ).strip() or config.HUB_TIER_MEDIUM
         rows.append(
             {
                 "airport_code": ap.get("code"),
@@ -284,6 +287,7 @@ def build_airports_df(major_airports: list[dict]) -> pd.DataFrame:
                 "country": country_from_state(state_abbr),
                 "lat": float(ap.get("lat")),
                 "lon": float(ap.get("lon")),
+                "hub_tier": hub_tier,
                 "operational_zone_label": get_airport_operational_zone(ap.get("code"))["label"],
                 "operational_zone_rank": get_airport_operational_zone(ap.get("code"))["rank"],
                 "utc_offset_standard": get_airport_operational_zone(ap.get("code"))["utc_offset_standard"],

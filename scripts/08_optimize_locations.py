@@ -25,6 +25,7 @@ EXISTING_ASSIGNMENT_COLUMNS = [
     "employment_type",
     "base_state",
     "base_airport_iata",
+    "base_hub_tier",
     "assignment_scope_mode",
     "assignment_scope_states",
     "anchor_site_name",
@@ -38,6 +39,7 @@ EXISTING_ASSIGNMENT_COLUMNS = [
     "unit_travel_cost_usd",
     "unit_out_region_penalty_usd",
     "unit_timezone_penalty_usd",
+    "unit_hub_penalty_usd",
     "zone_policy",
     "zone_jump_count",
     "base_operational_zone_label",
@@ -53,6 +55,7 @@ EXISTING_ASSIGNMENT_COLUMNS = [
     "total_travel_cost_usd",
     "total_out_region_penalty_usd",
     "total_timezone_penalty_usd",
+    "total_hub_penalty_usd",
 ]
 
 NEW_HIRE_ASSIGNMENT_COLUMNS = [
@@ -62,6 +65,7 @@ NEW_HIRE_ASSIGNMENT_COLUMNS = [
     "candidate_city",
     "candidate_state",
     "airport_iata",
+    "hub_tier",
     "node_id",
     "state_norm",
     "skill_class",
@@ -70,6 +74,7 @@ NEW_HIRE_ASSIGNMENT_COLUMNS = [
     "unit_travel_cost_usd",
     "unit_out_region_penalty_usd",
     "unit_timezone_penalty_usd",
+    "unit_hub_penalty_usd",
     "zone_policy",
     "zone_jump_count",
     "base_operational_zone_label",
@@ -85,6 +90,7 @@ NEW_HIRE_ASSIGNMENT_COLUMNS = [
     "total_travel_cost_usd",
     "total_out_region_penalty_usd",
     "total_timezone_penalty_usd",
+    "total_hub_penalty_usd",
 ]
 
 PLACEMENT_COLUMNS = [
@@ -115,6 +121,7 @@ CONTRACTOR_USAGE_COLUMNS = [
     "assigned_appointments",
     "assigned_hours",
     "total_travel_cost_usd",
+    "total_hub_penalty_usd",
     "avg_zone_jump",
     "share_two_zone_plus",
     "share_three_zone_plus",
@@ -301,6 +308,17 @@ def evaluate_zone_policy(zone_jump: int | None, zone_policy: str) -> tuple[bool,
     return True, 0.0
 
 
+def evaluate_hub_penalty(hub_tier: object, trip_mode: object) -> float:
+    """Return per-appointment connectivity surcharge for fly trips only."""
+    mode = "" if trip_mode is None else str(trip_mode).strip().lower()
+    if mode != "fly":
+        return 0.0
+    tier = "" if hub_tier is None else str(hub_tier).strip()
+    if not tier:
+        return float(config.HUB_PENALTY_UNKNOWN)
+    return float(config.HUB_PENALTY_MAP.get(tier, config.HUB_PENALTY_UNKNOWN))
+
+
 def parse_assignment_scope_states(value: object) -> set[str]:
     """Parse semicolon-delimited assignment scope states into a normalized set."""
     if value is None or pd.isna(value):
@@ -389,6 +407,7 @@ def _infeasible_summary(hire_count: int, message: str, baseline_canceled_voided_
         "travel_cost_usd": None,
         "out_of_region_penalty_usd": None,
         "timezone_penalty_usd": None,
+        "hub_penalty_usd": None,
         "hire_cost_usd": None,
         "unmet_penalty_usd": None,
         "modeled_total_cost_usd": None,
@@ -480,6 +499,7 @@ def solve_scenario(
             base_cost = float(cost_meta.get("unit_cost_usd", _fallback_cost))
             is_out_region = int(str(trow.get("base_state", "")) != str(nrow["state_norm"]))
             penalty = out_of_region_penalty if is_out_region else 0.0
+            trip_mode = cost_meta.get("trip_mode")
             zone_policy = str(
                 trow.get("zone_policy", config.ZONE_POLICY_STANDARD)
             ).strip() or config.ZONE_POLICY_STANDARD
@@ -488,7 +508,8 @@ def solve_scenario(
                 nrow.get("node_operational_zone_rank"),
             )
             _, zone_penalty = evaluate_zone_policy(jump, zone_policy)
-            obj.append(base_cost + penalty + zone_penalty)
+            hub_penalty = evaluate_hub_penalty(trow.get("base_hub_tier"), trip_mode)
+            obj.append(base_cost + penalty + zone_penalty + hub_penalty)
             meta.append(
                 {
                     "var_type": "x",
@@ -499,6 +520,7 @@ def solve_scenario(
                     "zone_policy": zone_policy,
                     "zone_jump_count": jump,
                     "timezone_penalty": zone_penalty,
+                    "hub_penalty": hub_penalty,
                     "cost_meta": cost_meta,
                 }
             )
@@ -526,14 +548,16 @@ def solve_scenario(
             base_cost = float(cost_meta.get("unit_cost_usd", _fallback_cost))
             is_out_region = int(str(crow.get("state", "")) != str(nrow["state_norm"]))
             penalty = out_of_region_penalty if is_out_region else 0.0
+            trip_mode = cost_meta.get("trip_mode")
             jump = zone_jump_count(
                 crow.get("operational_zone_rank"),
                 nrow.get("node_operational_zone_rank"),
             )
             zone_feasible, zone_penalty = evaluate_zone_policy(jump, config.ZONE_POLICY_STANDARD)
+            hub_penalty = evaluate_hub_penalty(crow.get("hub_tier"), trip_mode)
             if (node_requires_hps and not blank_slate) or not zone_feasible:
                 ub[-1] = 0.0
-            obj.append(base_cost + penalty + zone_penalty)
+            obj.append(base_cost + penalty + zone_penalty + hub_penalty)
             meta.append(
                 {
                     "var_type": "z",
@@ -544,6 +568,7 @@ def solve_scenario(
                     "zone_policy": config.ZONE_POLICY_STANDARD,
                     "zone_jump_count": jump,
                     "timezone_penalty": zone_penalty,
+                    "hub_penalty": hub_penalty,
                     "cost_meta": cost_meta,
                 }
             )
@@ -675,6 +700,7 @@ def solve_scenario(
     travel_cost = 0.0
     out_region_cost = 0.0
     timezone_penalty_cost = 0.0
+    hub_penalty_cost = 0.0
     unmet_appointments = 0.0
 
     for (ti, ni), idx in x_idx.items():
@@ -687,10 +713,12 @@ def solve_scenario(
         base = float(m["base_cost"])
         pen = float(m["out_region_penalty"])
         zone_penalty = float(m.get("timezone_penalty", 0.0))
+        hub_penalty = float(m.get("hub_penalty", 0.0))
         cost_meta = m.get("cost_meta", {})
         travel_cost += val * base
         out_region_cost += val * pen
         timezone_penalty_cost += val * zone_penalty
+        hub_penalty_cost += val * hub_penalty
         hours = val * float(nrow["avg_hours_per_appointment"])
         existing_rows.append(
             {
@@ -700,6 +728,7 @@ def solve_scenario(
                 "employment_type": trow["employment_type"],
                 "base_state": trow["base_state"],
                 "base_airport_iata": trow["base_airport_iata"],
+                "base_hub_tier": trow.get("base_hub_tier"),
                 "assignment_scope_mode": trow.get("assignment_scope_mode"),
                 "assignment_scope_states": trow.get("assignment_scope_states"),
                 "anchor_site_name": trow.get("anchor_site_name"),
@@ -713,6 +742,7 @@ def solve_scenario(
                 "unit_travel_cost_usd": base,
                 "unit_out_region_penalty_usd": pen,
                 "unit_timezone_penalty_usd": zone_penalty,
+                "unit_hub_penalty_usd": hub_penalty,
                 "zone_policy": m.get("zone_policy"),
                 "zone_jump_count": m.get("zone_jump_count"),
                 "base_operational_zone_label": trow.get("base_operational_zone_label"),
@@ -728,6 +758,7 @@ def solve_scenario(
                 "total_travel_cost_usd": val * base,
                 "total_out_region_penalty_usd": val * pen,
                 "total_timezone_penalty_usd": val * zone_penalty,
+                "total_hub_penalty_usd": val * hub_penalty,
             }
         )
 
@@ -741,10 +772,12 @@ def solve_scenario(
         base = float(m["base_cost"])
         pen = float(m["out_region_penalty"])
         zone_penalty = float(m.get("timezone_penalty", 0.0))
+        hub_penalty = float(m.get("hub_penalty", 0.0))
         cost_meta = m.get("cost_meta", {})
         travel_cost += val * base
         out_region_cost += val * pen
         timezone_penalty_cost += val * zone_penalty
+        hub_penalty_cost += val * hub_penalty
         hours = val * float(nrow["avg_hours_per_appointment"])
         new_rows.append(
             {
@@ -754,6 +787,7 @@ def solve_scenario(
                 "candidate_city": crow["city"],
                 "candidate_state": crow["state"],
                 "airport_iata": crow["airport_iata"],
+                "hub_tier": crow.get("hub_tier"),
                 "node_id": nrow["node_id"],
                 "state_norm": nrow["state_norm"],
                 "skill_class": nrow["skill_class"],
@@ -762,6 +796,7 @@ def solve_scenario(
                 "unit_travel_cost_usd": base,
                 "unit_out_region_penalty_usd": pen,
                 "unit_timezone_penalty_usd": zone_penalty,
+                "unit_hub_penalty_usd": hub_penalty,
                 "zone_policy": m.get("zone_policy"),
                 "zone_jump_count": m.get("zone_jump_count"),
                 "base_operational_zone_label": crow.get("operational_zone_label"),
@@ -777,6 +812,7 @@ def solve_scenario(
                 "total_travel_cost_usd": val * base,
                 "total_out_region_penalty_usd": val * pen,
                 "total_timezone_penalty_usd": val * zone_penalty,
+                "total_hub_penalty_usd": val * hub_penalty,
             }
         )
 
@@ -843,7 +879,14 @@ def solve_scenario(
 
     hire_cost = float(sum(int(round(v)) for v in y_values.values()) * annual_hire_cost_usd)
     unmet_cost = float(unmet_appointments * unmet_penalty)
-    modeled_total = float(travel_cost + out_region_cost + timezone_penalty_cost + hire_cost + unmet_cost)
+    modeled_total = float(
+        travel_cost
+        + out_region_cost
+        + timezone_penalty_cost
+        + hub_penalty_cost
+        + hire_cost
+        + unmet_cost
+    )
 
     contractor_usage_df = empty_frame(CONTRACTOR_USAGE_COLUMNS)
     if not existing_df.empty:
@@ -873,6 +916,7 @@ def solve_scenario(
                     assigned_appointments=("assigned_appointments", "sum"),
                     assigned_hours=("assigned_hours", "sum"),
                     total_travel_cost_usd=("total_travel_cost_usd", "sum"),
+                    total_hub_penalty_usd=("total_hub_penalty_usd", "sum"),
                     weighted_zone_jump=("weighted_zone_jump", "sum"),
                     two_zone_plus_appointments=("two_zone_plus_appointments", "sum"),
                     three_zone_plus_appointments=("three_zone_plus_appointments", "sum"),
@@ -919,6 +963,7 @@ def solve_scenario(
         "travel_cost_usd": travel_cost,
         "out_of_region_penalty_usd": out_region_cost,
         "timezone_penalty_usd": timezone_penalty_cost,
+        "hub_penalty_usd": hub_penalty_cost,
         "hire_cost_usd": hire_cost,
         "unmet_penalty_usd": unmet_cost,
         "modeled_total_cost_usd": modeled_total,
@@ -1287,6 +1332,15 @@ def main() -> None:
             "target_utilization is the normalization target for the modeled "
             "load ratio, not a literal payroll-utilization benchmark."
         ),
+        "hub_connectivity_penalty": {
+            "applies_to_trip_mode": "fly_only",
+            "tier_penalties_usd_per_appointment": {
+                "large_hub": config.HUB_PENALTY_LARGE,
+                "medium_hub": config.HUB_PENALTY_MEDIUM,
+                "small_hub": config.HUB_PENALTY_SMALL,
+                "unknown": config.HUB_PENALTY_UNKNOWN,
+            },
+        },
         "contractor_assignment_scope": contractor_scope,
         "contractor_policy": {
             "travel_cost_policy": config.TRAVEL_COST_POLICY_CONTRACTOR,
