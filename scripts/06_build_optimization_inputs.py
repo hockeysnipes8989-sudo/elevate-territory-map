@@ -16,12 +16,16 @@ sys.path.insert(0, os.path.dirname(__file__))
 import config
 from optimization_utils import (
     build_airports_df,
+    canonicalize_tech_name,
+    choose_airport_for_location,
+    compute_entity_node_costs,
     country_from_state,
     get_airport_operational_zone,
     nearest_airport_code,
     normalize_name,
     normalize_state,
     parse_city_state,
+    prepare_demand,
     slugify,
 )
 
@@ -31,21 +35,6 @@ DEFAULT_TECH_XLSX = config.EXTERNAL_TECH_ROSTER_XLSX
 
 RAW_APPOINTMENTS_SHEET = "report1770130594436"
 DERIVED_APPOINTMENTS_SHEET = "Derived Fields"
-
-# Tech name aliases are now defined canonically in config.TECH_NAME_ALIASES.
-TECH_NAME_ALIASES = config.TECH_NAME_ALIASES
-
-TECH_LOCATION_AIRPORT_OVERRIDES = {
-    "charlotte nc": "CLT",
-    "st louis mo": "STL",
-    "st louis, mo": "STL",
-    "ontario ca": "ONT",
-    "tampa fl": "TPA",
-    "phoenix az": "PHX",
-    "philadelphia pa": "PHL",
-    "baltimore md": "BWI",
-    "houston tx": "IAH",
-}
 
 HPS_PATTERNS = [
     r"\bhps[0-9a-z]*\b",
@@ -82,36 +71,6 @@ def yesno_to_bool(value: object) -> bool:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return False
     return str(value).strip().lower() == "yes"
-
-
-def choose_airport_for_location(location: str, airports_df: pd.DataFrame) -> str | None:
-    """Map location string to nearest/sensible airport code."""
-    loc_norm = normalize_name(location)
-    if loc_norm in TECH_LOCATION_AIRPORT_OVERRIDES:
-        return TECH_LOCATION_AIRPORT_OVERRIDES[loc_norm]
-
-    city, state_abbr = parse_city_state(location)
-    city_norm = normalize_name(city)
-    if city_norm and state_abbr:
-        exact = airports_df[
-            (airports_df["city_norm"] == city_norm) & (airports_df["state_abbr"] == state_abbr)
-        ]
-        if not exact.empty:
-            return str(exact.iloc[0]["airport_code"])
-        same_state = airports_df[airports_df["state_abbr"] == state_abbr]
-        if not same_state.empty:
-            # Prefer a partial city-name match within the state before taking first entry.
-            city_match = same_state[same_state["city_norm"].str.contains(city_norm, na=False)] if city_norm else pd.DataFrame()
-            if not city_match.empty:
-                return str(city_match.iloc[0]["airport_code"])
-            print(f"  NOTE: no exact airport match for '{location}'; using first {state_abbr} airport: {same_state.iloc[0]['airport_code']}")
-            return str(same_state.iloc[0]["airport_code"])
-    if city_norm:
-        near_city = airports_df[airports_df["city_norm"].str.contains(city_norm, na=False)]
-        if not near_city.empty:
-            return str(near_city.iloc[0]["airport_code"])
-    return None
-
 
 def classify_skill(description: object, subject: object) -> dict:
     """Classify skill requirements from text."""
@@ -269,9 +228,7 @@ def load_anchor_allocations(anchor_csv: str | None) -> pd.DataFrame:
         )
 
     anchors = anchors.copy()
-    anchors["tech_name"] = anchors["tech_name"].apply(
-        lambda value: TECH_NAME_ALIASES.get(normalize_name(value), str(value).strip())
-    )
+    anchors["tech_name"] = anchors["tech_name"].apply(canonicalize_tech_name)
     anchors["anchor_reserved_fte"] = pd.to_numeric(
         anchors["anchor_reserved_fte"], errors="raise"
     )
@@ -526,8 +483,7 @@ def build_tech_master(
         name_raw = row.get("Tech", "").strip()
         if not name_raw:
             continue
-        name_norm = normalize_name(name_raw)
-        canonical_name = TECH_NAME_ALIASES.get(name_norm, name_raw)
+        canonical_name = canonicalize_tech_name(name_raw)
 
         location = row.get("Location", "").strip()
         city, state_abbr = parse_city_state(location)
@@ -830,6 +786,463 @@ def build_candidate_bases(
     return enrich_candidate_zone_fields(candidates, airports_df)
 
 
+def classify_historical_roster_status(comment: object) -> str:
+    """Map archived roster comments to a broad status bucket."""
+    text = "" if comment is None or pd.isna(comment) else str(comment).strip().lower()
+    if "no longer with elevate" in text:
+        return "former"
+    if "special resource" in text:
+        return "special"
+    return "active"
+
+
+def build_historical_cost_context(demand_df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, float]]:
+    """Prepare shared demand inputs used to score estimated historical bases."""
+    demand_prepared = prepare_demand(demand_df)
+    demand_prepared["duration_hours"] = pd.to_numeric(
+        demand_prepared["duration_hours"], errors="coerce"
+    ).fillna(24.0 * config.HOTEL_AVG_NIGHTS)
+    node_avg_duration = demand_prepared.groupby("node_id")["duration_hours"].mean()
+    node_avg_days = (node_avg_duration / 24.0).to_dict()
+    return demand_prepared, node_avg_days
+
+
+def build_historical_base_row(
+    *,
+    canonical_name: str,
+    source_name: str,
+    status: str,
+    comment: str,
+    base_location_raw: str,
+    base_city: str | None,
+    base_state: str | None,
+    base_country: str,
+    base_airport_iata: str,
+    base_lat: float,
+    base_lon: float,
+    base_source: str,
+    base_confidence: str,
+) -> dict:
+    """Build one historical roster output row."""
+    state_display = str(base_state).strip() if base_state else ""
+    city_display = str(base_city).strip() if base_city else ""
+    base_label = city_display
+    if city_display and state_display:
+        base_label = f"{city_display}, {state_display}"
+    elif state_display:
+        base_label = state_display
+    return {
+        "historical_tech_id": slugify(canonical_name),
+        "tech_name": canonical_name,
+        "source_name": source_name,
+        "status": status,
+        "comment": comment,
+        "base_location_raw": base_location_raw,
+        "base_city": city_display,
+        "base_state": state_display,
+        "base_country": base_country,
+        "base_airport_iata": base_airport_iata,
+        "base_lat": base_lat,
+        "base_lon": base_lon,
+        "base_source": base_source,
+        "base_confidence": base_confidence,
+        "base_label": base_label or base_location_raw,
+    }
+
+
+def airport_location_fields(
+    airports_df: pd.DataFrame,
+    airport_code: object,
+) -> tuple[float, float]:
+    """Return airport coordinates when the code exists in the supported airport set."""
+    code = "" if airport_code is None else str(airport_code).strip().upper()
+    match = airports_df[airports_df["airport_code"] == code]
+    if match.empty:
+        return np.nan, np.nan
+    row = match.iloc[0]
+    return float(row["lat"]), float(row["lon"])
+
+
+def add_historical_candidate(
+    candidates: list[dict],
+    seen: set[tuple[str, str, str]],
+    *,
+    city: str,
+    state: str,
+    country: str,
+    airport_iata: str,
+    lat: float,
+    lon: float,
+    source: str,
+    state_appointment_count: int,
+) -> None:
+    """Append a unique historical base candidate."""
+    city_clean = str(city or "").strip()
+    state_clean = str(state or "").strip()
+    airport_clean = str(airport_iata or "").strip().upper()
+    if not city_clean or not state_clean or not airport_clean:
+        return
+    if pd.isna(lat) or pd.isna(lon):
+        return
+    dedupe_key = (normalize_name(city_clean), state_clean, airport_clean)
+    if dedupe_key in seen:
+        return
+    seen.add(dedupe_key)
+    candidates.append(
+        {
+            "candidate_id": slugify(f"{city_clean}_{state_clean}_{airport_clean}"),
+            "city": city_clean,
+            "state": state_clean,
+            "country": country,
+            "airport_iata": airport_clean,
+            "lat": float(lat),
+            "lon": float(lon),
+            "source": source,
+            "state_appointment_count": int(state_appointment_count),
+            "candidate_sort": f"{state_clean}_{city_clean}_{airport_clean}",
+        }
+    )
+
+
+def build_historical_estimate_candidates(
+    canonical_name: str,
+    base_location_raw: str,
+    tech_appts: pd.DataFrame,
+    airports_df: pd.DataFrame,
+) -> list[dict]:
+    """Build candidate historical bases for an unresolved or region-only tech base."""
+    del canonical_name  # kept for future name-specific heuristics
+    candidates: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    for override in config.HISTORICAL_BASE_REGION_CANDIDATES.get(base_location_raw, []):
+        airport_iata = str(override.get("airport_iata", "")).strip().upper()
+        lat, lon = airport_location_fields(airports_df, airport_iata)
+        add_historical_candidate(
+            candidates,
+            seen,
+            city=str(override.get("city", "")).strip(),
+            state=str(override.get("state", "")).strip(),
+            country=str(override.get("country", "")).strip() or country_from_state(override.get("state")),
+            airport_iata=airport_iata,
+            lat=lat,
+            lon=lon,
+            source="region_candidate",
+            state_appointment_count=0,
+        )
+
+    if base_location_raw in config.HISTORICAL_BASE_REGION_CANDIDATES:
+        return candidates
+
+    if tech_appts.empty:
+        return candidates
+
+    airport_counts = (
+        tech_appts["nearest_hub_airport"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .replace("nan", "")
+    )
+    airport_counts = airport_counts[airport_counts.ne("")].value_counts().head(3)
+    for airport_iata, _ in airport_counts.items():
+        match = airports_df[airports_df["airport_code"] == airport_iata]
+        if match.empty:
+            continue
+        row = match.iloc[0]
+        state = str(row["state_abbr"])
+        add_historical_candidate(
+            candidates,
+            seen,
+            city=str(row["city_name"]),
+            state=state,
+            country=str(row["country"]),
+            airport_iata=str(row["airport_code"]),
+            lat=float(row["lat"]),
+            lon=float(row["lon"]),
+            source="historical_hub_usage",
+            state_appointment_count=int((tech_appts["state_norm"] == state).sum()),
+        )
+
+    state_counts = (
+        tech_appts["state_norm"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .replace("nan", "")
+    )
+    state_counts = state_counts[state_counts.ne("")].value_counts().head(3)
+    for state, state_count in state_counts.items():
+        state_appts = tech_appts[tech_appts["state_norm"].astype(str).str.strip() == state]
+        city_counts = (
+            state_appts.dropna(subset=["city"])
+            .assign(city_clean=lambda df: df["city"].astype(str).str.strip())
+            .groupby("city_clean")
+            .size()
+            .sort_values(ascending=False)
+            .head(2)
+        )
+        for city, _ in city_counts.items():
+            city_appts = state_appts[state_appts["city"].astype(str).str.strip() == city]
+            lat = pd.to_numeric(city_appts["lat"], errors="coerce").mean()
+            lon = pd.to_numeric(city_appts["lon"], errors="coerce").mean()
+            airport_iata = nearest_airport_code(lat, lon, airports_df, state)[0]
+            if not airport_iata:
+                airport_iata = choose_airport_for_location(f"{city}, {state}", airports_df)
+            if not airport_iata:
+                continue
+            if pd.isna(lat) or pd.isna(lon):
+                lat, lon = airport_location_fields(airports_df, airport_iata)
+            add_historical_candidate(
+                candidates,
+                seen,
+                city=city,
+                state=state,
+                country=country_from_state(state),
+                airport_iata=airport_iata,
+                lat=lat,
+                lon=lon,
+                source="historical_service_city",
+                state_appointment_count=int(state_count),
+            )
+
+    return candidates
+
+
+def choose_historical_estimated_base(
+    canonical_name: str,
+    base_location_raw: str,
+    tech_appts: pd.DataFrame,
+    demand_prepared: pd.DataFrame,
+    node_avg_days: dict[str, float],
+    airports_df: pd.DataFrame,
+) -> dict | None:
+    """Pick the lowest-cost historical base estimate for a tech with no exact archived base."""
+    candidates = build_historical_estimate_candidates(
+        canonical_name, base_location_raw, tech_appts, airports_df
+    )
+    if not candidates:
+        return None
+
+    tech_node_counts = tech_appts["node_id"].value_counts().to_dict()
+    if not tech_node_counts:
+        return sorted(
+            candidates,
+            key=lambda candidate: (
+                -int(candidate["state_appointment_count"]),
+                candidate["candidate_sort"],
+            ),
+        )[0]
+
+    cost_rows = compute_entity_node_costs(
+        [
+            {
+                "id": candidate["candidate_id"],
+                "lat": candidate["lat"],
+                "lon": candidate["lon"],
+                "airport": candidate["airport_iata"],
+                "travel_cost_policy": config.TRAVEL_COST_POLICY_EMPLOYEE,
+                "contractor_cost_multiplier": 1.0,
+                "contractor_cost_cap_usd": np.nan,
+                "contractor_dispatch_surcharge_usd": 0.0,
+            }
+            for candidate in candidates
+        ],
+        demand_prepared,
+        node_avg_days=node_avg_days,
+    )
+    cost_lookup: dict[tuple[str, str], float] = {}
+    for row in cost_rows:
+        cost_lookup[(str(row["tech_or_candidate_id"]), str(row["node_id"]))] = float(
+            row["unit_cost_usd"]
+        )
+
+    return min(
+        candidates,
+        key=lambda candidate: (
+            round(
+                sum(
+                    tech_node_counts[node_id]
+                    * cost_lookup.get((candidate["candidate_id"], node_id), 0.0)
+                    for node_id in tech_node_counts
+                ),
+                4,
+            ),
+            -int(candidate["state_appointment_count"]),
+            candidate["candidate_sort"],
+        ),
+    )
+
+
+def resolve_historical_roster_base(
+    canonical_name: str,
+    source_name: str,
+    status: str,
+    comment: str,
+    base_location_raw: str,
+    demand_df: pd.DataFrame,
+    demand_prepared: pd.DataFrame,
+    node_avg_days: dict[str, float],
+    airports_df: pd.DataFrame,
+) -> dict:
+    """Resolve one archived roster row to an exact or estimated historical base."""
+    manual_override = dict(getattr(config, "HISTORICAL_BASE_MANUAL_OVERRIDES", {})).get(
+        canonical_name
+    )
+    if manual_override:
+        city = str(manual_override.get("city", "")).strip()
+        state = normalize_state(manual_override.get("state"))
+        country = str(manual_override.get("country", "")).strip() or country_from_state(state)
+        airport_iata = str(
+            manual_override.get("airport_iata")
+            or choose_airport_for_location(f"{city}, {state}", airports_df)
+            or ""
+        ).strip().upper()
+        lat, lon = airport_location_fields(airports_df, airport_iata)
+        return build_historical_base_row(
+            canonical_name=canonical_name,
+            source_name=source_name,
+            status=status,
+            comment=comment,
+            base_location_raw=base_location_raw,
+            base_city=city,
+            base_state=state,
+            base_country=country,
+            base_airport_iata=airport_iata,
+            base_lat=lat,
+            base_lon=lon,
+            base_source="manual_override",
+            base_confidence="manual_override",
+        )
+
+    city, state_abbr = parse_city_state(base_location_raw)
+    is_region_only = base_location_raw in config.HISTORICAL_BASE_REGION_CANDIDATES
+
+    if not is_region_only and city and state_abbr and state_abbr not in {"CANADA"}:
+        airport_iata = choose_airport_for_location(base_location_raw, airports_df) or ""
+        lat, lon = airport_location_fields(airports_df, airport_iata)
+        return build_historical_base_row(
+            canonical_name=canonical_name,
+            source_name=source_name,
+            status=status,
+            comment=comment,
+            base_location_raw=base_location_raw,
+            base_city=city,
+            base_state=state_abbr,
+            base_country=country_from_state(state_abbr),
+            base_airport_iata=airport_iata,
+            base_lat=lat,
+            base_lon=lon,
+            base_source="archived_roster",
+            base_confidence="high",
+        )
+
+    tech_appts = demand_df[
+        demand_df["Service Resource: Name"].apply(canonicalize_tech_name) == canonical_name
+    ].copy()
+    tech_appts = prepare_demand(tech_appts)
+    estimate = choose_historical_estimated_base(
+        canonical_name,
+        base_location_raw,
+        tech_appts,
+        demand_prepared,
+        node_avg_days,
+        airports_df,
+    )
+    if estimate:
+        return build_historical_base_row(
+            canonical_name=canonical_name,
+            source_name=source_name,
+            status=status,
+            comment=comment,
+            base_location_raw=base_location_raw,
+            base_city=estimate["city"],
+            base_state=estimate["state"],
+            base_country=estimate["country"],
+            base_airport_iata=estimate["airport_iata"],
+            base_lat=estimate["lat"],
+            base_lon=estimate["lon"],
+            base_source=(
+                "archived_region"
+                if base_location_raw in config.HISTORICAL_BASE_REGION_CANDIDATES
+                else "estimated_from_history"
+            ),
+            base_confidence=(
+                "estimated_region_to_city"
+                if base_location_raw in config.HISTORICAL_BASE_REGION_CANDIDATES
+                else "estimated"
+            ),
+        )
+
+    return build_historical_base_row(
+        canonical_name=canonical_name,
+        source_name=source_name,
+        status=status,
+        comment=comment,
+        base_location_raw=base_location_raw,
+        base_city="",
+        base_state="",
+        base_country="",
+        base_airport_iata="",
+        base_lat=np.nan,
+        base_lon=np.nan,
+        base_source="unknown",
+        base_confidence="unknown",
+    )
+
+
+def build_historical_roster(
+    roster_path: str,
+    airports_df: pd.DataFrame,
+    demand_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Build archived technician roster used by the historical map view."""
+    raw = pd.read_excel(roster_path, sheet_name=config.APPTS_REPORT_RESOURCES_SHEET)
+    required_cols = {"Service Resource Name", "Location", "Comment"}
+    missing = sorted(required_cols - set(raw.columns))
+    if missing:
+        raise ValueError(
+            f"Historical roster workbook at {roster_path} is missing columns: {missing}"
+        )
+
+    demand_prepared, node_avg_days = build_historical_cost_context(demand_df)
+    rows_by_name: dict[str, dict] = {}
+
+    for _, row in raw.iterrows():
+        source_name = (
+            ""
+            if pd.isna(row.get("Service Resource Name"))
+            else str(row.get("Service Resource Name", "")).strip()
+        )
+        if not source_name:
+            continue
+        canonical_name = canonicalize_tech_name(source_name)
+        base_location_raw = (
+            "" if pd.isna(row.get("Location")) else str(row.get("Location", "")).strip()
+        )
+        comment = "" if pd.isna(row.get("Comment")) else str(row.get("Comment", "")).strip()
+        status = classify_historical_roster_status(comment)
+        resolved = resolve_historical_roster_base(
+            canonical_name=canonical_name,
+            source_name=source_name,
+            status=status,
+            comment=comment,
+            base_location_raw=base_location_raw,
+            demand_df=demand_df,
+            demand_prepared=demand_prepared,
+            node_avg_days=node_avg_days,
+            airports_df=airports_df,
+        )
+        rows_by_name[canonical_name] = resolved
+
+    historical_roster = (
+        pd.DataFrame(rows_by_name.values())
+        .sort_values(["status", "tech_name"])
+        .reset_index(drop=True)
+    )
+    return historical_roster
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build optimization input tables.")
     parser.add_argument("--appts-xlsx", default=None, help="Appointments workbook path.")
@@ -883,6 +1296,7 @@ def main() -> None:
     )
     demand = build_demand_appointments(appts_path, config.GEOCODED_APPTS_CSV, airports_df)
     candidates = build_candidate_bases(airports_df, demand, args.top_demand_cities)
+    historical_roster = build_historical_roster(config.SERVICE_APPTS_REPORT, airports_df, demand)
 
     # Compute data time span for annualization
     sched_start_dt = pd.to_datetime(demand["scheduled_start"], errors="coerce").dropna()
@@ -901,12 +1315,14 @@ def main() -> None:
     tech_path_out = out_dir / "tech_master.csv"
     demand_path_out = out_dir / "demand_appointments.csv"
     candidate_path_out = out_dir / "candidate_bases.csv"
+    historical_roster_out = out_dir / "historical_roster.csv"
     parse_ambiguous_out = out_dir / "skill_parse_ambiguous.csv"
     summary_out = out_dir / "optimization_input_summary.json"
 
     tech_master.to_csv(tech_path_out, index=False)
     demand.to_csv(demand_path_out, index=False)
     candidates.to_csv(candidate_path_out, index=False)
+    historical_roster.to_csv(historical_roster_out, index=False)
     demand[demand["parse_confidence"] != "high"].to_csv(parse_ambiguous_out, index=False)
 
     summary = {
@@ -917,10 +1333,12 @@ def main() -> None:
             if os.path.exists(config.TECHNICIAN_ANCHOR_ALLOCATIONS_CSV)
             else None
         ),
+        "historical_roster_source": config.SERVICE_APPTS_REPORT,
         "rows": {
             "tech_master": int(len(tech_master)),
             "demand_appointments": int(len(demand)),
             "candidate_bases": int(len(candidates)),
+            "historical_roster": int(len(historical_roster)),
         },
         "skills": {
             "hps_required_appointments": int(demand["required_hps"].sum()),
@@ -961,6 +1379,7 @@ def main() -> None:
     print(f"Saved: {tech_path_out}")
     print(f"Saved: {demand_path_out}")
     print(f"Saved: {candidate_path_out}")
+    print(f"Saved: {historical_roster_out}")
     print(f"Saved: {parse_ambiguous_out}")
     print(f"Saved: {summary_out}")
     print("\nInput summary:")

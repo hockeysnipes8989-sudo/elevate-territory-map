@@ -77,14 +77,42 @@ TECH_NAME_MAP = {
     "Elier Alvarez Martin": "Elier Martin",
 }
 
+LOCATION_AIRPORT_OVERRIDES = {
+    "charlotte nc": "CLT",
+    "st louis mo": "STL",
+    "st louis, mo": "STL",
+    "ontario ca": "ONT",
+    "tampa fl": "TPA",
+    "phoenix az": "PHX",
+    "philadelphia pa": "PHL",
+    "baltimore md": "BWI",
+    "houston tx": "IAH",
+    "sarasota fl": "TPA",
+    "sarasota, fl": "TPA",
+}
+
 # Historical view: show actual past assignments alongside MILP scenarios.
 HISTORICAL_VIEW_ENABLED = True
 
-# Approximate home bases for former technicians (for display in coverage list).
-HISTORICAL_FORMER_TECH_BASES = {
-    "David Bazany": {"city": "Dallas", "state": "TX"},
-    "John Aleksa": {"city": "Newark", "state": "NJ"},
-    "Trent Osborne": {"city": "Fort Smith", "state": "AR"},
+# Historical base overrides are only used when the archived Resources sheet is
+# incomplete or only gives a region-level location.
+HISTORICAL_BASE_MANUAL_OVERRIDES = {}
+
+HISTORICAL_BASE_REGION_CANDIDATES = {
+    "Alberta, Canada": [
+        {
+            "city": "Calgary",
+            "state": "AB",
+            "country": "Canada",
+            "airport_iata": "YYC",
+        },
+        {
+            "city": "Edmonton",
+            "state": "AB",
+            "country": "Canada",
+            "airport_iata": "YEG",
+        },
+    ],
 }
 
 # Former technicians to exclude from current-state maps/outputs
@@ -448,6 +476,7 @@ TECH_ASSIGNMENT_COLOR_MAP = {
     "_hist_david_bazany": "#FF6F00",      # amber orange
     "_hist_john_aleksa": "#00BFA5",       # bright teal
     "_hist_trent_osborne": "#AA00FF",     # vivid purple
+    "_hist_alex_rondero": "#5C6BC0",      # slate indigo
 }
 
 # Reserve palette only for future unknown assignee ids.
@@ -561,6 +590,9 @@ MAJOR_AIRPORTS = [
     {"code": "BIL", "name": "Billings Logan",         "city": "Billings, MT",         "lat": 45.8077, "lon": -108.5428},
     {"code": "FAR", "name": "Fargo Hector",           "city": "Fargo, ND",            "lat": 46.9207, "lon": -96.8158},
     {"code": "BIS", "name": "Bismarck Municipal",     "city": "Bismarck, ND",         "lat": 46.7727, "lon": -100.7467},
+    {"code": "YYC", "name": "Calgary Intl",           "city": "Calgary, AB",          "lat": 51.1315, "lon": -114.0106},
+    {"code": "YEG", "name": "Edmonton Intl",          "city": "Edmonton, AB",         "lat": 53.3097, "lon": -113.5800},
+    {"code": "YUL", "name": "Montreal-Trudeau",       "city": "Montreal, QC",         "lat": 45.4706, "lon": -73.7408},
     {"code": "ONT", "name": "Ontario Intl",            "city": "Ontario, CA",          "lat": 34.0558, "lon": -117.6009},
     # --- WEST COAST ---
     {"code": "PHX", "name": "Phoenix Sky Harbor",     "city": "Phoenix, AZ",          "lat": 33.4373, "lon": -112.0078},
@@ -641,6 +673,9 @@ AIRPORT_OPERATIONAL_ZONE_LABELS = {
     "TPA": "Eastern",
     "TUL": "Central",
     "TUS": "Mountain",
+    "YEG": "Mountain",
+    "YUL": "Eastern",
+    "YYC": "Mountain",
 }
 
 AIRPORT_OPERATIONAL_ZONES = {

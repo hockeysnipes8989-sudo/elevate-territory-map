@@ -9,6 +9,7 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(__file__))
 import config
+from optimization_utils import canonicalize_tech_name, compute_entity_node_costs, prepare_demand
 
 
 SIM_SUMMARY_ENHANCED = "scenario_summary_enhanced.csv"
@@ -998,6 +999,7 @@ def load_territory_assignment_data():
         "newhires": os.path.join(sim_dir, "scenario_assignments_newhires.csv"),
         "demand_appts": os.path.join(sim_dir, "demand_appointments.csv"),
         "tech_master": os.path.join(sim_dir, "tech_master.csv"),
+        "historical_roster": os.path.join(sim_dir, "historical_roster.csv"),
         "candidates": os.path.join(sim_dir, "candidate_bases.csv"),
         "utilization": os.path.join(sim_dir, "scenario_tech_utilization.csv"),
     }
@@ -1015,6 +1017,11 @@ def load_territory_assignment_data():
     )
     data["demand_appts"] = pd.read_csv(files["demand_appts"])
     data["tech_master"] = pd.read_csv(files["tech_master"])
+    data["historical_roster"] = (
+        pd.read_csv(files["historical_roster"])
+        if os.path.exists(files["historical_roster"])
+        else pd.DataFrame()
+    )
     data["candidates"] = (
         pd.read_csv(files["candidates"]) if os.path.exists(files["candidates"]) else pd.DataFrame()
     )
@@ -1228,17 +1235,16 @@ def load_historical_data(territory_data, out_dir):
 
     Returns a dict with tech_stats, cost totals, and comparison to N=0 optimized.
     """
-    demand_appts = territory_data["demand_appts"]
-    tech_master = territory_data["tech_master"]
+    demand_appts = territory_data["demand_appts"].copy()
+    tech_master = territory_data["tech_master"].copy()
+    historical_roster = territory_data.get("historical_roster", pd.DataFrame()).copy()
 
-    # Read full cost table
     cost_table_path = os.path.join(out_dir, "full_cost_table.csv")
     if not os.path.exists(cost_table_path):
         print("  Historical view: missing full_cost_table.csv, skipping.")
         return None
     cost_table = pd.read_csv(cost_table_path)
 
-    # Read data_span_years
     summary_json_path = os.path.join(out_dir, "optimization_input_summary.json")
     if not os.path.exists(summary_json_path):
         print("  Historical view: missing optimization_input_summary.json, skipping.")
@@ -1247,7 +1253,6 @@ def load_historical_data(territory_data, out_dir):
         opt_summary = json.load(f)
     data_span_years = float(opt_summary.get("data_span_years", 1.0))
 
-    # Read scenario_summary_enhanced for N=0 cost (already annualized)
     enhanced_path = os.path.join(out_dir, "scenario_summary_enhanced.csv")
     if not os.path.exists(enhanced_path):
         print("  Historical view: missing scenario_summary_enhanced.csv, skipping.")
@@ -1263,40 +1268,37 @@ def load_historical_data(territory_data, out_dir):
         pd.to_numeric(n0_rows.iloc[0].get("travel_cost_usd", 0), errors="coerce") or 0
     )
 
-    # Build name -> tech_id mapping
-    name_map = dict(getattr(config, "TECH_NAME_MAP", {}))
-    former_bases = dict(getattr(config, "HISTORICAL_FORMER_TECH_BASES", {}))
-    former_names = set(former_bases.keys())
+    def format_base_label(city, state, fallback):
+        city_text = "" if city is None or pd.isna(city) else str(city).strip()
+        state_text = "" if state is None or pd.isna(state) else str(state).strip()
+        if city_text and state_text:
+            return f"{city_text}, {state_text}"
+        if city_text:
+            return city_text
+        if state_text:
+            return state_text
+        return str(fallback or "").strip() or "Base unavailable"
 
-    # Build tech_master lookup: normalized_name_lower -> (tech_id, base_city, base_state)
-    tm_lookup = {}
-    for _, row in tech_master.iterrows():
-        tn = str(row.get("tech_name", "")).strip()
-        if tn:
-            tm_lookup[tn.lower()] = {
-                "tech_id": str(row["tech_id"]),
-                "base_city": str(row.get("base_city", "")),
-                "base_state": str(row.get("base_state", "")),
-            }
+    def source_label(source):
+        labels = {
+            "current_roster": "current base",
+            "archived_roster": "archived base",
+            "archived_region": "estimated from archived region",
+            "estimated_from_history": "estimated from service history",
+            "manual_override": "manual override",
+            "unknown": "base unavailable",
+        }
+        return labels.get(str(source), str(source or "").replace("_", " ").strip())
 
-    def resolve_tech(raw_name):
-        """Map raw Service Resource: Name to (display_name, tech_id, base_str, is_former)."""
-        canonical = name_map.get(raw_name, raw_name)
-        if canonical in former_names:
-            fb = former_bases[canonical]
-            return (
-                raw_name,
-                None,
-                f"{fb['city']}, {fb['state']}",
-                True,
-            )
-        match = tm_lookup.get(canonical.lower())
-        if match:
-            base_str = f"{match['base_city']}, {match['base_state']}"
-            return (raw_name, match["tech_id"], base_str, False)
-        return (raw_name, None, "Unknown", False)
+    def status_label(status):
+        labels = {
+            "active": "Active",
+            "former": "Former",
+            "special": "Special",
+            "unknown": "Unknown",
+        }
+        return labels.get(str(status), str(status or "").title())
 
-    # Build cost lookup: (tech_or_candidate_id, node_id) -> unit_cost_usd
     cost_lookup = {}
     for _, row in cost_table.iterrows():
         key = (str(row["tech_or_candidate_id"]), str(row["node_id"]))
@@ -1304,64 +1306,212 @@ def load_historical_data(territory_data, out_dir):
             pd.to_numeric(row.get("unit_cost_usd", 0), errors="coerce") or 0
         )
 
-    # Build node-average fallback: {node_id: mean cost across all techs}
-    node_costs = defaultdict(list)
-    for (_, nid), cost in cost_lookup.items():
-        node_costs[nid].append(cost)
-    node_avg = {nid: sum(costs) / len(costs) for nid, costs in node_costs.items()}
+    demand_appts["canonical_tech_name"] = demand_appts["Service Resource: Name"].apply(
+        canonicalize_tech_name
+    )
+    demand_appts["node_id"] = (
+        demand_appts["state_norm"].astype(str) + "__" + demand_appts["skill_class"].astype(str)
+    )
 
-    # Process each appointment
-    tech_agg = defaultdict(lambda: {
-        "appointments": 0,
-        "travel_cost_usd": 0.0,
-    })
-    tech_info = {}  # display_name -> {tech_id, base, is_former}
+    demand_prepared = prepare_demand(demand_appts)
+    demand_prepared["duration_hours"] = pd.to_numeric(
+        demand_prepared["duration_hours"], errors="coerce"
+    ).fillna(24.0 * config.HOTEL_AVG_NIGHTS)
+    node_avg_duration = demand_prepared.groupby("node_id")["duration_hours"].mean()
+    node_avg_days = (node_avg_duration / 24.0).to_dict()
 
-    for _, row in demand_appts.iterrows():
-        raw_name = str(row.get("Service Resource: Name", "")).strip()
-        if not raw_name or raw_name == "nan":
+    current_lookup = {}
+    for _, row in tech_master.iterrows():
+        canonical_name = canonicalize_tech_name(row.get("tech_name", ""))
+        if not canonical_name:
             continue
+        base_city = row.get("base_city", "")
+        base_state = row.get("base_state", "")
+        current_lookup[canonical_name] = {
+            "tech_id": str(row.get("tech_id", "")).strip(),
+            "cost_entity_id": str(row.get("tech_id", "")).strip(),
+            "status": "active",
+            "base": format_base_label(base_city, base_state, row.get("base_location_raw", "")),
+            "base_label": format_base_label(
+                base_city, base_state, row.get("base_location_raw", "")
+            ),
+            "base_source": "current_roster",
+            "base_confidence": "current",
+            "base_source_label": source_label("current_roster"),
+            "status_label": status_label("active"),
+            "source_location_raw": str(row.get("base_location_raw", "")).strip(),
+            "base_airport_iata": str(row.get("base_airport_iata", "")).strip(),
+            "base_lat": pd.to_numeric(row.get("base_lat"), errors="coerce"),
+            "base_lon": pd.to_numeric(row.get("base_lon"), errors="coerce"),
+        }
 
-        display_name, tech_id, base_str, is_former = resolve_tech(raw_name)
-
-        # Compute node_id
-        state_norm = str(row.get("state_norm", ""))
-        skill_class = str(row.get("skill_class", ""))
-        node_id = f"{state_norm}__{skill_class}"
-
-        # Look up cost
-        if tech_id:
-            cost = cost_lookup.get((tech_id, node_id))
-            if cost is None:
-                cost = node_avg.get(node_id, 0.0)
-        else:
-            cost = node_avg.get(node_id, 0.0)
-
-        tech_agg[display_name]["appointments"] += 1
-        tech_agg[display_name]["travel_cost_usd"] += cost
-
-        if display_name not in tech_info:
-            tech_info[display_name] = {
-                "tech_id": tech_id,
-                "base": base_str,
-                "is_former": is_former,
+    historical_lookup = {}
+    if not historical_roster.empty:
+        for _, row in historical_roster.iterrows():
+            canonical_name = canonicalize_tech_name(
+                row.get("tech_name", row.get("source_name", ""))
+            )
+            if not canonical_name:
+                continue
+            base_source = str(row.get("base_source", "")).strip() or "unknown"
+            status = str(row.get("status", "")).strip() or "unknown"
+            historical_lookup[canonical_name] = {
+                "tech_id": None,
+                "cost_entity_id": str(row.get("historical_tech_id", "")).strip()
+                or f"hist_{canonical_name.lower().replace(' ', '_')}",
+                "status": status,
+                "base": str(row.get("base_label", "")).strip()
+                or format_base_label(
+                    row.get("base_city", ""),
+                    row.get("base_state", ""),
+                    row.get("base_location_raw", ""),
+                ),
+                "base_label": str(row.get("base_label", "")).strip()
+                or format_base_label(
+                    row.get("base_city", ""),
+                    row.get("base_state", ""),
+                    row.get("base_location_raw", ""),
+                ),
+                "base_source": base_source,
+                "base_confidence": str(row.get("base_confidence", "")).strip() or "unknown",
+                "base_source_label": source_label(base_source),
+                "status_label": status_label(status),
+                "source_location_raw": str(row.get("base_location_raw", "")).strip(),
+                "base_airport_iata": str(row.get("base_airport_iata", "")).strip(),
+                "base_lat": pd.to_numeric(row.get("base_lat"), errors="coerce"),
+                "base_lon": pd.to_numeric(row.get("base_lon"), errors="coerce"),
             }
 
-    # Build tech_stats
+    synthetic_entities = []
+    for canonical_name, info in historical_lookup.items():
+        if canonical_name in current_lookup:
+            continue
+        if pd.isna(info["base_lat"]) or pd.isna(info["base_lon"]):
+            continue
+        synthetic_entities.append(
+            {
+                "id": info["cost_entity_id"],
+                "lat": info["base_lat"],
+                "lon": info["base_lon"],
+                "airport": info["base_airport_iata"],
+                "travel_cost_policy": config.TRAVEL_COST_POLICY_EMPLOYEE,
+                "contractor_cost_multiplier": 1.0,
+                "contractor_cost_cap_usd": np.nan,
+                "contractor_dispatch_surcharge_usd": 0.0,
+            }
+        )
+
+    synthetic_cost_lookup = {}
+    if synthetic_entities:
+        synthetic_rows = compute_entity_node_costs(
+            synthetic_entities, demand_prepared, node_avg_days=node_avg_days
+        )
+        for row in synthetic_rows:
+            synthetic_cost_lookup[
+                (str(row["tech_or_candidate_id"]), str(row["node_id"]))
+            ] = float(row["unit_cost_usd"])
+
+    resolved_cache = {}
+
+    def resolve_tech(canonical_name):
+        if canonical_name in resolved_cache:
+            return resolved_cache[canonical_name]
+        if canonical_name in current_lookup:
+            resolved_cache[canonical_name] = dict(current_lookup[canonical_name])
+            return resolved_cache[canonical_name]
+        if canonical_name in historical_lookup:
+            resolved_cache[canonical_name] = dict(historical_lookup[canonical_name])
+            return resolved_cache[canonical_name]
+        resolved_cache[canonical_name] = None
+        return None
+
+    tech_agg = defaultdict(
+        lambda: {
+            "appointments": 0,
+            "travel_cost_usd": 0.0,
+            "states": set(),
+        }
+    )
+    tech_info = {}
+    unresolved_names = set()
+    missing_costs = set()
+
+    for _, row in demand_appts.iterrows():
+        canonical_name = str(row.get("canonical_tech_name", "")).strip()
+        if not canonical_name or canonical_name == "nan":
+            continue
+
+        info = resolve_tech(canonical_name)
+        if not info:
+            unresolved_names.add(canonical_name)
+            continue
+
+        node_id = str(row.get("node_id", "")).strip()
+        if info.get("tech_id"):
+            cost = cost_lookup.get((str(info["cost_entity_id"]), node_id))
+        else:
+            cost = synthetic_cost_lookup.get((str(info["cost_entity_id"]), node_id))
+
+        if cost is None:
+            missing_costs.add((canonical_name, node_id))
+            cost = 0.0
+
+        tech_agg[canonical_name]["appointments"] += 1
+        tech_agg[canonical_name]["travel_cost_usd"] += float(cost)
+        state_norm = str(row.get("state_norm", "")).strip()
+        if state_norm and state_norm != "nan":
+            tech_agg[canonical_name]["states"].add(state_norm)
+        if canonical_name not in tech_info:
+            tech_info[canonical_name] = dict(info)
+
+    if unresolved_names:
+        print(
+            "  Historical view: unresolved tech names skipped: "
+            + ", ".join(sorted(unresolved_names))
+        )
+    if missing_costs:
+        missing_names = sorted({name for name, _ in missing_costs})
+        print(
+            "  Historical view: missing synthetic/base cost rows for: "
+            + ", ".join(missing_names)
+        )
+
     tech_stats = {}
-    for display_name, agg in tech_agg.items():
-        info = tech_info.get(display_name, {})
-        tech_stats[display_name] = {
-            "name": display_name,
-            "base": info.get("base", "Unknown"),
+    for canonical_name, agg in tech_agg.items():
+        info = tech_info.get(canonical_name, {})
+        tech_stats[canonical_name] = {
+            "name": canonical_name,
+            "base": info.get("base", "Base unavailable"),
+            "base_label": info.get("base_label", info.get("base", "Base unavailable")),
             "appointments": agg["appointments"],
             "travel_cost_usd": round(agg["travel_cost_usd"], 2),
-            "is_former": info.get("is_former", False),
+            "status": info.get("status", "unknown"),
+            "status_label": info.get("status_label", "Unknown"),
+            "is_former": info.get("status") == "former",
+            "is_special": info.get("status") == "special",
             "tech_id": info.get("tech_id"),
+            "base_source": info.get("base_source", "unknown"),
+            "base_source_label": info.get("base_source_label", "base unavailable"),
+            "base_confidence": info.get("base_confidence", "unknown"),
+            "source_location_raw": info.get("source_location_raw", ""),
+            "base_airport_iata": info.get("base_airport_iata", ""),
+            "base_lat": (
+                float(info["base_lat"])
+                if info.get("base_lat") is not None and pd.notna(info.get("base_lat"))
+                else None
+            ),
+            "base_lon": (
+                float(info["base_lon"])
+                if info.get("base_lon") is not None and pd.notna(info.get("base_lon"))
+                else None
+            ),
+            "states": sorted(agg["states"]),
         }
 
     total_travel_cost = sum(s["travel_cost_usd"] for s in tech_stats.values())
-    annualized_travel_cost = total_travel_cost / data_span_years if data_span_years > 0 else total_travel_cost
+    annualized_travel_cost = (
+        total_travel_cost / data_span_years if data_span_years > 0 else total_travel_cost
+    )
     total_appointments = sum(s["appointments"] for s in tech_stats.values())
     potential_savings = annualized_travel_cost - n0_travel_cost
 
@@ -1380,19 +1530,16 @@ def load_historical_data(territory_data, out_dir):
 def build_historical_tech_color_map(historical_data, existing_color_map):
     """Assign colors to historical techs, reusing optimization colors where possible."""
     explicit_colors = dict(getattr(config, "TECH_ASSIGNMENT_COLOR_MAP", {}))
-    former_bases = dict(getattr(config, "HISTORICAL_FORMER_TECH_BASES", {}))
-    name_map = dict(getattr(config, "TECH_NAME_MAP", {}))
     color_map = {}
 
     for display_name, stat in historical_data["tech_stats"].items():
         tech_id = stat.get("tech_id")
-        canonical = name_map.get(display_name, display_name)
-        is_former = stat.get("is_former", False)
+        canonical = canonicalize_tech_name(display_name)
+        is_historical_only = not tech_id
 
         if tech_id and tech_id in existing_color_map:
             color_map[display_name] = existing_color_map[tech_id]
-        elif is_former:
-            # Look up _hist_ prefixed color
+        elif is_historical_only:
             hist_key = "_hist_" + canonical.lower().replace(" ", "_")
             if hist_key in explicit_colors:
                 color_map[display_name] = explicit_colors[hist_key]
@@ -1411,7 +1558,10 @@ def add_historical_assignment_layer(m, territory_data, historical_data, color_ma
 
     Returns the JS layer variable name for toggling.
     """
-    demand_appts = territory_data["demand_appts"]
+    demand_appts = territory_data["demand_appts"].copy()
+    demand_appts["canonical_tech_name"] = demand_appts["Service Resource: Name"].apply(
+        canonicalize_tech_name
+    )
 
     dots_fg = folium.FeatureGroup(
         "Territory Dots Historical", show=False, control=False
@@ -1424,10 +1574,11 @@ def add_historical_assignment_layer(m, territory_data, historical_data, color_ma
             continue
 
         raw_name = str(row.get("Service Resource: Name", "")).strip()
-        if not raw_name or raw_name == "nan":
+        canonical_name = str(row.get("canonical_tech_name", "")).strip()
+        if not canonical_name or canonical_name == "nan":
             continue
 
-        color = color_map.get(raw_name, "#64748b")
+        color = color_map.get(canonical_name, "#64748b")
         stroke_color = get_assignment_dot_stroke(color, ui_preset)
 
         account = str(row.get("Account: Account Name", "N/A"))
@@ -1436,6 +1587,9 @@ def add_historical_assignment_layer(m, territory_data, historical_data, color_ma
         city = str(row.get("city", ""))
         state = str(row.get("state_norm", ""))
         skill_class = str(row.get("skill_class", ""))
+        raw_suffix = ""
+        if raw_name and raw_name != canonical_name:
+            raw_suffix = f"<br><span style='color:#64748b;'>Recorded as: {raw_name}</span>"
 
         popup_html = (
             f"<b>{account}</b><br>"
@@ -1443,7 +1597,8 @@ def add_historical_assignment_layer(m, territory_data, historical_data, color_ma
             f"Type: {service_type}<br>"
             f"Location: {city}, {state}<br>"
             f"Skill: {skill_class}<br>"
-            f"Actual tech: <b>{raw_name}</b>"
+            f"Actual tech: <b>{canonical_name}</b>"
+            f"{raw_suffix}"
         )
 
         folium.CircleMarker(
@@ -1457,60 +1612,39 @@ def add_historical_assignment_layer(m, territory_data, historical_data, color_ma
             opacity=0.95,
             stroke=True,
             popup=folium.Popup(popup_html, max_width=300),
-            tooltip=f"{raw_name}: {account}",
+            tooltip=f"{canonical_name}: {account}",
         ).add_to(dots_fg)
 
     dots_fg.add_to(m)
 
     # --- Historical home base markers for ALL techs (shown only in historical view) ---
-    tech_master = territory_data["tech_master"]
-    former_bases_cfg = dict(getattr(config, "HISTORICAL_FORMER_TECH_BASES", {}))
     bases_fg = folium.FeatureGroup(
         "Historical Tech Bases", show=False, control=False
     )
 
-    # Group techs by their base coordinates to handle co-located techs
-    base_groups = {}  # (lat, lon) -> [{"name": ..., "color": ..., "is_former": ..., ...}]
+    base_groups = {}
     for display_name, stat in historical_data["tech_stats"].items():
-        tech_id = stat.get("tech_id")
-        is_former = stat.get("is_former", False)
         appt_count = stat["appointments"]
         color = color_map.get(display_name, "#64748b")
-
-        base_lat = None
-        base_lon = None
-        base_label = stat.get("base", "Unknown")
-
-        if not is_former and tech_id:
-            # Current tech: use known base from tech_master
-            tech_row = tech_master[tech_master["tech_id"] == tech_id]
-            if not tech_row.empty:
-                r = tech_row.iloc[0]
-                if pd.notna(r.get("lat")) and pd.notna(r.get("lon")):
-                    base_lat = float(r["lat"])
-                    base_lon = float(r["lon"])
-
-        if base_lat is None:
-            # Former tech or missing coords: estimate from appointment median
-            tech_appts = demand_appts[
-                demand_appts["Service Resource: Name"].str.strip() == display_name
-            ]
-            if not tech_appts.empty:
-                base_lat = tech_appts["lat"].dropna().median()
-                base_lon = tech_appts["lon"].dropna().median()
-            if base_lat is None or pd.isna(base_lat):
-                continue
+        base_lat = stat.get("base_lat")
+        base_lon = stat.get("base_lon")
+        if base_lat is None or base_lon is None or pd.isna(base_lat) or pd.isna(base_lon):
+            continue
 
         coord_key = f"{base_lat:.4f}|{base_lon:.4f}"
         if coord_key not in base_groups:
             base_groups[coord_key] = {"lat": base_lat, "lon": base_lon, "techs": []}
-        base_groups[coord_key]["techs"].append({
-            "name": display_name,
-            "color": color,
-            "is_former": is_former,
-            "appointments": appt_count,
-            "base_label": base_label,
-        })
+        base_groups[coord_key]["techs"].append(
+            {
+                "name": display_name,
+                "color": color,
+                "status": stat.get("status", "unknown"),
+                "status_label": stat.get("status_label", "Unknown"),
+                "appointments": appt_count,
+                "base_label": stat.get("base_label", stat.get("base", "Base unavailable")),
+                "base_source_label": stat.get("base_source_label", "base unavailable"),
+            }
+        )
 
     for coord_key, group in base_groups.items():
         lat = group["lat"]
@@ -1547,9 +1681,9 @@ def add_historical_assignment_layer(m, territory_data, historical_data, color_ma
 
         roster_lines = []
         for t in sorted(techs, key=lambda x: -x["appointments"]):
-            former_tag = " (former)" if t["is_former"] else ""
             roster_lines.append(
-                f"<li><b>{t['name']}</b>{former_tag} · {t['appointments']} appointments</li>"
+                f"<li><b>{t['name']}</b> · {t['status_label']} · "
+                f"{t['base_source_label']} · {t['appointments']} appointments</li>"
             )
         popup_html = (
             f"<b>{techs[0]['base_label']}</b><br>"
@@ -2510,7 +2644,7 @@ def build_simulation_panel_markup():
         </div>
 
         <div id="hist-footnote" style="margin-top:16px;padding-top:12px;border-top:1px solid #edf2f7;font-size:11px;line-height:1.45;color:#64748b;">
-          * Former technician (approximate base location). All cost figures annualized.
+          Active techs use current bases. Former and special historical-only techs use archived bases when available; estimated bases are labeled. All cost figures annualized.
         </div>
       </div>
     </div>
@@ -3026,14 +3160,15 @@ def build_simulation_panel_script(
         listEl.innerHTML = visibleEntries.map((stat) => {{
           const color = historicalTechColors[stat.name] || "#64748b";
           const stroke = getDotStroke(color);
-          const base = stat.base ? String(stat.base) : "Base unavailable";
-          const former = stat.is_former ? " *" : "";
+          const base = stat.base_label ? String(stat.base_label) : "Base unavailable";
+          const statusLabel = stat.status_label ? String(stat.status_label) : "Unknown";
+          const baseSourceLabel = stat.base_source_label ? String(stat.base_source_label) : "base unavailable";
           return `
             <div class="coverage-row">
               <span class="coverage-dot" style="background:${{color}}; border-color:${{stroke}};"></span>
               <div>
-                <div class="coverage-name">${{stat.name}}${{former}}</div>
-                <div class="coverage-meta">${{Number(stat.appointments || 0).toFixed(0)}} appointments &middot; ${{base}}</div>
+                <div class="coverage-name">${{stat.name}}</div>
+                <div class="coverage-meta">${{Number(stat.appointments || 0).toFixed(0)}} appointments &middot; ${{base}} &middot; ${{statusLabel}} &middot; ${{baseSourceLabel}}</div>
               </div>
             </div>`;
         }}).join("");
