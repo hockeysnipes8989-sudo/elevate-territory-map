@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 import warnings
+from functools import lru_cache
 from typing import Optional
 
 import numpy as np
@@ -282,30 +284,92 @@ def get_airport_operational_zone(airport_code: object) -> dict:
     }
 
 
+@lru_cache(maxsize=1)
+def load_airport_hub_reference() -> dict[str, dict]:
+    """Load FAA-backed airport hub classes for repo airports."""
+    path = getattr(config, "FAA_HUB_CLASS_REFERENCE_CSV", "")
+    if not path or not os.path.exists(path):
+        return {}
+    df = pd.read_csv(path)
+    lookup = {}
+    for _, row in df.iterrows():
+        code = str(row.get("airport_code", "")).strip().upper()
+        if not code:
+            continue
+        lookup[code] = {
+            "faa_hub_class": str(row.get("faa_hub_class", "")).strip() or config.HUB_TIER_UNKNOWN,
+            "hub_tier": str(row.get("faa_hub_class", "")).strip() or config.HUB_TIER_UNKNOWN,
+            "hub_source": str(row.get("source", "")).strip() or "faa_reference",
+            "hub_source_year": pd.to_numeric(row.get("source_year"), errors="coerce"),
+            "cy_24_enplanements": pd.to_numeric(row.get("cy_24_enplanements"), errors="coerce"),
+        }
+    return lookup
+
+
 def build_airports_df(major_airports: list[dict]) -> pd.DataFrame:
     """Convert config.MAJOR_AIRPORTS list to dataframe."""
+    faa_lookup = load_airport_hub_reference()
+    manual_lookup = getattr(config, "AIRPORT_HUB_MANUAL_OVERRIDES", {})
     rows = []
     for ap in major_airports:
+        code = str(ap.get("code", "")).strip().upper()
         city_raw = str(ap.get("city", "")).strip()
         city_parts = [p.strip() for p in city_raw.split(",")]
         city_name = city_parts[0] if city_parts else city_raw
         state_abbr = normalize_state(city_parts[1]) if len(city_parts) > 1 else None
-        hub_tier = str(
-            ap.get("hub_tier", config.HUB_TIER_MEDIUM)
-        ).strip() or config.HUB_TIER_MEDIUM
+        hub_meta = faa_lookup.get(code)
+        if hub_meta is None:
+            manual_meta = manual_lookup.get(code)
+            if manual_meta:
+                hub_meta = {
+                    "faa_hub_class": str(
+                        manual_meta.get("faa_hub_class", manual_meta.get("hub_tier", config.HUB_TIER_UNKNOWN))
+                    ).strip()
+                    or config.HUB_TIER_UNKNOWN,
+                    "hub_tier": str(
+                        manual_meta.get("hub_tier", config.HUB_TIER_UNKNOWN)
+                    ).strip()
+                    or config.HUB_TIER_UNKNOWN,
+                    "hub_source": str(
+                        manual_meta.get("hub_source", "manual_override")
+                    ).strip()
+                    or "manual_override",
+                    "hub_source_year": pd.to_numeric(
+                        manual_meta.get("hub_source_year"), errors="coerce"
+                    ),
+                    "cy_24_enplanements": pd.to_numeric(
+                        manual_meta.get("cy_24_enplanements"), errors="coerce"
+                    ),
+                }
+            else:
+                hub_tier = str(
+                    ap.get("hub_tier", config.HUB_TIER_MEDIUM)
+                ).strip() or config.HUB_TIER_MEDIUM
+                faa_hub_class = str(ap.get("faa_hub_class", hub_tier)).strip() or hub_tier
+                hub_meta = {
+                    "faa_hub_class": faa_hub_class,
+                    "hub_tier": hub_tier,
+                    "hub_source": "airport_list_default",
+                    "hub_source_year": np.nan,
+                    "cy_24_enplanements": np.nan,
+                }
         rows.append(
             {
-                "airport_code": ap.get("code"),
+                "airport_code": code,
                 "airport_name": ap.get("name"),
                 "city_name": city_name,
                 "state_abbr": state_abbr,
                 "country": country_from_state(state_abbr),
                 "lat": float(ap.get("lat")),
                 "lon": float(ap.get("lon")),
-                "hub_tier": hub_tier,
-                "operational_zone_label": get_airport_operational_zone(ap.get("code"))["label"],
-                "operational_zone_rank": get_airport_operational_zone(ap.get("code"))["rank"],
-                "utc_offset_standard": get_airport_operational_zone(ap.get("code"))["utc_offset_standard"],
+                "faa_hub_class": hub_meta["faa_hub_class"],
+                "hub_tier": hub_meta["hub_tier"],
+                "hub_source": hub_meta["hub_source"],
+                "hub_source_year": hub_meta["hub_source_year"],
+                "cy_24_enplanements": hub_meta["cy_24_enplanements"],
+                "operational_zone_label": get_airport_operational_zone(code)["label"],
+                "operational_zone_rank": get_airport_operational_zone(code)["rank"],
+                "utc_offset_standard": get_airport_operational_zone(code)["utc_offset_standard"],
             }
         )
     df = pd.DataFrame(rows)

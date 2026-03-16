@@ -184,16 +184,35 @@ def lookup_airport_zone_fields(airport_code: object, airports_df: pd.DataFrame) 
     }
 
 
-def lookup_airport_hub_tier(airport_code: object, airports_df: pd.DataFrame) -> str:
-    """Return hub tier for an airport code using the airport table."""
+def lookup_airport_hub_fields(airport_code: object, airports_df: pd.DataFrame) -> dict:
+    """Return hub metadata for an airport code using the airport table."""
+    default_fields = {
+        "faa_hub_class": config.HUB_TIER_UNKNOWN,
+        "hub_tier": config.HUB_TIER_UNKNOWN,
+        "hub_source": "unknown",
+        "hub_source_year": np.nan,
+    }
     code = "" if airport_code is None else str(airport_code).strip().upper()
     if code:
         match = airports_df[airports_df["airport_code"] == code]
         if not match.empty:
-            value = str(match.iloc[0].get("hub_tier", "")).strip()
-            if value:
-                return value
-    return config.HUB_TIER_UNKNOWN
+            row = match.iloc[0]
+            fields = default_fields.copy()
+            for key in fields:
+                value = row.get(key)
+                if key == "hub_source_year":
+                    fields[key] = pd.to_numeric(value, errors="coerce")
+                else:
+                    text = "" if value is None else str(value).strip()
+                    if text:
+                        fields[key] = text
+            return fields
+    return default_fields
+
+
+def lookup_airport_hub_tier(airport_code: object, airports_df: pd.DataFrame) -> str:
+    """Return hub tier for an airport code using the airport table."""
+    return str(lookup_airport_hub_fields(airport_code, airports_df)["hub_tier"])
 
 
 def assignment_scope_defaults(is_contractor: bool, contractor_scope: str) -> dict:
@@ -375,7 +394,7 @@ def enrich_tech_policy_fields(
         is_contractor = employment_type == "contractor"
         scope = assignment_scope_defaults(is_contractor, contractor_scope)
         zone = lookup_airport_zone_fields(enriched.get("base_airport_iata"), airports_df)
-        hub_tier = lookup_airport_hub_tier(enriched.get("base_airport_iata"), airports_df)
+        hub_fields = lookup_airport_hub_fields(enriched.get("base_airport_iata"), airports_df)
 
         enriched["contractor_assignment_scope"] = (
             contractor_scope if is_contractor else enriched.get("contractor_assignment_scope", "")
@@ -397,7 +416,10 @@ def enrich_tech_policy_fields(
         enriched["zone_policy"] = (
             config.ZONE_POLICY_CONTRACTOR_SOFT if is_contractor else config.ZONE_POLICY_STANDARD
         )
-        enriched["base_hub_tier"] = hub_tier
+        enriched["base_faa_hub_class"] = hub_fields["faa_hub_class"]
+        enriched["base_hub_tier"] = hub_fields["hub_tier"]
+        enriched["base_hub_source"] = hub_fields["hub_source"]
+        enriched["base_hub_source_year"] = hub_fields["hub_source_year"]
         enriched["base_operational_zone_label"] = zone["operational_zone_label"]
         enriched["base_operational_zone_rank"] = zone["operational_zone_rank"]
         enriched["base_utc_offset_standard"] = zone["utc_offset_standard"]
@@ -418,8 +440,11 @@ def enrich_candidate_zone_fields(
     for _, row in candidates.iterrows():
         enriched = row.to_dict()
         zone = lookup_airport_zone_fields(enriched.get("airport_iata"), airports_df)
-        hub_tier = lookup_airport_hub_tier(enriched.get("airport_iata"), airports_df)
-        enriched["hub_tier"] = hub_tier
+        hub_fields = lookup_airport_hub_fields(enriched.get("airport_iata"), airports_df)
+        enriched["faa_hub_class"] = hub_fields["faa_hub_class"]
+        enriched["hub_tier"] = hub_fields["hub_tier"]
+        enriched["hub_source"] = hub_fields["hub_source"]
+        enriched["hub_source_year"] = hub_fields["hub_source_year"]
         enriched["operational_zone_label"] = zone["operational_zone_label"]
         enriched["operational_zone_rank"] = zone["operational_zone_rank"]
         enriched["utc_offset_standard"] = zone["utc_offset_standard"]

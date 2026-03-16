@@ -37,7 +37,7 @@ This file is the working context handoff for future chats.
   - external assignments limited to the configured nearby state set
 - Step 05 now defaults to a **stakeholder** UI mode:
   - keeps the scenario coverage dots, hire markers, and technician bases front and center
-  - exposes one quiet `Flight hubs` chip in the panel header for airport hubs
+  - exposes one quiet `Airports` chip in the panel header for airport markers
   - hides the heavier diagnostic map layers and floating legend boxes
   - supports `ELEVATE_MAP_UI_MODE=debug` for the old inspection-heavy layer set
 - Step 05 now ships three stakeholder views:
@@ -318,9 +318,12 @@ Important Step 09 framing:
 - airport-based operational zone buckets are the active Phase 1 time-zone realism proxy
 - Arizona stays pinned to a fixed Mountain operational bucket for this rule
 - hub-connectivity penalties apply only on `fly` assignments:
+  - U.S. airport classes come from FAA CY2024 passenger-enplanement categories
+  - Canadian airport classes stay on manual overrides
   - large hub: `$0`
-  - medium hub: `$75`
-  - small hub: `$150`
+  - medium hub: `$150`
+  - small hub: `$300`
+  - nonhub: `$450`
 
 ### Contractor Rules
 

@@ -11,6 +11,7 @@ from pandas.errors import EmptyDataError
 sys.path.insert(0, os.path.dirname(__file__))
 import config
 from optimization_utils import (
+    build_airports_df,
     canonicalize_tech_name,
     compute_entity_node_costs,
     haversine_miles,
@@ -65,7 +66,7 @@ def get_map_ui_preset():
         "show_hub_toggle": bool(
             getattr(config, "MAP_STAKEHOLDER_SHOW_HUB_TOGGLE", True)
         ) and stakeholder,
-        "hub_toggle_label": getattr(config, "MAP_HUB_TOGGLE_LABEL", "Flight hubs"),
+        "hub_toggle_label": getattr(config, "MAP_HUB_TOGGLE_LABEL", "Airports"),
         "show_layer_control": not stakeholder,
         "show_legends": not stakeholder,
         "panel_width_px": getattr(config, "MAP_PANEL_WIDTH_PX", 360),
@@ -690,17 +691,48 @@ def add_anchor_site_markers(m, anchor_rows, ui_preset):
 
 
 def add_airport_layer(m, ui_preset, show=True):
-    """Add major airport hub markers as a toggleable layer."""
+    """Add airport markers as a toggleable layer."""
+    def format_hub_label(value):
+        text = "" if value is None else str(value).strip()
+        if not text:
+            return "Unknown"
+        return text.replace("_", " ").title()
+
+    def format_hub_source(value):
+        source = "" if value is None else str(value).strip().lower()
+        if source == "faa_cy2024_commercial_service_enplanements":
+            return "FAA CY2024"
+        if source == "manual_canada_override":
+            return "Manual Canada override"
+        if source == "airport_list_default":
+            return "Airport list fallback"
+        if not source:
+            return "Unknown"
+        return str(value)
+
+    airports_df = build_airports_df(config.MAJOR_AIRPORTS)
     fg = folium.FeatureGroup(
-        name=f"Major Airport Hubs ({len(config.MAJOR_AIRPORTS)})",
+        name=f"Airport Network ({len(airports_df)})",
         show=show,
     )
 
-    for airport in config.MAJOR_AIRPORTS:
+    for airport in airports_df.to_dict(orient="records"):
+        hub_tier = str(airport.get("hub_tier", "")).strip()
+        hub_penalty = float(config.HUB_PENALTY_MAP.get(hub_tier, config.HUB_PENALTY_UNKNOWN))
+        city_label = str(airport.get("city_name", "")).strip()
+        state_abbr = str(airport.get("state_abbr", "") or "").strip()
+        if state_abbr:
+            city_label = f"{city_label}, {state_abbr}"
         popup_html = (
-            f"<b>{airport['code']} — {airport['name']}</b><br>"
-            f"{airport['city']}<br>"
-            f"<span style='color:#666;font-size:11px;'>Major service hub</span>"
+            f"<b>{airport['airport_code']} — {airport['airport_name']}</b><br>"
+            f"{city_label}<br>"
+            f"<span style='color:#666;font-size:11px;'>FAA class: "
+            f"{format_hub_label(airport.get('faa_hub_class'))}</span><br>"
+            f"<span style='color:#666;font-size:11px;'>Solver airport tier: "
+            f"{format_hub_label(hub_tier)} "
+            f"(${hub_penalty:,.0f} on fly trips)</span><br>"
+            f"<span style='color:#666;font-size:11px;'>Source: "
+            f"{format_hub_source(airport.get('hub_source'))}</span>"
         )
         marker_html = (
             "<div style=\""
@@ -718,7 +750,7 @@ def add_airport_layer(m, ui_preset, show=True):
         folium.Marker(
             location=[airport["lat"], airport["lon"]],
             popup=folium.Popup(popup_html, max_width=220),
-            tooltip=f"{airport['code']}: {airport['name']}",
+            tooltip=f"{airport['airport_code']}: {airport['airport_name']}",
             icon=folium.DivIcon(
                 html=marker_html,
                 icon_size=(16, 16),
@@ -2843,7 +2875,7 @@ def build_simulation_panel_markup():
           </div>
           <button id="sim-hub-toggle" class="sim-chip" type="button" style="display:none;">
             <span class="sim-chip-indicator" aria-hidden="true"></span>
-            <span id="sim-hub-toggle-label">Flight hubs</span>
+            <span id="sim-hub-toggle-label">Airports</span>
           </button>
         </div>
       </div>
@@ -4030,7 +4062,7 @@ def main():
 
     # Layer 6: Airport Hubs
     if ui_preset["include_airports"]:
-        print("Adding airport hubs...")
+        print("Adding airports...")
         airport_layer = add_airport_layer(
             m,
             ui_preset=ui_preset,

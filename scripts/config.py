@@ -7,6 +7,7 @@ import os
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RAW_DIR = os.path.join(PROJECT_ROOT, "data", "raw")
 PROCESSED_DIR = os.path.join(PROJECT_ROOT, "data", "processed")
+REFERENCE_DIR = os.path.join(PROJECT_ROOT, "data", "reference")
 DOCS_DIR = os.path.join(PROJECT_ROOT, "docs")
 OPTIMIZATION_DIR = os.path.join(PROCESSED_DIR, "optimization")
 
@@ -59,6 +60,14 @@ INSTALL_NONACTIVE_MATCHED_CSV = os.path.join(PROCESSED_DIR, "install_base_nonact
 TERRITORY_SUMMARY_CSV = os.path.join(PROCESSED_DIR, "territory_summary.csv")
 TERRITORIES_GEOJSON = os.path.join(PROCESSED_DIR, "territories.geojson")
 MAP_OUTPUT = os.path.join(DOCS_DIR, "index.html")
+FAA_HUB_CLASS_REFERENCE_CSV = os.path.join(
+    REFERENCE_DIR, "faa_cy2024_airport_hub_classes.csv"
+)
+FAA_HUB_SOURCE_YEAR = 2024
+FAA_HUB_SOURCE_URL = (
+    "https://www.faa.gov/airports/planning_capacity/passenger_allcargo_stats/"
+    "passenger/arp-cy2024-commercial-service-enplanements.xlsx"
+)
 
 # ---------------------------------------------------------------------------
 # Excel sheet names
@@ -211,15 +220,18 @@ CONTRACTOR_THREE_PLUS_ZONE_JUMP_PENALTY_USD = 1500.0
 HUB_TIER_LARGE = "large_hub"
 HUB_TIER_MEDIUM = "medium_hub"
 HUB_TIER_SMALL = "small_hub"
+HUB_TIER_NONHUB = "nonhub"
 HUB_TIER_UNKNOWN = "unknown"
 HUB_PENALTY_LARGE = 0.0
-HUB_PENALTY_MEDIUM = 75.0
-HUB_PENALTY_SMALL = 150.0
-HUB_PENALTY_UNKNOWN = 75.0
+HUB_PENALTY_MEDIUM = 150.0
+HUB_PENALTY_SMALL = 300.0
+HUB_PENALTY_NONHUB = 450.0
+HUB_PENALTY_UNKNOWN = HUB_PENALTY_MEDIUM
 HUB_PENALTY_MAP = {
     HUB_TIER_LARGE: HUB_PENALTY_LARGE,
     HUB_TIER_MEDIUM: HUB_PENALTY_MEDIUM,
     HUB_TIER_SMALL: HUB_PENALTY_SMALL,
+    HUB_TIER_NONHUB: HUB_PENALTY_NONHUB,
 }
 
 ASSIGNMENT_SCOPE_MODE_NATIONAL = "national"
@@ -390,7 +402,7 @@ MAP_CARD_RADIUS_PX = 14
 MAP_COVERAGE_ASSIGNMENTS_DEFAULT_COUNT = 6
 MAP_STAKEHOLDER_SHOW_HUB_TOGGLE = True
 MAP_STAKEHOLDER_HUBS_DEFAULT_VISIBLE = False
-MAP_HUB_TOGGLE_LABEL = "Flight hubs"
+MAP_HUB_TOGGLE_LABEL = "Airports"
 
 MAP_TECH_MARKER_COLORS = {
     "active": "#2E6F5E",
@@ -570,6 +582,30 @@ ACCOUNT_EXACT_COORD_OVERRIDES = {
 # ---------------------------------------------------------------------------
 # Major US and Canadian airports (for travel optimization layer)
 # ---------------------------------------------------------------------------
+AIRPORT_HUB_MANUAL_OVERRIDES = {
+    "YYC": {
+        "faa_hub_class": HUB_TIER_LARGE,
+        "hub_tier": HUB_TIER_LARGE,
+        "hub_source": "manual_canada_override",
+        "hub_source_year": FAA_HUB_SOURCE_YEAR,
+    },
+    "YEG": {
+        "faa_hub_class": HUB_TIER_MEDIUM,
+        "hub_tier": HUB_TIER_MEDIUM,
+        "hub_source": "manual_canada_override",
+        "hub_source_year": FAA_HUB_SOURCE_YEAR,
+    },
+    "YUL": {
+        "faa_hub_class": HUB_TIER_LARGE,
+        "hub_tier": HUB_TIER_LARGE,
+        "hub_source": "manual_canada_override",
+        "hub_source_year": FAA_HUB_SOURCE_YEAR,
+    },
+}
+
+# U.S. airport hub tiers here are fallback labels for human readability.
+# build_airports_df() overrides them from the FAA CY2024 reference table when
+# a U.S. airport code exists there. Canada stays on the manual override path.
 MAJOR_AIRPORTS = [
     # --- NORTHEAST ---
     {"code": "BOS", "name": "Boston Logan",           "city": "Boston, MA",          "lat": 42.3656, "lon": -71.0096, "hub_tier": HUB_TIER_LARGE},
@@ -585,7 +621,7 @@ MAJOR_AIRPORTS = [
     {"code": "BWI", "name": "Baltimore/Washington",   "city": "Baltimore, MD",       "lat": 39.1754, "lon": -76.6682, "hub_tier": HUB_TIER_LARGE},
     # --- SOUTHEAST ---
     {"code": "CLT", "name": "Charlotte Douglas",      "city": "Charlotte, NC",       "lat": 35.2140, "lon": -80.9431, "hub_tier": HUB_TIER_LARGE},
-    {"code": "RDU", "name": "Raleigh-Durham",         "city": "Raleigh, NC",         "lat": 35.8776, "lon": -78.7875, "hub_tier": HUB_TIER_LARGE},
+    {"code": "RDU", "name": "Raleigh-Durham",         "city": "Raleigh, NC",         "lat": 35.8776, "lon": -78.7875, "hub_tier": HUB_TIER_MEDIUM},
     {"code": "ATL", "name": "Atlanta Hartsfield",     "city": "Atlanta, GA",         "lat": 33.6407, "lon": -84.4277, "hub_tier": HUB_TIER_LARGE},
     {"code": "MCO", "name": "Orlando Intl",           "city": "Orlando, FL",         "lat": 28.4312, "lon": -81.3081, "hub_tier": HUB_TIER_LARGE},
     {"code": "TPA", "name": "Tampa Intl",             "city": "Tampa, FL",           "lat": 27.9755, "lon": -82.5332, "hub_tier": HUB_TIER_LARGE},
@@ -599,33 +635,33 @@ MAJOR_AIRPORTS = [
     {"code": "CMH", "name": "Columbus Intl",          "city": "Columbus, OH",        "lat": 39.9980, "lon": -82.8919, "hub_tier": HUB_TIER_MEDIUM},
     {"code": "CVG", "name": "Cincinnati/N. Kentucky", "city": "Cincinnati, OH",      "lat": 39.0488, "lon": -84.6678, "hub_tier": HUB_TIER_MEDIUM},
     {"code": "IND", "name": "Indianapolis Intl",      "city": "Indianapolis, IN",    "lat": 39.7173, "lon": -86.2944, "hub_tier": HUB_TIER_MEDIUM},
-    {"code": "MKE", "name": "Milwaukee Mitchell",     "city": "Milwaukee, WI",       "lat": 42.9472, "lon": -87.8966, "hub_tier": HUB_TIER_LARGE},
+    {"code": "MKE", "name": "Milwaukee Mitchell",     "city": "Milwaukee, WI",       "lat": 42.9472, "lon": -87.8966, "hub_tier": HUB_TIER_MEDIUM},
     {"code": "MSP", "name": "Minneapolis-St. Paul",   "city": "Minneapolis, MN",     "lat": 44.8848, "lon": -93.2223, "hub_tier": HUB_TIER_LARGE},
-    {"code": "STL", "name": "St. Louis Lambert",      "city": "St. Louis, MO",       "lat": 38.7487, "lon": -90.3700, "hub_tier": HUB_TIER_LARGE},
+    {"code": "STL", "name": "St. Louis Lambert",      "city": "St. Louis, MO",       "lat": 38.7487, "lon": -90.3700, "hub_tier": HUB_TIER_MEDIUM},
     {"code": "MCI", "name": "Kansas City Intl",       "city": "Kansas City, MO",     "lat": 39.2976, "lon": -94.7139, "hub_tier": HUB_TIER_MEDIUM},
-    {"code": "ICT", "name": "Wichita Eisenhower",     "city": "Wichita, KS",         "lat": 37.6499, "lon": -97.4331, "hub_tier": HUB_TIER_MEDIUM},
+    {"code": "ICT", "name": "Wichita Eisenhower",     "city": "Wichita, KS",         "lat": 37.6499, "lon": -97.4331, "hub_tier": HUB_TIER_SMALL},
     {"code": "OMA", "name": "Omaha Eppley",           "city": "Omaha, NE",           "lat": 41.3032, "lon": -95.8940, "hub_tier": HUB_TIER_MEDIUM},
     {"code": "DSM", "name": "Des Moines Intl",        "city": "Des Moines, IA",      "lat": 41.5340, "lon": -93.6631, "hub_tier": HUB_TIER_SMALL},
     # --- SOUTH / GULF COAST ---
     {"code": "BNA", "name": "Nashville Intl",         "city": "Nashville, TN",       "lat": 36.1245, "lon": -86.6782, "hub_tier": HUB_TIER_LARGE},
-    {"code": "MEM", "name": "Memphis Intl",           "city": "Memphis, TN",         "lat": 35.0424, "lon": -89.9767, "hub_tier": HUB_TIER_MEDIUM},
+    {"code": "MEM", "name": "Memphis Intl",           "city": "Memphis, TN",         "lat": 35.0424, "lon": -89.9767, "hub_tier": HUB_TIER_SMALL},
     {"code": "BHM", "name": "Birmingham Shuttlesworth","city": "Birmingham, AL",     "lat": 33.5629, "lon": -86.7527, "hub_tier": HUB_TIER_SMALL},
     {"code": "MSY", "name": "New Orleans Intl",       "city": "New Orleans, LA",     "lat": 29.9934, "lon": -90.2580, "hub_tier": HUB_TIER_MEDIUM},
-    {"code": "SHV", "name": "Shreveport Regional",    "city": "Shreveport, LA",      "lat": 32.4466, "lon": -93.8261, "hub_tier": HUB_TIER_SMALL},
+    {"code": "SHV", "name": "Shreveport Regional",    "city": "Shreveport, LA",      "lat": 32.4466, "lon": -93.8261, "hub_tier": HUB_TIER_NONHUB},
     {"code": "IAH", "name": "Houston Intercontinental","city": "Houston, TX",        "lat": 29.9902, "lon": -95.3368, "hub_tier": HUB_TIER_LARGE},
     {"code": "SAT", "name": "San Antonio Intl",       "city": "San Antonio, TX",     "lat": 29.5337, "lon": -98.4698, "hub_tier": HUB_TIER_MEDIUM},
     {"code": "AUS", "name": "Austin-Bergstrom",       "city": "Austin, TX",          "lat": 30.1975, "lon": -97.6664, "hub_tier": HUB_TIER_LARGE},
     {"code": "DFW", "name": "Dallas/Fort Worth",      "city": "Dallas, TX",          "lat": 32.8998, "lon": -97.0403, "hub_tier": HUB_TIER_LARGE},
-    {"code": "OKC", "name": "Oklahoma City Will Rogers","city": "Oklahoma City, OK", "lat": 35.3931, "lon": -97.6007, "hub_tier": HUB_TIER_MEDIUM},
-    {"code": "TUL", "name": "Tulsa Intl",             "city": "Tulsa, OK",           "lat": 36.1984, "lon": -95.8881, "hub_tier": HUB_TIER_MEDIUM},
+    {"code": "OKC", "name": "Oklahoma City Will Rogers","city": "Oklahoma City, OK", "lat": 35.3931, "lon": -97.6007, "hub_tier": HUB_TIER_SMALL},
+    {"code": "TUL", "name": "Tulsa Intl",             "city": "Tulsa, OK",           "lat": 36.1984, "lon": -95.8881, "hub_tier": HUB_TIER_SMALL},
     {"code": "LIT", "name": "Little Rock National",   "city": "Little Rock, AR",     "lat": 34.7294, "lon": -92.2242, "hub_tier": HUB_TIER_SMALL},
     # --- PLAINS / MOUNTAIN ---
     {"code": "DEN", "name": "Denver Intl",            "city": "Denver, CO",          "lat": 39.8561, "lon": -104.6737, "hub_tier": HUB_TIER_LARGE},
     {"code": "ABQ", "name": "Albuquerque Sunport",    "city": "Albuquerque, NM",     "lat": 35.0402, "lon": -106.6090, "hub_tier": HUB_TIER_MEDIUM},
     {"code": "SLC", "name": "Salt Lake City Intl",    "city": "Salt Lake City, UT",  "lat": 40.7899, "lon": -111.9791, "hub_tier": HUB_TIER_LARGE},
-    {"code": "BIL", "name": "Billings Logan",         "city": "Billings, MT",        "lat": 45.8077, "lon": -108.5428, "hub_tier": HUB_TIER_SMALL},
+    {"code": "BIL", "name": "Billings Logan",         "city": "Billings, MT",        "lat": 45.8077, "lon": -108.5428, "hub_tier": HUB_TIER_NONHUB},
     {"code": "FAR", "name": "Fargo Hector",           "city": "Fargo, ND",           "lat": 46.9207, "lon": -96.8158, "hub_tier": HUB_TIER_SMALL},
-    {"code": "BIS", "name": "Bismarck Municipal",     "city": "Bismarck, ND",        "lat": 46.7727, "lon": -100.7467, "hub_tier": HUB_TIER_SMALL},
+    {"code": "BIS", "name": "Bismarck Municipal",     "city": "Bismarck, ND",        "lat": 46.7727, "lon": -100.7467, "hub_tier": HUB_TIER_NONHUB},
     {"code": "YYC", "name": "Calgary Intl",           "city": "Calgary, AB",         "lat": 51.1315, "lon": -114.0106, "hub_tier": HUB_TIER_LARGE},
     {"code": "YEG", "name": "Edmonton Intl",          "city": "Edmonton, AB",        "lat": 53.3097, "lon": -113.5800, "hub_tier": HUB_TIER_MEDIUM},
     {"code": "YUL", "name": "Montreal-Trudeau",       "city": "Montreal, QC",        "lat": 45.4706, "lon": -73.7408, "hub_tier": HUB_TIER_LARGE},
@@ -642,7 +678,7 @@ MAJOR_AIRPORTS = [
     # --- PACIFIC NORTHWEST ---
     {"code": "SEA", "name": "Seattle-Tacoma",         "city": "Seattle, WA",         "lat": 47.4502, "lon": -122.3088, "hub_tier": HUB_TIER_LARGE},
     {"code": "PDX", "name": "Portland Intl",          "city": "Portland, OR",        "lat": 45.5898, "lon": -122.5951, "hub_tier": HUB_TIER_MEDIUM},
-    {"code": "BOI", "name": "Boise Airport",          "city": "Boise, ID",           "lat": 43.5644, "lon": -116.2228, "hub_tier": HUB_TIER_SMALL},
+    {"code": "BOI", "name": "Boise Airport",          "city": "Boise, ID",           "lat": 43.5644, "lon": -116.2228, "hub_tier": HUB_TIER_MEDIUM},
     {"code": "ANC", "name": "Anchorage Intl",         "city": "Anchorage, AK",       "lat": 61.1744, "lon": -149.9963, "hub_tier": HUB_TIER_MEDIUM},
 ]
 

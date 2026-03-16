@@ -50,6 +50,25 @@ class HubPenaltyTests(unittest.TestCase):
 
         self.assertEqual(airports_df.loc["AAA", "hub_tier"], config.HUB_TIER_SMALL)
         self.assertEqual(airports_df.loc["BBB", "hub_tier"], config.HUB_TIER_MEDIUM)
+        self.assertEqual(airports_df.loc["AAA", "faa_hub_class"], config.HUB_TIER_SMALL)
+        self.assertEqual(airports_df.loc["BBB", "hub_source"], "airport_list_default")
+
+    def test_repo_airports_use_faa_reference_and_manual_overrides(self):
+        airports_df = build_airports_df(config.MAJOR_AIRPORTS).set_index("airport_code")
+
+        self.assertEqual(airports_df.loc["MKE", "faa_hub_class"], config.HUB_TIER_MEDIUM)
+        self.assertEqual(airports_df.loc["MKE", "hub_tier"], config.HUB_TIER_MEDIUM)
+        self.assertEqual(
+            airports_df.loc["MKE", "hub_source"],
+            "faa_cy2024_commercial_service_enplanements",
+        )
+
+        self.assertEqual(airports_df.loc["SHV", "faa_hub_class"], config.HUB_TIER_NONHUB)
+        self.assertEqual(airports_df.loc["SHV", "hub_tier"], config.HUB_TIER_NONHUB)
+
+        self.assertEqual(airports_df.loc["YYC", "faa_hub_class"], config.HUB_TIER_LARGE)
+        self.assertEqual(airports_df.loc["YYC", "hub_tier"], config.HUB_TIER_LARGE)
+        self.assertEqual(airports_df.loc["YYC", "hub_source"], "manual_canada_override")
 
     def test_enrich_fields_attach_hub_tier_metadata(self):
         airports_df = build_airports_df(config.MAJOR_AIRPORTS)
@@ -85,14 +104,38 @@ class HubPenaltyTests(unittest.TestCase):
             config.HUB_TIER_SMALL,
         )
         self.assertEqual(
+            tech_enriched.iloc[0]["base_faa_hub_class"],
+            config.HUB_TIER_SMALL,
+        )
+        self.assertEqual(
+            tech_enriched.iloc[0]["base_hub_source"],
+            "faa_cy2024_commercial_service_enplanements",
+        )
+        self.assertEqual(
             candidate_enriched.iloc[0]["hub_tier"],
             config.HUB_TIER_LARGE,
+        )
+        self.assertEqual(
+            candidate_enriched.iloc[0]["faa_hub_class"],
+            config.HUB_TIER_LARGE,
+        )
+        self.assertEqual(
+            candidate_enriched.iloc[0]["hub_source"],
+            "faa_cy2024_commercial_service_enplanements",
         )
 
     def test_evaluate_hub_penalty_is_flight_only(self):
         self.assertEqual(
+            step08.evaluate_hub_penalty(config.HUB_TIER_MEDIUM, "fly"),
+            config.HUB_PENALTY_MEDIUM,
+        )
+        self.assertEqual(
             step08.evaluate_hub_penalty(config.HUB_TIER_SMALL, "fly"),
             config.HUB_PENALTY_SMALL,
+        )
+        self.assertEqual(
+            step08.evaluate_hub_penalty(config.HUB_TIER_NONHUB, "fly"),
+            config.HUB_PENALTY_NONHUB,
         )
         self.assertEqual(
             step08.evaluate_hub_penalty(config.HUB_TIER_SMALL, "drive_day"),
@@ -180,7 +223,7 @@ class HubPenaltyTests(unittest.TestCase):
 
         self.assertEqual(summary["travel_cost_usd"], 100.0)
         self.assertEqual(summary["hub_penalty_usd"], config.HUB_PENALTY_SMALL)
-        self.assertEqual(summary["modeled_total_cost_usd"], 250.0)
+        self.assertEqual(summary["modeled_total_cost_usd"], 400.0)
         self.assertEqual(new_assignments.iloc[0]["unit_hub_penalty_usd"], config.HUB_PENALTY_SMALL)
         self.assertEqual(new_assignments.iloc[0]["total_hub_penalty_usd"], config.HUB_PENALTY_SMALL)
 

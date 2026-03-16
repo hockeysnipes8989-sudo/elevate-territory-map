@@ -16,7 +16,7 @@ Interactive US/Canada service map plus a hiring and dispatch optimization pipeli
 
 Step 05 now builds a **stakeholder-first** map by default:
 - visible by default: scenario coverage dots, selected-scenario hire markers, technician home bases
-- visible control: one small `Flight hubs` chip in the panel header for airport hubs
+- visible control: one small `Airports` chip in the panel header for airport markers
 - hidden from the stakeholder build: the heavier diagnostic layers and legend boxes
 - optional internal debug view: set `ELEVATE_MAP_UI_MODE=debug` before running `scripts/05_generate_map.py`
 - anchored tech sites such as **Morgan State University** can now be shown directly on the map
@@ -123,7 +123,7 @@ Step 06 current-roster sourcing:
 - HTX contractors use a compressed-and-capped travel-cost proxy plus a dispatch surcharge
 - Standard employees and new hires are free at `0-1` operational zone jumps, penalized at `2`, and blocked at `3+`
 - Contractors use a softer operational-zone rule: free at `0-1`, penalized at `2`, heavily penalized at `3+`
-- Step 08 also adds a small airport-connectivity hub penalty on `fly` assignments from weaker origin airports
+- Step 08 also adds an FAA-backed airport-connectivity penalty on `fly` assignments from weaker origin airports
 - Anchored technicians can reserve part of their FTE at a named site while limiting their remaining field work to an explicit nearby state set
 
 ## Step 08 Capacity Logic

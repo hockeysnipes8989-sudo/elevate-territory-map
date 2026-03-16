@@ -1334,10 +1334,17 @@ def main() -> None:
         ),
         "hub_connectivity_penalty": {
             "applies_to_trip_mode": "fly_only",
+            "classification_source": {
+                "us_airports": "faa_cy2024_commercial_service_enplanements",
+                "source_year": getattr(config, "FAA_HUB_SOURCE_YEAR", None),
+                "source_url": getattr(config, "FAA_HUB_SOURCE_URL", ""),
+                "canadian_airports": "manual_canada_override",
+            },
             "tier_penalties_usd_per_appointment": {
                 "large_hub": config.HUB_PENALTY_LARGE,
                 "medium_hub": config.HUB_PENALTY_MEDIUM,
                 "small_hub": config.HUB_PENALTY_SMALL,
+                "nonhub": config.HUB_PENALTY_NONHUB,
                 "unknown": config.HUB_PENALTY_UNKNOWN,
             },
         },
