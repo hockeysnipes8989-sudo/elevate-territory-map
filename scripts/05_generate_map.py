@@ -155,19 +155,38 @@ def exclude_inactive_technicians(techs):
     return filtered.copy()
 
 
-def build_plus_marker_html(color, hires_allocated=1.0):
+def build_plus_marker_html(color, hires_allocated=1.0, highlight=False):
     """Return Blank-Slate-style plus-marker HTML for a single colored marker."""
     hires = max(float(hires_allocated), 1.0)
     diameter = int(max(24, min(44, 20 + 6 * hires)))
     font_size = int(max(13, min(24, 11 + 3 * hires)))
+    highlight_html = ""
+    if highlight:
+        glow_size = diameter + 12
+        highlight_html = (
+            "<div style=\""
+            "position:absolute;left:50%;top:50%;"
+            f"width:{glow_size}px;height:{glow_size}px;"
+            "transform:translate(-50%,-50%) rotate(-6deg);"
+            "border-radius:999px;background:rgba(250, 204, 21, 0.62);"
+            "filter:blur(1px);box-shadow:0 0 0 2px rgba(253, 224, 71, 0.18);"
+            "z-index:0;"
+            "\"></div>"
+        )
     marker_html = (
         "<div style=\""
-        f"width:{diameter}px;height:{diameter}px;border-radius:50%;"
+        "position:relative;display:flex;align-items:center;justify-content:center;"
+        f"width:{diameter}px;height:{diameter}px;"
+        "\">"
+        f"{highlight_html}"
+        "<div style=\""
+        f"position:relative;z-index:1;width:{diameter}px;height:{diameter}px;border-radius:50%;"
         f"background:{color};border:2px solid #fff;color:#fff;"
         "display:flex;align-items:center;justify-content:center;"
         f"font-size:{font_size}px;font-weight:700;"
         "box-shadow:0 10px 18px rgba(15,23,42,0.28);"
         "\">&#10010;</div>"
+        "</div>"
     )
     return marker_html, diameter
 
@@ -2396,6 +2415,7 @@ def add_simulation_layers(
     default_visible_key=None,
     marker_color_map=None,
     layer_name_prefix="Simulation Scenario",
+    highlight_markers=False,
 ):
     """Add one marker layer per simulation scenario and return layer JS names."""
     if not simulation_payload:
@@ -2423,17 +2443,10 @@ def add_simulation_layers(
                 (marker_color_map or {}).get(p.get("candidate_id"))
                 or default_color
             )
-            hires = max(float(p["hires_allocated"]), 1.0)
-            diameter = int(max(24, min(44, 20 + 6 * hires)))
-            font_size = int(max(13, min(24, 11 + 3 * hires)))
-            marker_html = (
-                "<div style=\""
-                f"width:{diameter}px;height:{diameter}px;border-radius:50%;"
-                f"background:{color};border:2px solid #fff;color:#fff;"
-                f"display:flex;align-items:center;justify-content:center;"
-                f"font-size:{font_size}px;font-weight:700;"
-                "box-shadow:0 10px 18px rgba(15,23,42,0.28);"
-                "\">&#10010;</div>"
+            marker_html, _ = build_plus_marker_html(
+                color,
+                hires_allocated=p["hires_allocated"],
+                highlight=highlight_markers,
             )
             popup_html = (
                 f"<b>Scenario N={scenario}</b><br>"
@@ -4232,7 +4245,12 @@ def main():
                     ),
                 }
 
-            scenario_layer_names = add_simulation_layers(m, simulation_payload, ui_preset)
+            scenario_layer_names = add_simulation_layers(
+                m,
+                simulation_payload,
+                ui_preset,
+                highlight_markers=True,
+            )
             add_simulation_panel(
                 m, simulation_payload, scenario_layer_names,
                 territory_layer_names=territory_layer_info,
