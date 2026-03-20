@@ -1690,7 +1690,13 @@ def load_historical_data(territory_data, out_dir):
     if n0_rows.empty:
         print(f"  Historical view: no N=0 row in {history_summary_source}, skipping.")
         return None
-    n0_travel_cost = safe_number(n0_rows.iloc[0].get("travel_cost_usd", 0), default=0.0)
+    n0_total_cost = safe_number(
+        n0_rows.iloc[0].get(
+            "economic_total_with_overhead_usd",
+            n0_rows.iloc[0].get("modeled_total_cost_usd", 0),
+        ),
+        default=0.0,
+    )
     n0_solver_proven_optimal = safe_number(
         n0_rows.iloc[0].get("solver_proven_optimal", 0),
         default=0.0,
@@ -1945,7 +1951,7 @@ def load_historical_data(territory_data, out_dir):
         total_travel_cost / data_span_years if data_span_years > 0 else total_travel_cost
     )
     total_appointments = sum(s["appointments"] for s in tech_stats.values())
-    potential_savings = annualized_travel_cost - n0_travel_cost
+    potential_savings = annualized_travel_cost - n0_total_cost
 
     return {
         "tech_stats": tech_stats,
@@ -1953,7 +1959,7 @@ def load_historical_data(territory_data, out_dir):
         "unique_techs": len(tech_stats),
         "total_travel_cost_usd": round(total_travel_cost, 2),
         "annualized_travel_cost_usd": round(annualized_travel_cost, 2),
-        "n0_optimized_travel_cost_usd": round(n0_travel_cost, 2),
+        "n0_optimized_total_cost_usd": round(n0_total_cost, 2),
         "potential_savings_usd": round(potential_savings, 2),
         "data_span_years": data_span_years,
         "n0_solver_proven_optimal": n0_solver_proven_optimal,
@@ -3759,7 +3765,7 @@ def build_simulation_panel_script(
         const savingsEl = document.getElementById("hist-kpi-savings");
         if (apptsEl) apptsEl.textContent = Number(historicalData.total_appointments || 0).toLocaleString();
         if (costEl) costEl.textContent = money(historicalData.annualized_travel_cost_usd);
-        if (optimizedEl) optimizedEl.textContent = money(historicalData.n0_optimized_travel_cost_usd);
+        if (optimizedEl) optimizedEl.textContent = money(historicalData.n0_optimized_total_cost_usd);
         if (savingsEl) {{
           const savings = Number(historicalData.potential_savings_usd || 0);
           savingsEl.textContent = savings < 0 ? signedMoney(savings) : money(savings);
