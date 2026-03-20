@@ -3815,25 +3815,16 @@ def build_simulation_panel_script(
           return;
         }}
         listEl.innerHTML = blankSlateData.placements.map((p) => {{
+          const color = p.color || {json.dumps(ui_preset["new_hire_marker_color"])};
+          const stroke = getDotStroke(color);
+          const cityLabel = `${{p.city}}, ${{p.state}} (${{p.airport_iata}})`;
+          const appointments = Number(p.assigned_appointments || 0).toFixed(0);
           return `
-            <div class="sim-rec-row">
-              <div class="sim-rec-top">
-                <div class="sim-rec-city">${{p.city}}, ${{p.state}}</div>
-                <span class="sim-airport-chip">${{p.airport_iata}}</span>
-              </div>
-              <div class="sim-rec-stats">
-                <div>
-                  <span class="sim-stat-label">Hires</span>
-                  <span class="sim-stat-value">${{Math.round(p.hires_allocated || 0)}}</span>
-                </div>
-                <div>
-                  <span class="sim-stat-label">Hours</span>
-                  <span class="sim-stat-value">${{Number(p.assigned_hours || 0).toFixed(1)}}</span>
-                </div>
-                <div>
-                  <span class="sim-stat-label">Appointments</span>
-                  <span class="sim-stat-value">${{Number(p.assigned_appointments || 0).toFixed(1)}}</span>
-                </div>
+            <div class="coverage-row">
+              <span class="coverage-dot" style="background:${{color}}; border-color:${{stroke}};"></span>
+              <div>
+                <div class="coverage-name">${{cityLabel}}</div>
+                <div class="coverage-meta">${{appointments}} appointments</div>
               </div>
             </div>`;
         }}).join("");
@@ -4251,6 +4242,16 @@ def main():
                     blank_slate_dots_info = blank_slate_dots.get(
                         str(blank_slate_data["scenario_hires"])
                     )
+                if blank_slate_color_map:
+                    colored_placements = []
+                    for placement in blank_slate_data["placements"]:
+                        placement_with_color = dict(placement)
+                        placement_with_color["color"] = (
+                            blank_slate_color_map.get(placement.get("candidate_id"))
+                            or ui_preset["new_hire_marker_color"]
+                        )
+                        colored_placements.append(placement_with_color)
+                    blank_slate_data["placements"] = colored_placements
                 blank_slate_payload = {
                     str(blank_slate_data["scenario_hires"]): {
                         "scenario_hires": blank_slate_data["scenario_hires"],
