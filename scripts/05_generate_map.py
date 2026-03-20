@@ -1238,6 +1238,7 @@ def load_blank_slate_data():
         "scenario_hires": scenario,
         "data_span_years": data_span_years,
         "total_appointments": int(round(safe_number(row.get("total_appointments", 0)))),
+        "travel_cost_usd": round(safe_number(row.get("travel_cost_usd", 0)), 2),
         "annualized_total_cost_usd": round(annualize(total_cost_raw), 2),
         "annualized_travel_cost_usd": round(annualize(row.get("travel_cost_usd", 0)), 2),
         "annualized_hire_cost_usd": round(annualize(row.get("hire_cost_usd", 0)), 2),
@@ -3143,18 +3144,19 @@ def build_simulation_panel_markup():
 
         <div class="sim-section">
           <h3 class="sim-section-heading">Modeled Cost</h3>
+          <p class="sim-section-caption">Travel cost only, excludes hire payroll</p>
           <div class="hist-kpi-grid">
             <div class="sim-kpi">
               <div class="label">Total Appointments</div>
               <div class="value" id="blank-kpi-appts">&mdash;</div>
             </div>
             <div class="sim-kpi">
-              <div class="label">Annualized Total Cost</div>
-              <div class="value" id="blank-kpi-total">&mdash;</div>
+              <div class="label">Est. Total Travel Cost</div>
+              <div class="value" id="blank-kpi-travel-total">&mdash;</div>
             </div>
             <div class="sim-kpi">
-              <div class="label">Annualized Travel Cost</div>
-              <div class="value" id="blank-kpi-travel">&mdash;</div>
+              <div class="label">Est. Annual Travel Cost</div>
+              <div class="value" id="blank-kpi-travel-annual">&mdash;</div>
             </div>
             <div class="sim-kpi">
               <div class="label">Placements</div>
@@ -3760,12 +3762,12 @@ def build_simulation_panel_script(
       function renderBlankSlateKpis() {{
         if (!blankSlateData) return;
         const apptsEl = document.getElementById("blank-kpi-appts");
-        const totalEl = document.getElementById("blank-kpi-total");
-        const travelEl = document.getElementById("blank-kpi-travel");
+        const totalTravelEl = document.getElementById("blank-kpi-travel-total");
+        const annualTravelEl = document.getElementById("blank-kpi-travel-annual");
         const placementsEl = document.getElementById("blank-kpi-placements");
         if (apptsEl) apptsEl.textContent = Number(blankSlateData.total_appointments || 0).toLocaleString();
-        if (totalEl) totalEl.textContent = money(blankSlateData.annualized_total_cost_usd);
-        if (travelEl) travelEl.textContent = money(blankSlateData.annualized_travel_cost_usd);
+        if (totalTravelEl) totalTravelEl.textContent = money(blankSlateData.travel_cost_usd);
+        if (annualTravelEl) annualTravelEl.textContent = money(blankSlateData.annualized_travel_cost_usd);
         if (placementsEl) placementsEl.textContent = Number(blankSlateData.total_placements || 0).toLocaleString();
       }}
 
