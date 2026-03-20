@@ -172,7 +172,7 @@ BTS_RAW_ITINERARY_FARES = {
     "TUL": 435.94, "TUS": 434.60,
 }
 BTS_NATIONAL_FALLBACK = 386.00       # Q2 2025 US domestic average itinerary fare
-CORPORATE_TRAVEL_PREMIUM = 1.6       # Navan median $633 / BTS avg $386
+CORPORATE_TRAVEL_PREMIUM = 1.92      # Align modeled airfare with observed Navan average
 
 # Canceled/voided booking overhead. Set to $0 because Navan export covers only
 # ~2 of 16 technicians — the observed $35,632 is not representative of the full
