@@ -241,7 +241,6 @@ def main() -> None:
     require_file(assumptions_path)
 
     summary = pd.read_csv(summary_path).sort_values("scenario_hires").reset_index(drop=True)
-    placements = pd.read_csv(placements_path)
     util = pd.read_csv(util_path)
     contractor_usage = (
         pd.read_csv(contractor_usage_path) if contractor_usage_path.exists() else pd.DataFrame()
@@ -446,61 +445,6 @@ def main() -> None:
         summary[f"roi_{label}_pct"] = summary["roi_install_pct"]
         summary[f"break_even_installations_{label}"] = summary["break_even_install_units"]
 
-    if "solver_proven_optimal" in summary.columns:
-        proven_mask = pd.to_numeric(summary["solver_proven_optimal"], errors="coerce").eq(1)
-        proven = summary[proven_mask].copy()
-    else:
-        proven = pd.DataFrame()
-
-    if not proven.empty:
-        selection_mode = "proven_optimal_only"
-        best_idx = proven["economic_total_with_overhead_usd"].idxmin()
-        best_row = proven.loc[best_idx]
-    else:
-        selection_mode = "all_scenarios_no_proven_optimal"
-        best_idx = summary["economic_total_with_overhead_usd"].idxmin()
-        best_row = summary.loc[best_idx]
-    best_hires = int(best_row["scenario_hires"])
-    observed_best_idx = summary["economic_total_with_overhead_usd"].idxmin()
-    observed_best_row = summary.loc[observed_best_idx]
-    observed_best_hires = int(observed_best_row["scenario_hires"])
-
-    best_placements = placements[placements["scenario_hires"] == best_hires].copy()
-    if best_placements.empty:
-        recommended = pd.DataFrame(
-            columns=[
-                "scenario_hires",
-                "candidate_id",
-                "city",
-                "state",
-                "airport_iata",
-                "hires_allocated",
-                "assigned_appointments",
-                "assigned_hours",
-                "share_of_total_newhire_hours",
-            ]
-        )
-    else:
-        total_new_hours = float(best_placements["assigned_hours"].sum())
-        best_placements["share_of_total_newhire_hours"] = np.where(
-            total_new_hours > 0,
-            best_placements["assigned_hours"] / total_new_hours,
-            0.0,
-        )
-        recommended = best_placements.sort_values(
-            ["hires_allocated", "assigned_hours"], ascending=[False, False]
-        )
-
-    util_best = util[util["scenario_hires"] == best_hires].copy()
-    contractor_best = contractor_usage[
-        contractor_usage["scenario_hires"] == best_hires
-    ].copy() if not contractor_usage.empty else pd.DataFrame()
-    util_metrics = {
-        "mean_utilization": float(util_best["utilization"].mean()) if not util_best.empty else np.nan,
-        "max_utilization": float(util_best["utilization"].max()) if not util_best.empty else np.nan,
-        "num_over_95pct": int((util_best["utilization"] > 0.95).sum()) if not util_best.empty else 0,
-    }
-
     scenario_family = build_scenario_family_breakdown(summary, forward_mix, family_economics)
     scenario_family_out = out_dir / "scenario_install_upside_by_family.csv"
     scenario_family.to_csv(scenario_family_out, index=False)
@@ -513,24 +457,35 @@ def main() -> None:
         .reset_index(name="rows")
     )
     special_tech_constraints = assumptions.get("special_tech_constraints", [])
+    scenario_hires_list = [int(v) for v in summary["scenario_hires"].tolist()]
+    scenario_labels = ", ".join(f"N={scenario}" for scenario in scenario_hires_list)
+    utilization_metrics_by_scenario = []
+    for scenario_hires in scenario_hires_list:
+        util_scenario = util[util["scenario_hires"] == scenario_hires].copy()
+        utilization_metrics_by_scenario.append(
+            {
+                "scenario_hires": scenario_hires,
+                "mean_utilization": float(util_scenario["utilization"].mean())
+                if not util_scenario.empty
+                else np.nan,
+                "max_utilization": float(util_scenario["utilization"].max())
+                if not util_scenario.empty
+                else np.nan,
+                "num_over_95pct": int((util_scenario["utilization"] > 0.95).sum())
+                if not util_scenario.empty
+                else 0,
+            }
+        )
 
     report = {
         "data_span_years": data_span_years,
         "annualization_note": f"All figures annualized from {data_span_years:.2f}-year data period",
-        "best_scenario_hires": best_hires,
-        "selection_mode": selection_mode,
+        "scenario_hires_analyzed": scenario_hires_list,
         "full_cost_model_active": bool(assumptions.get("full_cost_model", False)),
         "input_provenance": input_provenance,
         "baseline_n0_solver": baseline_solver,
-        "best_total_cost_with_overhead_usd": float(best_row["economic_total_with_overhead_usd"]),
-        "lowest_observed_cost_hires": observed_best_hires,
-        "lowest_observed_cost_with_overhead_usd": float(observed_best_row["economic_total_with_overhead_usd"]),
         "baseline_n0_cost_with_overhead_usd": base_cost,
-        "best_savings_vs_n0_usd": float(base_cost - best_row["economic_total_with_overhead_usd"]),
-        "best_savings_vs_n0_pct": float(
-            (base_cost - best_row["economic_total_with_overhead_usd"]) / base_cost * 100.0
-        ) if base_cost > 0 else 0.0,
-        "utilization_metrics_best_scenario": util_metrics,
+        "utilization_metrics_by_scenario": utilization_metrics_by_scenario,
         "assumptions": assumptions,
         "special_tech_constraints": special_tech_constraints,
         "install_model_assumptions": install_model.assumptions,
@@ -561,7 +516,7 @@ def main() -> None:
             ),
         },
         "capacity_model_time_unit": config.PATIENT_SIM_CAPACITY_TIME_UNIT,
-        "contractor_usage_best_scenario": df_records(contractor_best),
+        "contractor_usage_by_scenario": df_records(contractor_usage),
         "weighted_avg_install_calendar_days": weighted_avg_install_calendar_days,
         "weighted_avg_install_revenue_usd": weighted_avg_install_revenue_usd,
         "weighted_avg_install_margin": weighted_avg_install_margin,
@@ -645,7 +600,10 @@ def main() -> None:
     markdown_out = out_dir / "analysis_report.md"
 
     summary.to_csv(summary_out, index=False)
-    recommended.to_csv(recommended_out, index=False)
+    removed_recommendation_file = False
+    if recommended_out.exists():
+        recommended_out.unlink()
+        removed_recommendation_file = True
     with open(report_out, "w") as f:
         json.dump(json_safe(report), f, indent=2, allow_nan=False)
 
@@ -653,10 +611,8 @@ def main() -> None:
         "# Optimization Scenario Analysis",
         "",
         f"- Capacity model time unit: **{config.PATIENT_SIM_CAPACITY_TIME_UNIT}**",
-        f"- Best scenario: **{best_hires}** new hires",
+        f"- Scenarios analyzed: **{scenario_labels}**",
         f"- Baseline (N=0) cost with overhead: **${base_cost:,.2f}**",
-        f"- Best scenario cost with overhead: **${best_row['economic_total_with_overhead_usd']:,.2f}**",
-        f"- Savings vs N=0: **${report['best_savings_vs_n0_usd']:,.2f} ({report['best_savings_vs_n0_pct']:.2f}%)**",
         f"- Data period: **{data_span_years:.2f} years**",
         f"- Baseline N=0 proven optimal: **{baseline_solver['solver_proven_optimal']}**",
         "",
@@ -722,17 +678,21 @@ def main() -> None:
     lines.extend(
         [
             "",
-        "## Contractor Usage (Best Scenario)",
+        "## Contractor Usage by Scenario",
         "",
         ]
     )
-    if contractor_best.empty:
-        lines.append("- No contractor usage rows in the selected scenario.")
+    if contractor_usage.empty:
+        lines.append("- No contractor usage rows across the analyzed scenarios.")
     else:
+        contractor_usage_md = contractor_usage.sort_values(
+            ["scenario_hires", "tech_name"], ascending=[True, True]
+        ).copy()
         lines.extend(
             markdown_table(
-                contractor_best,
+                contractor_usage_md,
                 [
+                    "scenario_hires",
                     "tech_name",
                     "assigned_appointments",
                     "assigned_hours",
@@ -742,6 +702,7 @@ def main() -> None:
                     "states_served",
                 ],
                 [
+                    "Scenario",
                     "Technician",
                     "Assigned Appointments",
                     "Assigned Hours",
@@ -893,7 +854,10 @@ def main() -> None:
         f.write("\n".join(lines))
 
     print(f"Saved: {summary_out}")
-    print(f"Saved: {recommended_out}")
+    if removed_recommendation_file:
+        print(f"Removed stale recommendation file: {recommended_out}")
+    else:
+        print(f"Recommendation file not written: {recommended_out}")
     print(f"Saved: {report_out}")
     print(f"Saved: {markdown_out}")
     print(f"Saved: {history_out}")

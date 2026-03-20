@@ -2666,20 +2666,6 @@ def build_simulation_panel_css(ui_preset):
         font-size: 11px;
         color: #64748b;
       }}
-      .sim-status-banner {{
-        display: none;
-        margin: 10px 0 14px 0;
-        padding: 10px 12px;
-        border-radius: 12px;
-        border: 1px solid #f5d0a8;
-        background: #fff7ed;
-        color: #9a3412;
-        font-size: 11px;
-        line-height: 1.45;
-      }}
-      .sim-status-banner.visible {{
-        display: block;
-      }}
       #sim-buttons {{
         display: grid;
         grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -3019,7 +3005,6 @@ def build_simulation_panel_markup():
       </div>
 
       <div id="optimized-content">
-        <div id="sim-status-banner" class="sim-status-banner"></div>
         <div class="sim-section">
           <div class="sim-section-label">Scenarios</div>
           <div id="sim-buttons"></div>
@@ -3091,7 +3076,7 @@ def build_simulation_panel_markup():
         </div>
 
         <div class="sim-section">
-          <h3 class="sim-section-heading">Recommended Bases</h3>
+          <h3 class="sim-section-heading">Scenario Placements</h3>
           <div id="sim-recs" class="sim-list-box">
             <div class="sim-empty">No new-hire placements in this scenario.</div>
           </div>
@@ -3151,7 +3136,6 @@ def build_simulation_panel_markup():
       </div>
 
       <div id="blank-content">
-        <div id="blank-status-banner" class="sim-status-banner"></div>
         <div class="sim-section">
           <div class="sim-section-label">Blank Slate</div>
           <p class="sim-section-caption">Modeled rebuild with all hires placed from scratch</p>
@@ -3354,47 +3338,6 @@ def build_simulation_panel_script(
         }}
       }}
 
-      function renderStatusBanner(elementId, messages) {{
-        const banner = document.getElementById(elementId);
-        if (!banner) return;
-        const clean = (messages || []).filter((msg) => !!msg);
-        if (!clean.length) {{
-          banner.innerHTML = "";
-          banner.classList.remove("visible");
-          return;
-        }}
-        banner.innerHTML = clean.map((msg) => `<div>${{msg}}</div>`).join("");
-        banner.classList.add("visible");
-      }}
-
-      function buildSourceMessages(sourceProvenance) {{
-        const messages = [];
-        if (!sourceProvenance) return messages;
-        if (sourceProvenance.tech_source_is_cached) {{
-          messages.push("Roster provenance: using cached generated tech_master.csv fallback, not a live workbook source.");
-        }}
-        const warnings = Array.isArray(sourceProvenance.source_warnings)
-          ? sourceProvenance.source_warnings
-          : [];
-        warnings.forEach((warning) => messages.push(String(warning)));
-        return messages;
-      }}
-
-      function buildSolverMessage(item, label) {{
-        if (!item || item.solver_proven_optimal) return "";
-        const parts = [`${{label}} is provisional because the solver did not prove optimality.`];
-        if (item.solver_status !== undefined && item.solver_status !== null) {{
-          parts.push(`status ${{item.solver_status}}`);
-        }}
-        if (item.solver_mip_gap !== undefined && item.solver_mip_gap !== null && !Number.isNaN(Number(item.solver_mip_gap))) {{
-          parts.push(`gap ${{Number(item.solver_mip_gap).toFixed(6)}}`);
-        }}
-        if (item.solver_message) {{
-          parts.push(String(item.solver_message));
-        }}
-        return parts.join(" · ");
-      }}
-
       function renderKpis(scenario) {{
         const item = scenarioData[scenario];
         if (!item) return;
@@ -3437,17 +3380,6 @@ def build_simulation_panel_script(
         breakEvenEl.textContent = hasInstallUpside ? Number(k.break_even_install_units || 0).toFixed(1) : "—";
         roiEl.textContent = hasInstallUpside ? pct(k.roi_install_pct, 0) : "—";
         setSignedValueColor(netValueEl, k.net_economic_value_install_usd);
-
-        const bannerMessages = [];
-        if (item.analysis_is_stale && item.analysis_staleness_reason) {{
-          bannerMessages.push(item.analysis_staleness_reason);
-        }}
-        const solverMessage = buildSolverMessage(item, `Scenario N=${{scenario}}`);
-        if (solverMessage) {{
-          bannerMessages.push(solverMessage);
-        }}
-        bannerMessages.push(...buildSourceMessages(item.source_provenance));
-        renderStatusBanner("sim-status-banner", bannerMessages);
       }}
 
       function renderRecommendations(scenario) {{
@@ -3835,13 +3767,6 @@ def build_simulation_panel_script(
         if (totalEl) totalEl.textContent = money(blankSlateData.annualized_total_cost_usd);
         if (travelEl) travelEl.textContent = money(blankSlateData.annualized_travel_cost_usd);
         if (placementsEl) placementsEl.textContent = Number(blankSlateData.total_placements || 0).toLocaleString();
-        const bannerMessages = [];
-        const solverMessage = buildSolverMessage(blankSlateData, "Blank Slate");
-        if (solverMessage) {{
-          bannerMessages.push(solverMessage);
-        }}
-        bannerMessages.push(...buildSourceMessages(blankSlateData.source_provenance));
-        renderStatusBanner("blank-status-banner", bannerMessages);
       }}
 
       function renderBlankSlatePlacements() {{
