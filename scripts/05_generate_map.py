@@ -3105,7 +3105,6 @@ def build_simulation_panel_markup():
       </div>
 
       <div id="historical-content">
-        <div id="hist-status-banner" class="sim-status-banner"></div>
         <div class="sim-section">
           <div class="sim-section-label">Historical Assignments</div>
           <p class="sim-section-caption">Actual technician dispatch record</p>
@@ -3113,21 +3112,22 @@ def build_simulation_panel_markup():
 
         <div class="sim-section">
           <h3 class="sim-section-heading">Travel Cost Comparison</h3>
+          <p class="sim-section-caption">Modeled from technician base locations, not actual expense records</p>
           <div class="hist-kpi-grid">
             <div class="sim-kpi">
               <div class="label">Total Appointments</div>
               <div class="value" id="hist-kpi-appts">&mdash;</div>
             </div>
             <div class="sim-kpi">
-              <div class="label">Hist. Travel Cost</div>
+              <div class="label">Est. Historical Travel Cost</div>
               <div class="value" id="hist-kpi-cost">&mdash;</div>
             </div>
             <div class="sim-kpi">
-              <div class="label">Optimized Cost (N=0)</div>
+              <div class="label">Est. Optimized Cost (N=0)</div>
               <div class="value" id="hist-kpi-optimized">&mdash;</div>
             </div>
             <div class="sim-kpi">
-              <div class="label">Potential Savings</div>
+              <div class="label">Est. Potential Savings</div>
               <div class="value" id="hist-kpi-savings">&mdash;</div>
             </div>
           </div>
@@ -3771,25 +3771,6 @@ def build_simulation_panel_script(
             savingsEl.style.color = "#102235";
           }}
         }}
-        const bannerMessages = [];
-        if (historicalData.summary_is_stale && historicalData.summary_stale_reason) {{
-          bannerMessages.push(historicalData.summary_stale_reason);
-        }}
-        if (!historicalData.n0_solver_proven_optimal) {{
-          const parts = ["Historical comparison baseline N=0 is provisional."];
-          if (historicalData.n0_solver_status !== undefined && historicalData.n0_solver_status !== null) {{
-            parts.push(`status ${{historicalData.n0_solver_status}}`);
-          }}
-          if (historicalData.n0_solver_mip_gap !== undefined && historicalData.n0_solver_mip_gap !== null && !Number.isNaN(Number(historicalData.n0_solver_mip_gap))) {{
-            parts.push(`gap ${{Number(historicalData.n0_solver_mip_gap).toFixed(6)}}`);
-          }}
-          if (historicalData.n0_solver_message) {{
-            parts.push(String(historicalData.n0_solver_message));
-          }}
-          bannerMessages.push(parts.join(" · "));
-        }}
-        bannerMessages.push(...buildSourceMessages(historicalData.source_provenance));
-        renderStatusBanner("hist-status-banner", bannerMessages);
       }}
 
       function renderHistoricalCoverage() {{
