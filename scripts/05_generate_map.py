@@ -30,6 +30,26 @@ SIM_UTILIZATION = "scenario_tech_utilization.csv"
 SIM_ASSUMPTIONS = "model_assumptions.json"
 OPT_INPUT_SUMMARY = "optimization_input_summary.json"
 
+CORE_TECHNICIAN_PALETTE = [
+    "#e6194b",
+    "#3cb44b",
+    "#4363d8",
+    "#f58231",
+    "#911eb4",
+    "#42d4f4",
+    "#f032e6",
+    "#bfef45",
+    "#fabed4",
+    "#469990",
+    "#dcbeff",
+    "#9A6324",
+    "#fffac8",
+    "#800000",
+    "#aaffc3",
+    "#808000",
+]
+CORE_TECHNICIAN_SLOT_ORDER = [0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15]
+
 
 def classify_service_type(service_type):
     """Map service type to color category."""
@@ -1453,10 +1473,103 @@ def resolve_appointment_assignments(territory_data):
     return result
 
 
+def safe_float_or_none(value):
+    """Convert a value to float when possible, otherwise return None."""
+    numeric = pd.to_numeric(value, errors="coerce")
+    if pd.isna(numeric):
+        return None
+    return float(numeric)
+
+
+def build_core_technician_color_maps(territory_data):
+    """Build a shared, geography-aware color map for the 16 historical technicians."""
+    cached = territory_data.get("_core_technician_color_maps")
+    if cached is not None:
+        return cached
+
+    tech_master = territory_data.get("tech_master", pd.DataFrame()).copy()
+    historical_roster = territory_data.get("historical_roster", pd.DataFrame()).copy()
+
+    current_lookup = {}
+    for _, row in tech_master.iterrows():
+        canonical_name = canonicalize_tech_name(
+            row.get("tech_name", row.get("source_name", ""))
+        )
+        if not canonical_name:
+            continue
+        current_lookup[canonical_name] = {
+            "tech_id": str(row.get("tech_id", "")).strip() or None,
+            "base_lat": safe_float_or_none(row.get("base_lat")),
+            "base_lon": safe_float_or_none(row.get("base_lon")),
+        }
+
+    historical_lookup = {}
+    for _, row in historical_roster.iterrows():
+        canonical_name = canonicalize_tech_name(
+            row.get("tech_name", row.get("source_name", ""))
+        )
+        if not canonical_name:
+            continue
+        historical_lookup[canonical_name] = {
+            "base_lat": safe_float_or_none(row.get("base_lat")),
+            "base_lon": safe_float_or_none(row.get("base_lon")),
+        }
+
+    core_records = []
+    for canonical_name in sorted(historical_lookup):
+        current_info = current_lookup.get(canonical_name, {})
+        historical_info = historical_lookup.get(canonical_name, {})
+        base_lon = current_info.get("base_lon")
+        if base_lon is None:
+            base_lon = historical_info.get("base_lon")
+        base_lat = current_info.get("base_lat")
+        if base_lat is None:
+            base_lat = historical_info.get("base_lat")
+        core_records.append(
+            {
+                "canonical_name": canonical_name,
+                "tech_id": current_info.get("tech_id"),
+                "base_lon": base_lon,
+                "base_lat": base_lat,
+            }
+        )
+
+    core_records.sort(
+        key=lambda record: (
+            record["base_lon"] is None,
+            float("inf") if record["base_lon"] is None else record["base_lon"],
+            record["base_lat"] is None,
+            float("inf") if record["base_lat"] is None else record["base_lat"],
+            record["canonical_name"].lower(),
+        )
+    )
+
+    canonical_map = {}
+    tech_id_map = {}
+    display_name_map = {}
+    for idx, record in enumerate(core_records[: len(CORE_TECHNICIAN_SLOT_ORDER)]):
+        color = CORE_TECHNICIAN_PALETTE[CORE_TECHNICIAN_SLOT_ORDER[idx]]
+        canonical_name = record["canonical_name"]
+        canonical_map[canonical_name] = color
+        display_name_map[canonical_name] = color
+        tech_id = record.get("tech_id")
+        if tech_id:
+            tech_id_map[tech_id] = color
+
+    result = {
+        "canonical": canonical_map,
+        "tech_id": tech_id_map,
+        "display_name": display_name_map,
+    }
+    territory_data["_core_technician_color_maps"] = result
+    return result
+
+
 def build_tech_color_map(territory_data, palette, include_existing=True):
     """Assign a stable, high-contrast color to each assignee."""
     tech_master = territory_data["tech_master"]
     newhires_df = territory_data["newhires"]
+    core_color_maps = build_core_technician_color_maps(territory_data)
     explicit_color_map = dict(getattr(config, "TECH_ASSIGNMENT_COLOR_MAP", {}))
     fallback_palette = palette or getattr(
         config, "TECH_ASSIGNMENT_FALLBACK_PALETTE", getattr(config, "TECH_TERRITORY_PALETTE", [])
@@ -1479,6 +1592,9 @@ def build_tech_color_map(territory_data, palette, include_existing=True):
     color_map = {}
     idx = 0
     for tid in sorted_tech_ids:
+        if tid in core_color_maps["tech_id"]:
+            color_map[tid] = core_color_maps["tech_id"][tid]
+            continue
         if tid in explicit_color_map:
             color_map[tid] = explicit_color_map[tid]
             continue
@@ -1851,28 +1967,36 @@ def load_historical_data(territory_data, out_dir):
     }
 
 
-def build_historical_tech_color_map(historical_data, existing_color_map):
+def build_historical_tech_color_map(territory_data, historical_data, existing_color_map):
     """Assign colors to historical techs, reusing optimization colors where possible."""
+    core_color_maps = build_core_technician_color_maps(territory_data)
     explicit_colors = dict(getattr(config, "TECH_ASSIGNMENT_COLOR_MAP", {}))
     color_map = {}
+    fallback_palette = list(
+        getattr(config, "TECH_ASSIGNMENT_FALLBACK_PALETTE", getattr(config, "TECH_TERRITORY_PALETTE", []))
+    )
+    fallback_idx = 0
 
     for display_name, stat in historical_data["tech_stats"].items():
         tech_id = stat.get("tech_id")
         canonical = canonicalize_tech_name(display_name)
-        is_historical_only = not tech_id
 
-        if tech_id and tech_id in existing_color_map:
+        if canonical in core_color_maps["canonical"]:
+            color_map[display_name] = core_color_maps["canonical"][canonical]
+        elif tech_id and tech_id in existing_color_map:
             color_map[display_name] = existing_color_map[tech_id]
-        elif is_historical_only:
+        elif tech_id and tech_id in explicit_colors:
+            color_map[display_name] = explicit_colors[tech_id]
+        else:
             hist_key = "_hist_" + canonical.lower().replace(" ", "_")
             if hist_key in explicit_colors:
                 color_map[display_name] = explicit_colors[hist_key]
             else:
-                color_map[display_name] = "#64748b"
-        elif tech_id and tech_id in explicit_colors:
-            color_map[display_name] = explicit_colors[tech_id]
-        else:
-            color_map[display_name] = "#64748b"
+                if not fallback_palette:
+                    color_map[display_name] = "#64748b"
+                else:
+                    color_map[display_name] = fallback_palette[fallback_idx % len(fallback_palette)]
+                    fallback_idx += 1
 
     return color_map
 
@@ -4126,7 +4250,9 @@ def main():
                         f"annualized cost ${historical_data['annualized_travel_cost_usd']:,.0f}"
                     )
                     historical_color_map = build_historical_tech_color_map(
-                        historical_data, tech_color_map if territory_data else {}
+                        territory_data,
+                        historical_data,
+                        tech_color_map if territory_data else {},
                     )
                     historical_layer_info = add_historical_assignment_layer(
                         m, territory_data, historical_data, historical_color_map, ui_preset
