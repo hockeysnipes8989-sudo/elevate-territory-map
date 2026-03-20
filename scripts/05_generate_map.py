@@ -1,5 +1,6 @@
 """Step 5: Generate the interactive Folium map and simulation UI."""
 import json
+import math
 import os
 import sys
 import pandas as pd
@@ -152,6 +153,96 @@ def exclude_inactive_technicians(techs):
             ~filtered["comment"].astype(str).str.contains("no longer with elevate", case=False, na=False)
         ]
     return filtered.copy()
+
+
+def build_plus_marker_html(color, hires_allocated=1.0):
+    """Return Blank-Slate-style plus-marker HTML for a single colored marker."""
+    hires = max(float(hires_allocated), 1.0)
+    diameter = int(max(24, min(44, 20 + 6 * hires)))
+    font_size = int(max(13, min(24, 11 + 3 * hires)))
+    marker_html = (
+        "<div style=\""
+        f"width:{diameter}px;height:{diameter}px;border-radius:50%;"
+        f"background:{color};border:2px solid #fff;color:#fff;"
+        "display:flex;align-items:center;justify-content:center;"
+        f"font-size:{font_size}px;font-weight:700;"
+        "box-shadow:0 10px 18px rgba(15,23,42,0.28);"
+        "\">&#10010;</div>"
+    )
+    return marker_html, diameter
+
+
+def build_jittered_positions(lat, lon, count):
+    """Return small deterministic offsets for co-located markers."""
+    if count <= 1:
+        return [(float(lat), float(lon))]
+
+    radius_miles = 1.5 + (0.2 * max(0, count - 2))
+    lat_delta = radius_miles / 69.0
+    cos_lat = max(math.cos(math.radians(float(lat))), 0.2)
+    lon_delta = lat_delta / cos_lat
+    start_angle = -math.pi / 2.0
+
+    positions = []
+    for idx in range(count):
+        angle = start_angle + ((2.0 * math.pi * idx) / count)
+        positions.append(
+            (
+                float(lat) + (math.sin(angle) * lat_delta),
+                float(lon) + (math.cos(angle) * lon_delta),
+            )
+        )
+    return positions
+
+
+def build_current_tech_marker_color_map(territory_data, tech_color_map, ui_preset):
+    """Map current tech display names to the same colors used by their assignment dots."""
+    if not territory_data:
+        return {}
+
+    tech_master = territory_data.get("tech_master", pd.DataFrame()).copy()
+    if tech_master.empty:
+        return {}
+
+    core_color_maps = build_core_technician_color_maps(territory_data)
+    explicit_colors = dict(getattr(config, "TECH_ASSIGNMENT_COLOR_MAP", {}))
+    fallback_palette = list(
+        getattr(
+            config,
+            "TECH_ASSIGNMENT_FALLBACK_PALETTE",
+            getattr(config, "TECH_TERRITORY_PALETTE", []),
+        )
+    )
+    fallback_idx = 0
+    color_lookup = {}
+
+    sorted_rows = tech_master.sort_values(["tech_name", "tech_id"], ascending=[True, True])
+    for _, row in sorted_rows.iterrows():
+        tech_id = str(row.get("tech_id", "")).strip()
+        tech_name = str(row.get("tech_name", "")).strip()
+        canonical_name = canonicalize_tech_name(tech_name)
+        color = None
+        if tech_id and tech_color_map and tech_id in tech_color_map:
+            color = tech_color_map[tech_id]
+        elif canonical_name and canonical_name in core_color_maps["canonical"]:
+            color = core_color_maps["canonical"][canonical_name]
+        elif tech_id and tech_id in explicit_colors:
+            color = explicit_colors[tech_id]
+        elif fallback_palette:
+            color = fallback_palette[fallback_idx % len(fallback_palette)]
+            fallback_idx += 1
+        else:
+            status = str(row.get("status", "active")).strip().lower()
+            color = ui_preset["tech_marker_colors"].get(
+                status, ui_preset["tech_marker_colors"].get("active", "#2E6F5E")
+            )
+
+        if tech_name:
+            color_lookup[tech_name] = color
+        if canonical_name:
+            color_lookup[canonical_name] = color
+
+    return color_lookup
 
 
 def load_anchor_tech_metadata():
@@ -529,10 +620,18 @@ def add_service_appointments(m, appts, layer_name, show=True):
     return fg
 
 
-def add_technician_markers(m, techs, layer_name, ui_preset, anchor_metadata_by_name=None):
+def add_technician_markers(
+    m,
+    techs,
+    layer_name,
+    ui_preset,
+    anchor_metadata_by_name=None,
+    marker_color_lookup=None,
+):
     """Add technician home base markers."""
     fg = folium.FeatureGroup(name=layer_name, show=True)
     anchor_metadata_by_name = anchor_metadata_by_name or {}
+    marker_color_lookup = marker_color_lookup or {}
 
     techs_with_coords = exclude_inactive_technicians(techs).dropna(subset=["lat", "lon"])
     if techs_with_coords.empty:
@@ -551,98 +650,66 @@ def add_technician_markers(m, techs, layer_name, ui_preset, anchor_metadata_by_n
 
     grouped = techs_with_coords.groupby("coord_key", sort=False)
     for _, group in grouped:
-        group = group.sort_values(["status", "name"])
+        group = group.sort_values(["name", "status"], ascending=[True, True]).reset_index(drop=True)
         lat = float(group.iloc[0]["lat"])
         lon = float(group.iloc[0]["lon"])
-        location = str(group.iloc[0].get("location", "")).strip() or "Unknown"
-        num_techs = int(len(group))
+        positions = build_jittered_positions(lat, lon, len(group))
 
-        if num_techs == 1:
-            row = group.iloc[0]
+        for idx, (_, row) in enumerate(group.iterrows()):
             status = str(row.get("status", "active")).lower()
-            color = ui_preset["tech_marker_colors"].get(
-                status, ui_preset["tech_marker_colors"].get("active", "#2E6F5E")
-            )
-            tooltip = f"{row['name']} ({status})"
-        else:
-            status_counts = group["status"].value_counts().to_dict()
-            if len(status_counts) == 1:
-                only_status = next(iter(status_counts.keys()))
-                color = ui_preset["tech_marker_colors"].get(
-                    only_status, ui_preset["tech_marker_colors"].get("mixed", "#51606E")
+            name = str(row.get("name", "")).strip()
+            location = str(row.get("location", "")).strip() or "Unknown"
+            canonical_name = canonicalize_tech_name(name)
+            color = (
+                marker_color_lookup.get(name)
+                or marker_color_lookup.get(canonical_name)
+                or ui_preset["tech_marker_colors"].get(
+                    status, ui_preset["tech_marker_colors"].get("active", "#2E6F5E")
                 )
-            else:
-                color = ui_preset["tech_marker_colors"].get("mixed", "#51606E")
-            tooltip = f"{location} ({num_techs} techs)"
+            )
+            tooltip = f"{name} · {location}"
 
-        roster_lines = []
-        for _, r in group.iterrows():
-            name = str(r.get("name", "")).strip()
-            status = str(r.get("status", "active")).strip().title()
-            comment_raw = r.get("comment", "")
+            comment_raw = row.get("comment", "")
             comment = "" if pd.isna(comment_raw) else str(comment_raw).strip()
             if comment.lower() == "nan":
                 comment = ""
             anchor_meta = anchor_metadata_by_name.get(name, {})
-            extra = f" - {comment}" if comment else ""
-            detail_lines = []
+            popup_parts = [
+                f"<b>{name}</b>",
+                f"Status: <b>{status.title()}</b>",
+                f"Base: {location}",
+            ]
+            if comment:
+                popup_parts.append(f"Note: {comment}")
             anchor_site = str(anchor_meta.get("anchor_site_name", "")).strip()
             if anchor_site:
-                detail_lines.append(f"Anchor site: {anchor_site}")
+                popup_parts.append(f"Anchor site: {anchor_site}")
             reserved = anchor_meta.get("anchor_reserved_fte")
             external = anchor_meta.get("external_field_fte")
             allowed_states = format_state_scope(anchor_meta.get("assignment_scope_states", ""))
             if pd.notna(reserved):
-                detail_lines.append(f"Reserved duty: {float(reserved):.0%}")
+                popup_parts.append(f"Reserved duty: {float(reserved):.0%}")
             if pd.notna(external):
-                detail_lines.append(f"External field capacity: {float(external):.0%}")
+                popup_parts.append(f"External field capacity: {float(external):.0%}")
             if allowed_states:
-                detail_lines.append(f"External assignment region: {allowed_states}")
+                popup_parts.append(f"External assignment region: {allowed_states}")
             if anchor_meta.get("anchor_notes"):
-                detail_lines.append(str(anchor_meta["anchor_notes"]))
-            extra_html = (
-                "<br><span style='display:block;margin-top:3px;font-size:11px;color:#64748b;'>"
-                + "<br>".join(detail_lines)
-                + "</span>"
-                if detail_lines
-                else ""
-            )
-            roster_lines.append(f"<li><b>{name}</b> ({status}){extra}{extra_html}</li>")
-        roster_html = "".join(roster_lines)
-        popup_html = (
-            f"<b>{location}</b><br>"
-            f"Technicians at this base: <b>{num_techs}</b><br>"
-            "<div style='margin-top:6px;'>"
-            "<b>Roster</b>"
-            f"<ul style='margin:4px 0 0 16px; padding:0;'>{roster_html}</ul>"
-            "</div>"
-        )
+                popup_parts.append(str(anchor_meta["anchor_notes"]))
 
-        diameter = 24 if num_techs == 1 else 30
-        label = str(num_techs)
-        marker_html = (
-            "<div style=\""
-            f"width:{diameter}px;height:{diameter}px;border-radius:999px;"
-            f"background:{color};border:2px solid #ffffff;color:#ffffff;"
-            "display:flex;align-items:center;justify-content:center;"
-            f"font:700 {11 if num_techs == 1 else 12}px {ui_preset['font_family']};"
-            "box-shadow:0 6px 14px rgba(15,23,42,0.22);"
-            "\">"
-            f"{label}"
-            "</div>"
-        )
+            marker_html, diameter = build_plus_marker_html(color, hires_allocated=1.0)
+            marker_lat, marker_lon = positions[idx]
 
-        folium.Marker(
-            location=[lat, lon],
-            popup=folium.Popup(popup_html, max_width=360),
-            tooltip=tooltip,
-            icon=folium.DivIcon(
-                html=marker_html,
-                icon_size=(diameter, diameter),
-                icon_anchor=(diameter // 2, diameter // 2),
-                class_name="elevate-tech-marker",
-            ),
-        ).add_to(fg)
+            folium.Marker(
+                location=[marker_lat, marker_lon],
+                popup=folium.Popup("<br>".join(popup_parts), max_width=320),
+                tooltip=tooltip,
+                icon=folium.DivIcon(
+                    html=marker_html,
+                    icon_size=(diameter, diameter),
+                    icon_anchor=(diameter // 2, diameter // 2),
+                    class_name="elevate-tech-marker",
+                ),
+            ).add_to(fg)
 
     fg.add_to(m)
     return fg
@@ -836,11 +903,6 @@ def add_service_type_legend(m, service_type_counts):
         if status == "former":
             continue
         legend_html += f'<span style="background:{color};width:12px;height:12px;display:inline-block;margin-right:4px;border-radius:50%;border:1px solid #999;"></span>{status.title()}<br>'
-    legend_html += (
-        "<div style='margin-top:6px;color:#666;font-size:10px;'>"
-        "Tech markers may represent multiple technicians at the same base location."
-        "</div>"
-    )
     legend_html += "</div>"
     m.get_root().html.add_child(folium.Element(legend_html))
 
@@ -2101,61 +2163,35 @@ def add_historical_assignment_layer(m, territory_data, historical_data, color_ma
             }
         )
 
-    for coord_key, group in base_groups.items():
-        lat = group["lat"]
-        lon = group["lon"]
-        techs = group["techs"]
-        num_techs = len(techs)
+    for _, group in base_groups.items():
+        lat = float(group["lat"])
+        lon = float(group["lon"])
+        techs = sorted(group["techs"], key=lambda item: item["name"])
+        positions = build_jittered_positions(lat, lon, len(techs))
 
-        # Pick color: single tech uses their color, multiple uses blended
-        if num_techs == 1:
-            color = techs[0]["color"]
-            tooltip = f"{techs[0]['name']} · {techs[0]['base_label']}"
-        else:
-            color = "#51606E"
-            location_label = techs[0]["base_label"]
-            tooltip = f"{location_label} ({num_techs} techs)"
+        for idx, tech in enumerate(techs):
+            tooltip = f"{tech['name']} · {tech['base_label']}"
+            popup_parts = [
+                f"<b>{tech['name']}</b>",
+                f"Status: <b>{tech['status_label']}</b>",
+                f"Base: {tech['base_label']}",
+                f"Base source: {tech['base_source_label']}",
+                f"Appointments: {tech['appointments']}",
+            ]
+            marker_html, diameter = build_plus_marker_html(tech["color"], hires_allocated=1.0)
+            marker_lat, marker_lon = positions[idx]
 
-        # Determine text color for contrast
-        value = str(color).lstrip("#")
-        try:
-            brightness = (int(value[0:2], 16) * 299 + int(value[2:4], 16) * 587 + int(value[4:6], 16) * 114) / 1000
-        except (ValueError, IndexError):
-            brightness = 0
-        text_color = "#1F2937" if brightness >= 165 else "#fff"
-
-        diameter = 30
-        marker_html = (
-            f'<div style="background:{color};color:{text_color};border-radius:50%;'
-            f'width:{diameter}px;height:{diameter}px;display:flex;'
-            f'align-items:center;justify-content:center;font-weight:700;'
-            f'font-size:11px;border:2px solid rgba(255,255,255,0.9);'
-            f'box-shadow:0 2px 6px rgba(0,0,0,0.3);">'
-            f'{num_techs}</div>'
-        )
-
-        roster_lines = []
-        for t in sorted(techs, key=lambda x: -x["appointments"]):
-            roster_lines.append(
-                f"<li><b>{t['name']}</b> · {t['status_label']} · "
-                f"{t['base_source_label']} · {t['appointments']} appointments</li>"
-            )
-        popup_html = (
-            f"<b>{techs[0]['base_label']}</b><br>"
-            f"<ul style='margin:4px 0;padding-left:18px;'>{''.join(roster_lines)}</ul>"
-        )
-
-        folium.Marker(
-            location=[float(lat), float(lon)],
-            popup=folium.Popup(popup_html, max_width=320),
-            tooltip=tooltip,
-            icon=folium.DivIcon(
-                html=marker_html,
-                icon_size=(diameter, diameter),
-                icon_anchor=(diameter // 2, diameter // 2),
-                class_name="elevate-hist-tech-marker",
-            ),
-        ).add_to(bases_fg)
+            folium.Marker(
+                location=[marker_lat, marker_lon],
+                popup=folium.Popup("<br>".join(popup_parts), max_width=320),
+                tooltip=tooltip,
+                icon=folium.DivIcon(
+                    html=marker_html,
+                    icon_size=(diameter, diameter),
+                    icon_anchor=(diameter // 2, diameter // 2),
+                    class_name="elevate-hist-tech-marker",
+                ),
+            ).add_to(bases_fg)
 
     bases_fg.add_to(m)
     return {
@@ -4067,9 +4103,20 @@ def main():
     # Pre-check: load territory assignment data (needed to decide show param for Layer 3)
     territory_data = None
     territory_layer_info = None
+    tech_color_map = None
+    current_tech_marker_color_map = None
     if getattr(config, "ENABLE_SIMULATION_UI", False):
         print("  Pre-loading territory assignment data...")
         territory_data = load_territory_assignment_data()
+        if territory_data:
+            tech_color_map = build_tech_color_map(
+                territory_data, ui_preset["territory_palette"]
+            )
+            current_tech_marker_color_map = build_current_tech_marker_color_map(
+                territory_data,
+                tech_color_map,
+                ui_preset,
+            )
 
     # Layer 3: Service Appointments
     # Stakeholder mode removes this from the visible UI, but debug mode still supports it.
@@ -4086,6 +4133,7 @@ def main():
         layer_name=layer_tech_name,
         ui_preset=ui_preset,
         anchor_metadata_by_name=anchor_metadata["by_name"],
+        marker_color_lookup=current_tech_marker_color_map,
     )
     tech_markers_layer_name = tech_markers_fg.get_name() if tech_markers_fg else None
 
@@ -4121,14 +4169,10 @@ def main():
         print("Adding simulation scenario panel...")
         simulation_payload = load_simulation_data()
         if simulation_payload:
-            tech_color_map = None
             # Territory visualization
             if territory_data:
                 print("  Resolving appointment-to-tech assignments...")
                 assignment_map = resolve_appointment_assignments(territory_data)
-                tech_color_map = build_tech_color_map(
-                    territory_data, ui_preset["territory_palette"]
-                )
                 total_assigned = sum(len(v) for v in assignment_map.values())
                 print(f"  Resolved {total_assigned} total appointment assignments across {len(assignment_map)} scenarios")
                 print("  Generating territory dot layers...")
