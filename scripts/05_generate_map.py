@@ -3048,50 +3048,18 @@ def build_simulation_panel_markup():
         </div>
 
         <div class="sim-section">
-          <h3 class="sim-section-heading">Cost &amp; Load</h3>
           <div id="sim-kpis" class="sim-card-grid">
             <div class="sim-kpi kpi-clickable" data-kpi="total-cost">
               <div class="label">Total Cost</div>
               <div class="value" id="kpi-total">&mdash;</div>
             </div>
             <div class="sim-kpi kpi-clickable" data-kpi="cost-change">
-              <div class="label">Annual Cost Delta vs N=0</div>
+              <div class="label">Cost Delta vs N=0</div>
               <div class="value" id="kpi-annual-delta">&mdash;</div>
             </div>
-            <div class="sim-kpi kpi-clickable" data-kpi="marginal-cost">
-              <div class="label">Incremental Cost vs Prior Scenario</div>
-              <div class="value" id="kpi-incremental">&mdash;</div>
-            </div>
             <div class="sim-kpi kpi-clickable" data-kpi="hire-payroll">
-              <div class="label">Incremental Hire Payroll</div>
+              <div class="label">Hire Payroll</div>
               <div class="value" id="kpi-hire-cost">&mdash;</div>
-            </div>
-            <div class="sim-kpi kpi-clickable" data-kpi="mean-util">
-              <div class="label">Mean Load Ratio</div>
-              <div class="value" id="kpi-mean-load">&mdash;</div>
-            </div>
-            <div class="sim-kpi kpi-clickable" data-kpi="max-util">
-              <div class="label">Peak Load Ratio</div>
-              <div class="value" id="kpi-peak-load">&mdash;</div>
-            </div>
-            <div class="sim-kpi kpi-clickable" data-kpi="unmet" id="kpi-unmet-card">
-              <div class="label">Unmet Appointments</div>
-              <div class="value" id="kpi-unmet">&mdash;</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="sim-section">
-          <h3 class="sim-section-heading">Install Upside</h3>
-          <p class="sim-section-caption">Family-weighted patient-sim install-only view</p>
-          <div id="sim-kpis-revenue" class="sim-card-grid">
-            <div class="sim-kpi kpi-clickable" data-kpi="installs">
-              <div class="label">Install Units Enabled</div>
-              <div class="value" id="kpi-install-units">&mdash;</div>
-            </div>
-            <div class="sim-kpi kpi-clickable" data-kpi="install-revenue">
-              <div class="label">Install Revenue Enabled</div>
-              <div class="value" id="kpi-install-revenue">&mdash;</div>
             </div>
             <div class="sim-kpi kpi-clickable" data-kpi="install-profit">
               <div class="label">Install Profit Enabled</div>
@@ -3105,11 +3073,8 @@ def build_simulation_panel_markup():
               <div class="label">Break-Even Units</div>
               <div class="value" id="kpi-break-even">&mdash;</div>
             </div>
-            <div class="sim-kpi kpi-clickable" data-kpi="roi">
-              <div class="label">ROI</div>
-              <div class="value" id="kpi-roi">&mdash;</div>
-            </div>
           </div>
+          <p class="sim-section-caption">Family-weighted patient-sim install-only view</p>
         </div>
 
         <div class="sim-section">
@@ -3383,40 +3348,30 @@ def build_simulation_panel_script(
 
         const totalEl = document.getElementById("kpi-total");
         const annualDeltaEl = document.getElementById("kpi-annual-delta");
-        const incrementalEl = document.getElementById("kpi-incremental");
         const hireEl = document.getElementById("kpi-hire-cost");
-        const meanLoadEl = document.getElementById("kpi-mean-load");
-        const peakLoadEl = document.getElementById("kpi-peak-load");
-        const unmetEl = document.getElementById("kpi-unmet");
-        const installUnitsEl = document.getElementById("kpi-install-units");
-        const installRevenueEl = document.getElementById("kpi-install-revenue");
         const installProfitEl = document.getElementById("kpi-install-profit");
         const netValueEl = document.getElementById("kpi-net-value");
         const breakEvenEl = document.getElementById("kpi-break-even");
-        const roiEl = document.getElementById("kpi-roi");
 
-        totalEl.textContent = money(k.economic_total_with_overhead_usd);
-        annualDeltaEl.textContent = signedMoney(k.annual_cost_delta_vs_n0_usd) + " (" + signedPct(k.annual_cost_delta_vs_n0_pct, 2) + ")";
-        incrementalEl.textContent = signedMoney(k.incremental_cost_vs_prior_usd);
-        hireEl.textContent = money(k.hire_cost_usd);
-        meanLoadEl.textContent = Number(k.mean_existing_utilization || 0).toFixed(3);
-        peakLoadEl.textContent = Number(k.max_existing_utilization || 0).toFixed(3);
+        if (totalEl) totalEl.textContent = money(k.economic_total_with_overhead_usd);
+        if (annualDeltaEl) {{
+          annualDeltaEl.textContent = signedMoney(k.annual_cost_delta_vs_n0_usd) + " (" + signedPct(k.annual_cost_delta_vs_n0_pct, 2) + ")";
+        }}
+        if (hireEl) hireEl.textContent = money(k.hire_cost_usd);
 
         setSignedValueColor(annualDeltaEl, k.annual_cost_delta_vs_n0_usd);
-        setSignedValueColor(incrementalEl, k.incremental_cost_vs_prior_usd);
-
-        if (showUnmetKpi && unmetEl) {{
-          unmetEl.textContent = Number(k.unmet_appointments || 0).toFixed(1);
-        }}
 
         const installUnits = Number(k.install_units_enabled || 0);
         const hasInstallUpside = installUnits > 0;
-        installUnitsEl.textContent = hasInstallUpside ? installUnits.toFixed(1) : "—";
-        installRevenueEl.textContent = hasInstallUpside ? money(k.install_revenue_enabled_usd) : "—";
-        installProfitEl.textContent = hasInstallUpside ? money(k.install_profit_enabled_usd) : "—";
-        netValueEl.textContent = hasInstallUpside ? signedMoney(k.net_economic_value_install_usd) : "—";
-        breakEvenEl.textContent = hasInstallUpside ? Number(k.break_even_install_units || 0).toFixed(1) : "—";
-        roiEl.textContent = hasInstallUpside ? pct(k.roi_install_pct, 0) : "—";
+        if (installProfitEl) {{
+          installProfitEl.textContent = hasInstallUpside ? money(k.install_profit_enabled_usd) : "—";
+        }}
+        if (netValueEl) {{
+          netValueEl.textContent = hasInstallUpside ? signedMoney(k.net_economic_value_install_usd) : "—";
+        }}
+        if (breakEvenEl) {{
+          breakEvenEl.textContent = hasInstallUpside ? Number(k.break_even_install_units || 0).toFixed(1) : "—";
+        }}
         setSignedValueColor(netValueEl, k.net_economic_value_install_usd);
       }}
 
