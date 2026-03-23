@@ -82,13 +82,13 @@ class HistoricalViewTests(unittest.TestCase):
 
     def test_generated_map_payload_embeds_updated_historical_data(self):
         html = Path(config.MAP_OUTPUT).read_text()
-        match = re.search(
-            r"const historicalData = (\{.*?\});\n\s*const historicalDotLayerName",
-            html,
-            re.S,
-        )
-        self.assertIsNotNone(match)
-        historical = json.loads(match.group(1))
+        prefix = "const historicalData = "
+        suffix = ";\n      const historicalDotLayerName"
+        self.assertIn(prefix, html)
+        self.assertIn(suffix, html)
+        start = html.index(prefix) + len(prefix)
+        end = html.index(suffix, start)
+        historical = json.loads(html[start:end])
         stats = historical["tech_stats"]
 
         self.assertEqual(stats["David Bazany"]["base"], "San Antonio, TX")
