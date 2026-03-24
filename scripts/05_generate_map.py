@@ -1,4 +1,5 @@
 """Step 5: Generate the interactive Folium map and simulation UI."""
+import html
 import json
 import math
 import os
@@ -192,27 +193,99 @@ def build_plus_marker_html(color, hires_allocated=1.0, highlight=False):
     return marker_html, diameter
 
 
-def build_jittered_positions(lat, lon, count):
-    """Return small deterministic offsets for co-located markers."""
-    if count <= 1:
-        return [(float(lat), float(lon))]
-
-    radius_miles = 1.5 + (0.2 * max(0, count - 2))
-    lat_delta = radius_miles / 69.0
-    cos_lat = max(math.cos(math.radians(float(lat))), 0.2)
-    lon_delta = lat_delta / cos_lat
-    start_angle = -math.pi / 2.0
-
-    positions = []
-    for idx in range(count):
-        angle = start_angle + ((2.0 * math.pi * idx) / count)
-        positions.append(
-            (
-                float(lat) + (math.sin(angle) * lat_delta),
-                float(lon) + (math.cos(angle) * lon_delta),
-            )
+def build_unified_base_marker_html(group_size=1):
+    """Return one neutral base marker used for optimized/historical tech bases."""
+    count = max(int(group_size or 1), 1)
+    diameter = 28 if count <= 1 else 32
+    badge_html = ""
+    if count > 1:
+        badge_html = (
+            "<div style=\""
+            "position:absolute;right:-4px;top:-4px;"
+            "min-width:18px;height:18px;padding:0 5px;border-radius:999px;"
+            "background:#F8FAFC;border:1.5px solid #CBD5E1;color:#0F172A;"
+            "font-size:11px;font-weight:700;line-height:16px;text-align:center;"
+            "box-shadow:0 4px 10px rgba(15,23,42,0.18);"
+            "\">"
+            f"{count}"
+            "</div>"
         )
-    return positions
+
+    marker_html = (
+        "<div style=\""
+        "position:relative;display:flex;align-items:center;justify-content:center;"
+        f"width:{diameter}px;height:{diameter}px;"
+        "\">"
+        "<div style=\""
+        f"width:{diameter}px;height:{diameter}px;border-radius:50%;"
+        "background:#183B5B;border:2px solid #FFFFFF;color:#FFFFFF;"
+        "display:flex;align-items:center;justify-content:center;"
+        "font-size:18px;font-weight:700;"
+        "box-shadow:0 10px 18px rgba(15,23,42,0.28);"
+        "\">&#10010;</div>"
+        f"{badge_html}"
+        "</div>"
+    )
+    return marker_html, diameter
+
+
+def build_popup_plus_icon_html(color, size=18):
+    """Return a small colored plus icon for popup roster rows."""
+    icon_size = max(int(size), 14)
+    font_size = max(int(round(icon_size * 0.58)), 10)
+    return (
+        "<div style=\""
+        "flex:0 0 auto;display:flex;align-items:center;justify-content:center;"
+        f"width:{icon_size}px;height:{icon_size}px;border-radius:50%;"
+        f"background:{color};border:1.5px solid #FFFFFF;color:#FFFFFF;"
+        f"font-size:{font_size}px;font-weight:700;"
+        "box-shadow:0 4px 10px rgba(15,23,42,0.18);"
+        "\">&#10010;</div>"
+    )
+
+
+def build_grouped_base_popup_html(title, subtitle, entries):
+    """Return popup HTML for a shared base marker with per-tech rows."""
+    safe_title = html.escape(str(title or "Base"))
+    safe_subtitle = html.escape(str(subtitle or ""))
+    row_html = []
+
+    for entry in entries:
+        color = str(entry.get("color") or "#64748b")
+        name = html.escape(str(entry.get("name") or "Unknown"))
+        detail_parts = [
+            html.escape(str(part).strip())
+            for part in entry.get("details", [])
+            if str(part).strip()
+        ]
+        details_html = ""
+        if detail_parts:
+            details_html = (
+                "<div style=\"margin-top:2px;color:#64748B;font-size:12px;line-height:1.45;\">"
+                + " &middot; ".join(detail_parts)
+                + "</div>"
+            )
+
+        row_html.append(
+            "<div style=\"display:flex;align-items:flex-start;gap:10px;padding:8px 0;"
+            "border-top:1px solid rgba(148,163,184,0.18);\">"
+            f"{build_popup_plus_icon_html(color)}"
+            "<div style=\"min-width:0;\">"
+            f"<div style=\"color:#0F172A;font-size:13px;font-weight:700;line-height:1.35;\">{name}</div>"
+            f"{details_html}"
+            "</div>"
+            "</div>"
+        )
+
+    return (
+        "<div style=\"min-width:240px;max-width:300px;font-family:inherit;\">"
+        f"<div style=\"color:#0F172A;font-size:14px;font-weight:700;line-height:1.35;\">{safe_title}</div>"
+        f"<div style=\"margin-top:2px;color:#64748B;font-size:12px;line-height:1.4;\">{safe_subtitle}</div>"
+        "<div style=\"margin-top:8px;\">"
+        + "".join(row_html)
+        + "</div>"
+        "</div>"
+    )
 
 
 def build_current_tech_marker_color_map(territory_data, tech_color_map, ui_preset):
@@ -752,12 +825,12 @@ def add_technician_markers(
         group = group.sort_values(["name", "status"], ascending=[True, True]).reset_index(drop=True)
         lat = float(group.iloc[0]["lat"])
         lon = float(group.iloc[0]["lon"])
-        positions = build_jittered_positions(lat, lon, len(group))
+        location = str(group.iloc[0].get("location", "")).strip() or "Unknown"
+        popup_entries = []
 
-        for idx, (_, row) in enumerate(group.iterrows()):
+        for _, row in group.iterrows():
             status = str(row.get("status", "active")).lower()
             name = str(row.get("name", "")).strip()
-            location = str(row.get("location", "")).strip() or "Unknown"
             canonical_name = canonicalize_tech_name(name)
             color = (
                 marker_color_lookup.get(name)
@@ -766,42 +839,64 @@ def add_technician_markers(
                     status, ui_preset["tech_marker_colors"].get("active", "#2E6F5E")
                 )
             )
-            tooltip = f"{name} · {location}"
 
             comment_raw = row.get("comment", "")
             comment = "" if pd.isna(comment_raw) else str(comment_raw).strip()
             if comment.lower() == "nan":
                 comment = ""
+
             anchor_meta = anchor_metadata_by_name.get(name, {})
-            popup_parts = [
-                f"<b>{name}</b>",
-                f"Status: <b>{status.title()}</b>",
-                f"Base: {location}",
-            ]
+            detail_parts = [f"Status: {status.title()}", f"Base: {location}"]
             if comment:
-                popup_parts.append(f"Note: {comment}")
+                detail_parts.append(f"Note: {comment}")
             anchor_site = str(anchor_meta.get("anchor_site_name", "")).strip()
             if anchor_site:
-                popup_parts.append(f"Anchor site: {anchor_site}")
+                detail_parts.append(f"Anchor site: {anchor_site}")
             reserved = anchor_meta.get("anchor_reserved_fte")
             external = anchor_meta.get("external_field_fte")
             allowed_states = format_state_scope(anchor_meta.get("assignment_scope_states", ""))
             if pd.notna(reserved):
-                popup_parts.append(f"Reserved duty: {float(reserved):.0%}")
+                detail_parts.append(f"Reserved duty: {float(reserved):.0%}")
             if pd.notna(external):
-                popup_parts.append(f"External field capacity: {float(external):.0%}")
+                detail_parts.append(f"External field capacity: {float(external):.0%}")
             if allowed_states:
-                popup_parts.append(f"External assignment region: {allowed_states}")
+                detail_parts.append(f"External region: {allowed_states}")
             if anchor_meta.get("anchor_notes"):
-                popup_parts.append(str(anchor_meta["anchor_notes"]))
+                detail_parts.append(str(anchor_meta["anchor_notes"]))
 
-            marker_html, diameter = build_plus_marker_html(color, hires_allocated=1.0)
-            marker_lat, marker_lon = positions[idx]
+            popup_entries.append(
+                {
+                    "name": name,
+                    "color": color,
+                    "details": detail_parts,
+                }
+            )
+
+        group_size = len(popup_entries)
+        if group_size == 1:
+            marker_html, diameter = build_plus_marker_html(
+                popup_entries[0]["color"],
+                hires_allocated=1.0,
+            )
+            folium.Marker(
+                location=[lat, lon],
+                tooltip=f"{popup_entries[0]['name']} · {location}",
+                icon=folium.DivIcon(
+                    html=marker_html,
+                    icon_size=(diameter, diameter),
+                    icon_anchor=(diameter // 2, diameter // 2),
+                    class_name="elevate-tech-marker",
+                ),
+            ).add_to(fg)
+        else:
+            subtitle = f"{group_size} technicians at this base"
+            popup_html = build_grouped_base_popup_html(location, subtitle, popup_entries)
+            marker_html, diameter = build_unified_base_marker_html(group_size)
 
             folium.Marker(
-                location=[marker_lat, marker_lon],
-                popup=folium.Popup("<br>".join(popup_parts), max_width=320),
-                tooltip=tooltip,
+                location=[lat, lon],
+                popup=folium.Popup(popup_html, max_width=320),
+                tooltip=f"{location} · {group_size} techs",
                 icon=folium.DivIcon(
                     html=marker_html,
                     icon_size=(diameter, diameter),
@@ -2369,24 +2464,46 @@ def add_historical_assignment_layer(m, territory_data, historical_data, color_ma
         lat = float(group["lat"])
         lon = float(group["lon"])
         techs = sorted(group["techs"], key=lambda item: item["name"])
-        positions = build_jittered_positions(lat, lon, len(techs))
-
-        for idx, tech in enumerate(techs):
-            tooltip = f"{tech['name']} · {tech['base_label']}"
-            popup_parts = [
-                f"<b>{tech['name']}</b>",
-                f"Status: <b>{tech['status_label']}</b>",
-                f"Base: {tech['base_label']}",
-                f"Base source: {tech['base_source_label']}",
-                f"Appointments: {tech['appointments']}",
-            ]
-            marker_html, diameter = build_plus_marker_html(tech["color"], hires_allocated=1.0)
-            marker_lat, marker_lon = positions[idx]
+        popup_entries = [
+            {
+                "name": tech["name"],
+                "color": tech["color"],
+                "details": [
+                    f"{int(tech['appointments'])} appointments",
+                    tech["status_label"],
+                    tech["base_source_label"],
+                ],
+            }
+            for tech in techs
+        ]
+        group_size = len(popup_entries)
+        if group_size == 1:
+            marker_html, diameter = build_plus_marker_html(
+                popup_entries[0]["color"],
+                hires_allocated=1.0,
+            )
+            folium.Marker(
+                location=[lat, lon],
+                tooltip=f"{techs[0]['name']} · {techs[0]['base_label']}",
+                icon=folium.DivIcon(
+                    html=marker_html,
+                    icon_size=(diameter, diameter),
+                    icon_anchor=(diameter // 2, diameter // 2),
+                    class_name="elevate-hist-tech-marker",
+                ),
+            ).add_to(bases_fg)
+        else:
+            popup_html = build_grouped_base_popup_html(
+                techs[0]["base_label"],
+                f"{group_size} historical technicians at this base",
+                popup_entries,
+            )
+            marker_html, diameter = build_unified_base_marker_html(group_size)
 
             folium.Marker(
-                location=[marker_lat, marker_lon],
-                popup=folium.Popup("<br>".join(popup_parts), max_width=320),
-                tooltip=tooltip,
+                location=[lat, lon],
+                popup=folium.Popup(popup_html, max_width=320),
+                tooltip=f"{techs[0]['base_label']} · {group_size} techs",
                 icon=folium.DivIcon(
                     html=marker_html,
                     icon_size=(diameter, diameter),
