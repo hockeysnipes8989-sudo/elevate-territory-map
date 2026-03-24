@@ -462,6 +462,7 @@ def solve_scenario(
     max_hires_per_base: int,
     time_limit_sec: int,
     blank_slate: bool = False,
+    blank_slate_max_appointments_per_hire: int | None = None,
 ) -> dict:
     """Solve one MILP scenario for a fixed new-hire count."""
     nodes = nodes.reset_index(drop=True).copy()
@@ -688,6 +689,21 @@ def solve_scenario(
         lower.append(-np.inf)
         upper.append(0.0)
         r += 1
+
+    # Blank-slate-only per-hire appointment cap.
+    if blank_slate and blank_slate_max_appointments_per_hire is not None:
+        for ci in candidate_indices:
+            for ni in nodes.index:
+                idx = z_idx[(ci, ni)]
+                rows.append(r)
+                cols.append(idx)
+                data.append(1.0)
+            rows.append(r)
+            cols.append(y_idx[ci])
+            data.append(-float(blank_slate_max_appointments_per_hire))
+            lower.append(-np.inf)
+            upper.append(0.0)
+            r += 1
 
     # Sum of hires equals scenario count.
     if candidate_indices:
@@ -1065,6 +1081,15 @@ def main() -> None:
             "new hires on HPS nodes, and write outputs to the blank_slate subdirectory."
         ),
     )
+    parser.add_argument(
+        "--blank-slate-max-appointments-per-hire",
+        type=int,
+        default=config.BLANK_SLATE_MAX_APPOINTMENTS_PER_HIRE,
+        help=(
+            "Hard cap on assigned appointments per synthetic hire in blank-slate "
+            "mode. Applies to appointment count, not duration hours."
+        ),
+    )
     args = parser.parse_args()
     if args.annual_hire_cost_usd < 0:
         raise ValueError("--annual-hire-cost-usd must be non-negative.")
@@ -1072,6 +1097,8 @@ def main() -> None:
         raise ValueError("--out-of-region-penalty must be non-negative.")
     if args.max_hires_per_base < 1:
         raise ValueError("--max-hires-per-base must be at least 1.")
+    if args.blank_slate_max_appointments_per_hire < 1:
+        raise ValueError("--blank-slate-max-appointments-per-hire must be at least 1.")
     if not (0 < args.target_utilization <= 1.0):
         raise ValueError("--target-utilization must be in range (0, 1.0].")
     if args.blank_slate:
@@ -1247,6 +1274,9 @@ def main() -> None:
                 max_hires_per_base=args.max_hires_per_base,
                 time_limit_sec=args.time_limit_sec,
                 blank_slate=args.blank_slate,
+                blank_slate_max_appointments_per_hire=(
+                    args.blank_slate_max_appointments_per_hire if args.blank_slate else None
+                ),
             )
         except RuntimeError as exc:
             msg = f"Solver error for N={hire_count}: {exc}"
@@ -1346,6 +1376,16 @@ def main() -> None:
         "blank_slate": bool(args.blank_slate),
         "blank_slate_hire_count": int(args.max_new_hires) if args.blank_slate else None,
         "blank_slate_unique_bases": bool(args.blank_slate),
+        "blank_slate_max_appointments_per_hire": (
+            int(args.blank_slate_max_appointments_per_hire) if args.blank_slate else None
+        ),
+        "blank_slate_appointment_cap_note": (
+            f"Blank-slate synthetic hires are capped at "
+            f"{int(args.blank_slate_max_appointments_per_hire)} assigned appointments each. "
+            "This is an appointment-count ceiling, not a duration-hours or utilization cap."
+            if args.blank_slate
+            else None
+        ),
         "target_utilization": args.target_utilization,
         "out_of_region_penalty": args.out_of_region_penalty,
         "unmet_penalty": args.unmet_penalty,

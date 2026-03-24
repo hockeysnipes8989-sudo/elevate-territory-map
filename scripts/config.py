@@ -19,6 +19,9 @@ DEFAULT_ANNUAL_HIRE_COST_USD = 146640.0
 DEFAULT_OUT_OF_REGION_PENALTY_USD = 0.0
 # Verified current field-tech roster count (includes HTX contractors).
 EXPECTED_CURRENT_TECH_COUNT = 16
+# Blank-slate rebuilds should keep each synthetic hire at or below the
+# historical high-water mark for annual appointment count.
+BLANK_SLATE_MAX_APPOINTMENTS_PER_HIRE = 163
 
 # Source Excel files
 SERVICE_APPTS_DISPATCH = os.path.join(

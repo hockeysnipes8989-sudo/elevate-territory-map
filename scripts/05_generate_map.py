@@ -1343,12 +1343,9 @@ def load_blank_slate_data():
         return None
     summary_df["scenario_hires"] = summary_df["scenario_hires"].astype(int)
 
-    if "solver_status" in summary_df.columns:
-        summary_df = summary_df[
-            pd.to_numeric(summary_df["solver_status"], errors="coerce") != -1
-        ].copy()
-    if summary_df.empty:
-        return None
+    summary_df["solver_status"] = pd.to_numeric(
+        summary_df.get("solver_status"), errors="coerce"
+    )
 
     placements_df["scenario_hires"] = pd.to_numeric(
         placements_df.get("scenario_hires"), errors="coerce"
@@ -1370,6 +1367,14 @@ def load_blank_slate_data():
             return float(raw)
         return float(raw) / data_span_years
 
+    def annualize_optional(value):
+        raw = pd.to_numeric(value, errors="coerce")
+        if pd.isna(raw):
+            return None
+        if data_span_years <= 0:
+            return float(raw)
+        return float(raw) / data_span_years
+
     summary_df = summary_df.sort_values("scenario_hires").reset_index(drop=True)
     available_scenarios = summary_df["scenario_hires"].astype(int).tolist()
     if not available_scenarios:
@@ -1379,6 +1384,9 @@ def load_blank_slate_data():
     scenarios = {}
     for _, row in summary_df.iterrows():
         scenario = int(row["scenario_hires"])
+        solver_status_raw = row.get("solver_status")
+        solver_status = None if pd.isna(solver_status_raw) else int(solver_status_raw)
+        is_infeasible = solver_status == -1
         scenario_placements_df = placements_df[
             placements_df["scenario_hires"] == scenario
         ].sort_values(
@@ -1410,15 +1418,42 @@ def load_blank_slate_data():
         scenarios[str(scenario)] = {
             "scenario_hires": scenario,
             "data_span_years": data_span_years,
-            "total_appointments": int(round(safe_number(row.get("total_appointments", 0)))),
-            "travel_cost_usd": round(safe_number(row.get("travel_cost_usd", 0)), 2),
-            "annualized_total_cost_usd": round(annualize(total_cost_raw), 2),
-            "annualized_travel_cost_usd": round(annualize(row.get("travel_cost_usd", 0)), 2),
-            "annualized_hire_cost_usd": round(annualize(row.get("hire_cost_usd", 0)), 2),
+            "is_infeasible": is_infeasible,
+            "blank_slate_max_appointments_per_hire": assumptions.get(
+                "blank_slate_max_appointments_per_hire"
+            ),
+            "blank_slate_appointment_cap_note": str(
+                assumptions.get("blank_slate_appointment_cap_note", "") or ""
+            ),
+            "total_appointments": (
+                None
+                if pd.isna(pd.to_numeric(row.get("total_appointments"), errors="coerce"))
+                else int(round(safe_number(row.get("total_appointments", 0))))
+            ),
+            "travel_cost_usd": (
+                None
+                if pd.isna(pd.to_numeric(row.get("travel_cost_usd"), errors="coerce"))
+                else round(safe_number(row.get("travel_cost_usd", 0)), 2)
+            ),
+            "annualized_total_cost_usd": (
+                None
+                if annualize_optional(total_cost_raw) is None
+                else round(annualize_optional(total_cost_raw), 2)
+            ),
+            "annualized_travel_cost_usd": (
+                None
+                if annualize_optional(row.get("travel_cost_usd", 0)) is None
+                else round(annualize_optional(row.get("travel_cost_usd", 0)), 2)
+            ),
+            "annualized_hire_cost_usd": (
+                None
+                if annualize_optional(row.get("hire_cost_usd", 0)) is None
+                else round(annualize_optional(row.get("hire_cost_usd", 0)), 2)
+            ),
             "total_placements": total_placements,
             "placements": placements,
             "solver_proven_optimal": safe_number(row.get("solver_proven_optimal", 0), 0) == 1,
-            "solver_status": int(round(safe_number(row.get("solver_status", 0)))),
+            "solver_status": solver_status,
             "solver_mip_gap": safe_number(row.get("solver_mip_gap"), default=np.nan)
             if not pd.isna(pd.to_numeric(row.get("solver_mip_gap"), errors="coerce"))
             else None,
@@ -1430,6 +1465,12 @@ def load_blank_slate_data():
         "available_scenarios": available_scenarios,
         "default_scenario": default_scenario,
         "scenarios": scenarios,
+        "blank_slate_max_appointments_per_hire": assumptions.get(
+            "blank_slate_max_appointments_per_hire"
+        ),
+        "blank_slate_appointment_cap_note": str(
+            assumptions.get("blank_slate_appointment_cap_note", "") or ""
+        ),
     }
 
 
@@ -3298,6 +3339,10 @@ def build_simulation_panel_markup():
           <p class="sim-section-caption">Modeled rebuild with all hires placed from scratch</p>
         </div>
 
+        <div class="sim-section" id="blank-status-section" style="display:none;">
+          <div id="blank-status" class="sim-list-box sim-empty"></div>
+        </div>
+
         <div class="sim-section" id="blank-scenarios-section">
           <div class="sim-section-label">Scenarios</div>
           <div id="blank-sim-buttons"></div>
@@ -3867,6 +3912,7 @@ def build_simulation_panel_script(
         }}
         lastBlankSlateScenario = scenarioKey;
         setActiveBlankSlateButton(scenarioKey);
+        renderBlankSlateStatus(scenarioKey);
         renderBlankSlateKpis(scenarioKey);
         renderBlankSlatePlacements(scenarioKey);
       }}
@@ -4016,16 +4062,60 @@ def build_simulation_panel_script(
         const totalTravelEl = document.getElementById("blank-kpi-travel-total");
         const annualTravelEl = document.getElementById("blank-kpi-travel-annual");
         const placementsEl = document.getElementById("blank-kpi-placements");
-        if (apptsEl) apptsEl.textContent = Number(item.total_appointments || 0).toLocaleString();
-        if (totalTravelEl) totalTravelEl.textContent = money(item.travel_cost_usd);
-        if (annualTravelEl) annualTravelEl.textContent = money(item.annualized_travel_cost_usd);
-        if (placementsEl) placementsEl.textContent = Number(item.total_placements || 0).toLocaleString();
+        const isInfeasible = !!item.is_infeasible;
+        if (apptsEl) {{
+          apptsEl.textContent = isInfeasible || item.total_appointments == null
+            ? "—"
+            : Number(item.total_appointments || 0).toLocaleString();
+        }}
+        if (totalTravelEl) {{
+          totalTravelEl.textContent = isInfeasible || item.travel_cost_usd == null
+            ? "—"
+            : money(item.travel_cost_usd);
+        }}
+        if (annualTravelEl) {{
+          annualTravelEl.textContent = isInfeasible || item.annualized_travel_cost_usd == null
+            ? "—"
+            : money(item.annualized_travel_cost_usd);
+        }}
+        if (placementsEl) {{
+          placementsEl.textContent = isInfeasible
+            ? "—"
+            : Number(item.total_placements || 0).toLocaleString();
+        }}
+      }}
+
+      function renderBlankSlateStatus(scenario) {{
+        const item = getBlankSlateScenarioData(scenario);
+        const sectionEl = document.getElementById("blank-status-section");
+        const statusEl = document.getElementById("blank-status");
+        if (!sectionEl || !statusEl || !item) return;
+        if (!item.is_infeasible) {{
+          sectionEl.style.display = "none";
+          statusEl.textContent = "";
+          return;
+        }}
+
+        const cap = item.blank_slate_max_appointments_per_hire;
+        const capLabel = cap == null
+          ? "the configured per-hire appointment cap"
+          : `${{cap}} appointments per hire`;
+        let message = `Capped blank-slate rebuild could not be solved at N=${{item.scenario_hires}} under ${{capLabel}}.`;
+        if (item.solver_message) {{
+          message += ` Solver status: ${{item.solver_message}}`;
+        }}
+        sectionEl.style.display = "block";
+        statusEl.textContent = message;
       }}
 
       function renderBlankSlatePlacements(scenario) {{
         const listEl = document.getElementById("blank-placement-list");
         if (!listEl) return;
         const item = getBlankSlateScenarioData(scenario);
+        if (item && item.is_infeasible) {{
+          listEl.innerHTML = '<div class="sim-empty">No placements are available because this capped blank-slate scenario is infeasible.</div>';
+          return;
+        }}
         if (!item || !Array.isArray(item.placements) || !item.placements.length) {{
           listEl.innerHTML = '<div class="sim-empty">No blank-slate placements available.</div>';
           return;
@@ -4476,12 +4566,24 @@ def main():
                 blank_scenarios = [str(s) for s in blank_slate_data["available_scenarios"]]
                 default_blank_scenario = str(blank_slate_data["default_scenario"])
                 default_blank_item = blank_slate_data["scenarios"][default_blank_scenario]
-                print(
-                    f"  Blank slate scenarios: {', '.join(blank_scenarios)} "
-                    f"(default N={default_blank_scenario}, "
-                    f"{default_blank_item['total_placements']} placements, "
-                    f"annualized cost ${default_blank_item['annualized_total_cost_usd']:,.0f})"
-                )
+                if default_blank_item.get("is_infeasible"):
+                    cap = default_blank_item.get("blank_slate_max_appointments_per_hire")
+                    cap_label = (
+                        f"{int(cap)} appointments per hire"
+                        if pd.notna(pd.to_numeric(cap, errors='coerce'))
+                        else "configured per-hire appointment cap"
+                    )
+                    print(
+                        f"  Blank slate scenarios: {', '.join(blank_scenarios)} "
+                        f"(default N={default_blank_scenario}, infeasible under {cap_label})"
+                    )
+                else:
+                    print(
+                        f"  Blank slate scenarios: {', '.join(blank_scenarios)} "
+                        f"(default N={default_blank_scenario}, "
+                        f"{default_blank_item['total_placements']} placements, "
+                        f"annualized cost ${default_blank_item['annualized_total_cost_usd']:,.0f})"
+                    )
                 blank_territory_data = load_blank_slate_assignment_data()
                 blank_slate_color_map = build_tech_color_map(
                     blank_territory_data,
