@@ -234,7 +234,7 @@ class BlankSlateTests(unittest.TestCase):
             pd.DataFrame(
                 [
                     {
-                        "scenario_hires": 16,
+                        "scenario_hires": 11,
                         "solver_status": 0,
                         "solver_message": "Optimal",
                         "total_appointments": 120.0,
@@ -248,7 +248,7 @@ class BlankSlateTests(unittest.TestCase):
             pd.DataFrame(
                 [
                     {
-                        "scenario_hires": 16,
+                        "scenario_hires": 11,
                         "candidate_id": "airport_jfk",
                         "city": "New York",
                         "state": "NY",
@@ -270,14 +270,14 @@ class BlankSlateTests(unittest.TestCase):
                 config.OPTIMIZATION_DIR = old_opt_dir
 
             self.assertIsNotNone(payload)
-            self.assertEqual(payload["scenario_hires"], 16)
+            self.assertEqual(payload["scenario_hires"], 11)
             self.assertEqual(payload["total_placements"], 1)
             self.assertEqual(payload["annualized_total_cost_usd"], 300000.0)
             self.assertEqual(payload["annualized_travel_cost_usd"], 200000.0)
             self.assertEqual(payload["placements"][0]["lat"], 40.6413)
             self.assertEqual(payload["placements"][0]["lon"], -73.7781)
 
-    def test_load_blank_slate_assignment_data_keeps_scenario_16(self):
+    def test_load_blank_slate_assignment_data_keeps_scenario_11(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             blank_dir = root / config.BLANK_SLATE_SUBDIR
@@ -324,7 +324,7 @@ class BlankSlateTests(unittest.TestCase):
             pd.DataFrame(
                 [
                     {
-                        "scenario_hires": 16,
+                        "scenario_hires": 11,
                         "candidate_id": "airport_dfw",
                         "candidate_type": "major_airport",
                         "candidate_city": "Dallas",
@@ -355,7 +355,7 @@ class BlankSlateTests(unittest.TestCase):
                 config.SIM_SCENARIO_MAX = old_max
 
             self.assertIsNotNone(data)
-            self.assertEqual(data["available_scenarios"], [16])
+            self.assertEqual(data["available_scenarios"], [11])
 
 
 if __name__ == "__main__":
