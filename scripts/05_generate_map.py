@@ -3551,6 +3551,11 @@ def build_simulation_panel_script(
           sectionEl.style.display = "none";
           return;
         }}
+        if (blankSlateData.available_scenarios.length <= 1) {{
+          sectionEl.style.display = "none";
+          container.innerHTML = "";
+          return;
+        }}
         sectionEl.style.display = "";
         container.innerHTML = "";
         blankSlateData.available_scenarios.forEach((scenario) => {{
