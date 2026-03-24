@@ -1869,6 +1869,11 @@ def load_historical_data(territory_data, out_dir):
     demand_appts = territory_data["demand_appts"].copy()
     tech_master = territory_data["tech_master"].copy()
     historical_roster = territory_data.get("historical_roster", pd.DataFrame()).copy()
+    excluded_historical_names = {
+        canonicalize_tech_name(name)
+        for name in getattr(config, "HISTORICAL_VIEW_EXCLUDED_TECH_NAMES", set())
+        if canonicalize_tech_name(name)
+    }
 
     cost_table_path = os.path.join(out_dir, "full_cost_table.csv")
     if not os.path.exists(cost_table_path):
@@ -1992,6 +1997,10 @@ def load_historical_data(territory_data, out_dir):
     demand_appts["canonical_tech_name"] = demand_appts["Service Resource: Name"].apply(
         canonicalize_tech_name
     )
+    if excluded_historical_names:
+        demand_appts = demand_appts[
+            ~demand_appts["canonical_tech_name"].isin(excluded_historical_names)
+        ].copy()
     demand_appts["node_id"] = (
         demand_appts["state_norm"].astype(str) + "__" + demand_appts["skill_class"].astype(str)
     )
@@ -2035,6 +2044,8 @@ def load_historical_data(territory_data, out_dir):
                 row.get("tech_name", row.get("source_name", ""))
             )
             if not canonical_name:
+                continue
+            if canonical_name in excluded_historical_names:
                 continue
             base_source = str(row.get("base_source", "")).strip() or "unknown"
             status = str(row.get("status", "")).strip() or "unknown"
@@ -2261,6 +2272,15 @@ def add_historical_assignment_layer(m, territory_data, historical_data, color_ma
     demand_appts["canonical_tech_name"] = demand_appts["Service Resource: Name"].apply(
         canonicalize_tech_name
     )
+    excluded_historical_names = {
+        canonicalize_tech_name(name)
+        for name in getattr(config, "HISTORICAL_VIEW_EXCLUDED_TECH_NAMES", set())
+        if canonicalize_tech_name(name)
+    }
+    if excluded_historical_names:
+        demand_appts = demand_appts[
+            ~demand_appts["canonical_tech_name"].isin(excluded_historical_names)
+        ].copy()
 
     dots_fg = folium.FeatureGroup(
         "Territory Dots Historical", show=False, control=False

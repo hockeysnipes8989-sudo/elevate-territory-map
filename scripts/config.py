@@ -110,6 +110,12 @@ HISTORICAL_VIEW_ENABLED = True
 # incomplete or only gives a region-level location.
 HISTORICAL_BASE_MANUAL_OVERRIDES = {}
 
+# Historical-tab-only exclusions for names that should not be surfaced in the
+# stakeholder view even if they appear in raw dispatch data.
+HISTORICAL_VIEW_EXCLUDED_TECH_NAMES = {
+    "Alex Rondero",
+}
+
 HISTORICAL_BASE_REGION_CANDIDATES = {
     "Alberta, Canada": [
         {
