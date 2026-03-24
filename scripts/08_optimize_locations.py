@@ -193,6 +193,23 @@ def compute_hours_per_unit(
     )
 
 
+def prepare_demand_for_solve(demand: pd.DataFrame, blank_slate: bool) -> tuple[pd.DataFrame, int]:
+    """Return scenario-specific demand rows without mutating the source frame."""
+    prepared = demand.copy()
+    if not blank_slate:
+        return prepared, 0
+
+    if "state_norm" in prepared.columns:
+        normalized_state = prepared["state_norm"].map(normalize_state)
+    else:
+        normalized_state = pd.Series("", index=prepared.index, dtype="object")
+    florida_mask = normalized_state.fillna("").eq("FL")
+    removed = int(florida_mask.sum())
+    if removed:
+        prepared = prepared.loc[~florida_mask].copy()
+    return prepared, removed
+
+
 def build_demand_nodes(demand: pd.DataFrame) -> pd.DataFrame:
     """Aggregate appointments into demand nodes by state + skill class."""
     demand = demand.copy()
@@ -387,6 +404,17 @@ def tech_eligible_for_node(tech: pd.Series, node: pd.Series, contractor_scope: s
     return True
 
 
+def synthetic_new_hire_eligible_for_node(node: pd.Series, blank_slate: bool) -> bool:
+    """Return whether a synthetic new hire can cover a demand node."""
+    if blank_slate:
+        return True
+    if int(node.get("required_hps", 0)) == 1:
+        return False
+    if int(node.get("required_ls", 0)) == 1:
+        return False
+    return True
+
+
 def _infeasible_summary(hire_count: int, message: str, baseline_canceled_voided_usd: float) -> dict:
     """Build a summary row for a scenario that could not be solved.
 
@@ -529,13 +557,16 @@ def solve_scenario(
     for ci in candidate_indices:
         crow = candidates.loc[ci]
         for ni, nrow in nodes.iterrows():
-            node_requires_hps = int(nrow.get("required_hps", 0)) == 1
+            hire_skill_eligible = synthetic_new_hire_eligible_for_node(
+                nrow,
+                blank_slate=blank_slate,
+            )
             idx = len(var_names)
             z_idx[(ci, ni)] = idx
             var_names.append(f"z__{crow['candidate_id']}__{nrow['node_id']}")
             lb.append(0.0)
             # In blank-slate mode every hire is hypothetical and treated as fully trained.
-            if node_requires_hps and not blank_slate:
+            if not hire_skill_eligible:
                 ub.append(0.0)
             else:
                 ub.append(float(nrow["appointment_count"]))
@@ -555,7 +586,7 @@ def solve_scenario(
             )
             zone_feasible, zone_penalty = evaluate_zone_policy(jump, config.ZONE_POLICY_STANDARD)
             hub_penalty = evaluate_hub_penalty(crow.get("hub_tier"), trip_mode)
-            if (node_requires_hps and not blank_slate) or not zone_feasible:
+            if not hire_skill_eligible or not zone_feasible:
                 ub[-1] = 0.0
             obj.append(base_cost + penalty + zone_penalty + hub_penalty)
             meta.append(
@@ -1140,6 +1171,12 @@ def main() -> None:
     if args.blank_slate:
         print("  Blank slate mode: zeroing existing technician availability.")
         tech["availability_fte"] = 0.0
+    demand, florida_rows_removed = prepare_demand_for_solve(demand, args.blank_slate)
+    if args.blank_slate:
+        print(
+            f"  Blank slate mode: removed {florida_rows_removed} Florida appointment row(s); "
+            f"{len(demand):,} demand row(s) remain."
+        )
 
     demand_nodes = build_demand_nodes(demand)
 
@@ -1170,6 +1207,11 @@ def main() -> None:
     # Hire cost must be scaled to match for like-for-like comparison in the MILP.
     hire_cost_for_period = args.annual_hire_cost_usd * data_span_years
     print(f"  Annual hire cost: ${args.annual_hire_cost_usd:,.0f} × {data_span_years:.2f} years = ${hire_cost_for_period:,.0f} for optimization period")
+    if not args.blank_slate:
+        print(
+            "  Optimized synthetic new hires are modeled as patient-sim-only: "
+            "they cannot cover Learning Space / AVS, and their HPS restriction remains active."
+        )
 
     scenario_counts = (
         [args.max_new_hires]

@@ -28,6 +28,27 @@ step08 = load_module("step08_optimize_blank", "08_optimize_locations.py")
 
 
 class BlankSlateTests(unittest.TestCase):
+    def test_prepare_demand_for_solve_filters_florida_only_for_blank_slate(self):
+        demand = pd.DataFrame(
+            [
+                {"appointment_id": "TX1", "state_norm": "TX", "duration_hours": 8.0},
+                {"appointment_id": "FL1", "state_norm": "FL", "duration_hours": 8.0},
+                {"appointment_id": "GA1", "state_norm": "GA", "duration_hours": 8.0},
+                {"appointment_id": "FL2", "state_norm": "Florida", "duration_hours": 8.0},
+            ]
+        )
+
+        blank_filtered, removed = step08.prepare_demand_for_solve(demand, blank_slate=True)
+        regular_filtered, regular_removed = step08.prepare_demand_for_solve(
+            demand, blank_slate=False
+        )
+
+        self.assertEqual(removed, 2)
+        self.assertEqual(blank_filtered["appointment_id"].tolist(), ["TX1", "GA1"])
+        self.assertEqual(regular_removed, 0)
+        self.assertEqual(regular_filtered["appointment_id"].tolist(), ["TX1", "FL1", "GA1", "FL2"])
+        self.assertEqual(demand["appointment_id"].tolist(), ["TX1", "FL1", "GA1", "FL2"])
+
     def test_blank_slate_solver_uses_hire_count_capacity_and_allows_hps(self):
         tech = pd.DataFrame(
             [
@@ -108,6 +129,90 @@ class BlankSlateTests(unittest.TestCase):
             5.0,
         )
         self.assertTrue(result["existing_assignments"].empty)
+
+    def test_blank_slate_solver_still_allows_learning_space_for_new_hires(self):
+        tech = pd.DataFrame(
+            [
+                {
+                    "tech_id": "inactive_tech",
+                    "tech_name": "Inactive Tech",
+                    "employment_type": "fte",
+                    "availability_fte": 0.0,
+                    "base_state": "TX",
+                    "base_airport_iata": "DFW",
+                    "skill_hps": 1,
+                    "skill_ls": 1,
+                    "skill_patient": 1,
+                    "constraint_florida_only": 0,
+                    "assignment_scope_mode": config.ASSIGNMENT_SCOPE_MODE_NATIONAL,
+                    "assignment_scope_state": "",
+                    "zone_policy": config.ZONE_POLICY_STANDARD,
+                    "base_operational_zone_rank": 1,
+                }
+            ]
+        )
+        nodes = pd.DataFrame(
+            [
+                {
+                    "node_id": "TX__ls",
+                    "state_norm": "TX",
+                    "skill_class": "ls",
+                    "required_hps": 0,
+                    "required_ls": 1,
+                    "appointment_count": 4.0,
+                    "demand_hours": 8.0,
+                    "avg_hours_per_appointment": 2.0,
+                    "node_operational_zone_label": "Central",
+                    "node_operational_zone_rank": 1,
+                }
+            ]
+        )
+        candidates = pd.DataFrame(
+            [
+                {
+                    "candidate_id": "airport_dfw",
+                    "candidate_type": "major_airport",
+                    "city": "Dallas",
+                    "state": "TX",
+                    "airport_iata": "DFW",
+                    "operational_zone_label": "Central",
+                    "operational_zone_rank": 1,
+                    "hub_tier": config.HUB_TIER_LARGE,
+                }
+            ]
+        )
+        full_cost_lookup = {
+            ("airport_dfw", "TX__ls"): {
+                "unit_cost_usd": 100.0,
+                "travel_cost_policy": config.TRAVEL_COST_POLICY_EMPLOYEE,
+            }
+        }
+
+        result = step08.solve_scenario(
+            hire_count=1,
+            tech=tech,
+            nodes=nodes,
+            candidates=candidates,
+            full_cost_lookup=full_cost_lookup,
+            contractor_scope="anywhere",
+            target_utilization=0.5,
+            out_of_region_penalty=0.0,
+            unmet_penalty=5000.0,
+            annual_hire_cost_usd=1000.0,
+            max_hires_per_base=1,
+            time_limit_sec=5,
+            blank_slate=True,
+        )
+
+        self.assertEqual(result["summary"]["unmet_appointments"], 0.0)
+        self.assertEqual(
+            float(result["new_assignments"]["assigned_appointments"].sum()),
+            4.0,
+        )
+        self.assertEqual(
+            result["new_assignments"].iloc[0]["skill_class"],
+            "ls",
+        )
 
     def test_load_blank_slate_data_annualizes_costs_and_merges_coordinates(self):
         with tempfile.TemporaryDirectory() as tmpdir:

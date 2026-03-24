@@ -94,6 +94,27 @@ class PhaseOneModelingTests(unittest.TestCase):
         self.assertTrue(feasible)
         self.assertEqual(penalty, config.CONTRACTOR_THREE_PLUS_ZONE_JUMP_PENALTY_USD)
 
+    def test_synthetic_new_hire_eligibility_blocks_ls_and_hps_outside_blank_slate(self):
+        regular_node = pd.Series({"required_hps": 0, "required_ls": 0})
+        ls_node = pd.Series({"required_hps": 0, "required_ls": 1})
+        hps_node = pd.Series({"required_hps": 1, "required_ls": 0})
+
+        self.assertTrue(
+            step08.synthetic_new_hire_eligible_for_node(regular_node, blank_slate=False)
+        )
+        self.assertFalse(
+            step08.synthetic_new_hire_eligible_for_node(ls_node, blank_slate=False)
+        )
+        self.assertFalse(
+            step08.synthetic_new_hire_eligible_for_node(hps_node, blank_slate=False)
+        )
+        self.assertTrue(
+            step08.synthetic_new_hire_eligible_for_node(ls_node, blank_slate=True)
+        )
+        self.assertTrue(
+            step08.synthetic_new_hire_eligible_for_node(hps_node, blank_slate=True)
+        )
+
     def test_ground_transport_threshold_uses_one_way_median_distance(self):
         under = step11.compute_ground_transport(124.0, 3)
         over = step11.compute_ground_transport(125.0, 3)
@@ -264,6 +285,108 @@ class PhaseOneModelingTests(unittest.TestCase):
         )
         self.assertTrue(step08.tech_eligible_for_node(anchored_tech, md_node, "anywhere"))
         self.assertFalse(step08.tech_eligible_for_node(anchored_tech, ny_node, "anywhere"))
+
+    def test_normal_solver_keeps_ls_with_incumbent_and_regular_with_new_hire(self):
+        tech = pd.DataFrame(
+            [
+                {
+                    "tech_id": "tech_ls",
+                    "tech_name": "LS Tech",
+                    "employment_type": "fte",
+                    "availability_fte": 1.0,
+                    "base_state": "TX",
+                    "base_airport_iata": "DFW",
+                    "base_hub_tier": config.HUB_TIER_LARGE,
+                    "skill_hps": 0,
+                    "skill_ls": 1,
+                    "skill_patient": 1,
+                    "constraint_florida_only": 0,
+                    "assignment_scope_mode": config.ASSIGNMENT_SCOPE_MODE_NATIONAL,
+                    "assignment_scope_state": "",
+                    "zone_policy": config.ZONE_POLICY_STANDARD,
+                    "base_operational_zone_rank": 1,
+                }
+            ]
+        )
+        nodes = pd.DataFrame(
+            [
+                {
+                    "node_id": "TX__ls",
+                    "state_norm": "TX",
+                    "skill_class": "ls",
+                    "required_hps": 0,
+                    "required_ls": 1,
+                    "appointment_count": 1.0,
+                    "demand_hours": 1.0,
+                    "avg_hours_per_appointment": 1.0,
+                    "node_operational_zone_label": "Central",
+                    "node_operational_zone_rank": 1,
+                },
+                {
+                    "node_id": "TX__regular",
+                    "state_norm": "TX",
+                    "skill_class": "regular",
+                    "required_hps": 0,
+                    "required_ls": 0,
+                    "appointment_count": 1.0,
+                    "demand_hours": 100.0,
+                    "avg_hours_per_appointment": 100.0,
+                    "node_operational_zone_label": "Central",
+                    "node_operational_zone_rank": 1,
+                },
+            ]
+        )
+        candidates = pd.DataFrame(
+            [
+                {
+                    "candidate_id": "airport_dfw",
+                    "candidate_type": "major_airport",
+                    "city": "Dallas",
+                    "state": "TX",
+                    "airport_iata": "DFW",
+                    "hub_tier": config.HUB_TIER_LARGE,
+                    "operational_zone_label": "Central",
+                    "operational_zone_rank": 1,
+                }
+            ]
+        )
+        full_cost_lookup = {
+            ("tech_ls", "TX__ls"): {"unit_cost_usd": 10.0, "trip_mode": "drive_day"},
+            ("tech_ls", "TX__regular"): {"unit_cost_usd": 1000.0, "trip_mode": "drive_day"},
+            ("airport_dfw", "TX__ls"): {"unit_cost_usd": 1.0, "trip_mode": "drive_day"},
+            ("airport_dfw", "TX__regular"): {"unit_cost_usd": 1.0, "trip_mode": "drive_day"},
+        }
+
+        result = step08.solve_scenario(
+            hire_count=1,
+            tech=tech,
+            nodes=nodes,
+            candidates=candidates,
+            full_cost_lookup=full_cost_lookup,
+            contractor_scope="anywhere",
+            target_utilization=1.0,
+            out_of_region_penalty=0.0,
+            unmet_penalty=5000.0,
+            annual_hire_cost_usd=0.0,
+            max_hires_per_base=1,
+            time_limit_sec=5,
+            blank_slate=False,
+        )
+
+        new_assignments = result["new_assignments"].set_index("node_id")
+        existing_assignments = result["existing_assignments"].set_index("node_id")
+
+        self.assertNotIn("TX__ls", new_assignments.index)
+        self.assertIn("TX__regular", new_assignments.index)
+        self.assertEqual(
+            float(new_assignments.loc["TX__regular", "assigned_appointments"]),
+            1.0,
+        )
+        self.assertIn("TX__ls", existing_assignments.index)
+        self.assertEqual(
+            float(existing_assignments.loc["TX__ls", "assigned_appointments"]),
+            1.0,
+        )
 
 
 if __name__ == "__main__":
