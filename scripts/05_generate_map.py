@@ -2747,6 +2747,10 @@ def build_simulation_panel_css(ui_preset):
         font: 600 12px {ui_preset["font_family"]};
         cursor: pointer;
       }}
+      .leaflet-top.leaflet-left .leaflet-control-zoom {{
+        margin-top: 10px;
+        transition: margin-top 0.18s ease;
+      }}
       .sim-header {{
         margin-bottom: 18px;
       }}
@@ -3676,6 +3680,7 @@ def build_simulation_panel_script(
         }} else {{
           toggleEl.style.display = "none";
         }}
+        updateZoomControlOffset();
       }}
 
       function syncAirportLayerVisibility() {{
@@ -3716,6 +3721,7 @@ def build_simulation_panel_script(
         renderKpis(scenario);
         renderRecommendations(scenario);
         renderCoverageAssignments(scenario);
+        updateZoomControlOffset();
       }}
 
       function resolveLayers() {{
@@ -3756,7 +3762,28 @@ def build_simulation_panel_script(
         if (!button || !panel) return;
         button.addEventListener("click", () => {{
           panel.classList.toggle("mobile-open");
+          window.setTimeout(updateZoomControlOffset, 0);
         }});
+      }}
+
+      function updateZoomControlOffset() {{
+        const zoomControl = document.querySelector(".leaflet-control-zoom");
+        if (!zoomControl) return;
+
+        const panel = document.getElementById("sim-panel");
+        const toggle = document.getElementById("sim-panel-toggle");
+        let desiredOffset = 10;
+
+        if (panel && window.getComputedStyle(panel).display !== "none") {{
+          const panelRect = panel.getBoundingClientRect();
+          desiredOffset = Math.max(desiredOffset, Math.round(panelRect.bottom + 12));
+        }} else if (toggle && window.getComputedStyle(toggle).display !== "none") {{
+          const toggleRect = toggle.getBoundingClientRect();
+          desiredOffset = Math.max(desiredOffset, Math.round(toggleRect.bottom + 12));
+        }}
+
+        const maxVisibleOffset = Math.max(10, window.innerHeight - 96);
+        zoomControl.style.marginTop = Math.min(desiredOffset, maxVisibleOffset) + "px";
       }}
 
       function wireCoverageToggle() {{
@@ -3860,6 +3887,7 @@ def build_simulation_panel_script(
         setActiveBlankSlateButton(scenarioKey);
         renderBlankSlateKpis(scenarioKey);
         renderBlankSlatePlacements(scenarioKey);
+        updateZoomControlOffset();
       }}
 
       function switchView(view) {{
@@ -3905,6 +3933,7 @@ def build_simulation_panel_script(
 
           renderHistoricalKpis();
           renderHistoricalCoverage();
+          updateZoomControlOffset();
           return;
         }}
 
@@ -3913,6 +3942,7 @@ def build_simulation_panel_script(
             mapRef.removeLayer(techMarkersLayer);
           }}
           showBlankSlateScenario(lastBlankSlateScenario);
+          updateZoomControlOffset();
           return;
         }}
 
@@ -3922,6 +3952,7 @@ def build_simulation_panel_script(
           }}
 
           showActiveHeatLayers();
+          updateZoomControlOffset();
           return;
         }}
 
@@ -3930,6 +3961,7 @@ def build_simulation_panel_script(
         }}
 
         showScenario(lastOptimizedScenario);
+        updateZoomControlOffset();
       }}
 
       function renderHistoricalKpis() {{
@@ -3998,6 +4030,7 @@ def build_simulation_panel_script(
             toggleEl.style.display = "none";
           }}
         }}
+        updateZoomControlOffset();
       }}
 
       function renderBlankSlateKpis(scenario) {{
@@ -4152,6 +4185,8 @@ def build_simulation_panel_script(
         wireHistCoverageToggle();
         showScenario(defaultScenario);
         syncAirportLayerVisibility();
+        updateZoomControlOffset();
+        window.addEventListener("resize", updateZoomControlOffset);
       }}
 
       initWhenReady(80);
@@ -4314,6 +4349,8 @@ def main():
         zoom_start=config.MAP_ZOOM,
         tiles=config.MAP_TILES,
         control_scale=True,
+        zoom_snap=0.25,
+        zoom_delta=0.25,
     )
     airport_layer = None
 
