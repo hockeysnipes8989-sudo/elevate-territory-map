@@ -214,7 +214,7 @@ class BlankSlateTests(unittest.TestCase):
             "ls",
         )
 
-    def test_load_blank_slate_data_annualizes_costs_and_merges_coordinates(self):
+    def test_load_blank_slate_data_keeps_multiple_scenarios_and_defaults_to_10(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             blank_dir = root / config.BLANK_SLATE_SUBDIR
@@ -228,11 +228,28 @@ class BlankSlateTests(unittest.TestCase):
                         "state": "NY",
                         "lat": 40.6413,
                         "lon": -73.7781,
+                    },
+                    {
+                        "candidate_id": "airport_ord",
+                        "city": "Chicago",
+                        "state": "IL",
+                        "lat": 41.9742,
+                        "lon": -87.9073,
                     }
                 ]
             ).to_csv(root / "candidate_bases.csv", index=False)
             pd.DataFrame(
                 [
+                    {
+                        "scenario_hires": 10,
+                        "solver_status": 0,
+                        "solver_message": "Optimal",
+                        "total_appointments": 100.0,
+                        "travel_cost_usd": 300000.0,
+                        "hire_cost_usd": 150000.0,
+                        "modeled_total_cost_usd": 450000.0,
+                        "economic_total_with_overhead_usd": 450000.0,
+                    },
                     {
                         "scenario_hires": 11,
                         "solver_status": 0,
@@ -247,6 +264,16 @@ class BlankSlateTests(unittest.TestCase):
             ).to_csv(blank_dir / "scenario_summary.csv", index=False)
             pd.DataFrame(
                 [
+                    {
+                        "scenario_hires": 10,
+                        "candidate_id": "airport_ord",
+                        "city": "Chicago",
+                        "state": "IL",
+                        "airport_iata": "ORD",
+                        "hires_allocated": 1,
+                        "assigned_appointments": 100.0,
+                        "assigned_hours": 400.0,
+                    },
                     {
                         "scenario_hires": 11,
                         "candidate_id": "airport_jfk",
@@ -270,14 +297,15 @@ class BlankSlateTests(unittest.TestCase):
                 config.OPTIMIZATION_DIR = old_opt_dir
 
             self.assertIsNotNone(payload)
-            self.assertEqual(payload["scenario_hires"], 11)
-            self.assertEqual(payload["total_placements"], 1)
-            self.assertEqual(payload["annualized_total_cost_usd"], 300000.0)
-            self.assertEqual(payload["annualized_travel_cost_usd"], 200000.0)
-            self.assertEqual(payload["placements"][0]["lat"], 40.6413)
-            self.assertEqual(payload["placements"][0]["lon"], -73.7781)
+            self.assertEqual(payload["available_scenarios"], [10, 11])
+            self.assertEqual(payload["default_scenario"], 10)
+            self.assertEqual(payload["scenarios"]["10"]["total_placements"], 1)
+            self.assertEqual(payload["scenarios"]["10"]["annualized_total_cost_usd"], 225000.0)
+            self.assertEqual(payload["scenarios"]["11"]["annualized_travel_cost_usd"], 200000.0)
+            self.assertEqual(payload["scenarios"]["11"]["placements"][0]["lat"], 40.6413)
+            self.assertEqual(payload["scenarios"]["10"]["placements"][0]["lon"], -87.9073)
 
-    def test_load_blank_slate_assignment_data_keeps_scenario_11(self):
+    def test_load_blank_slate_assignment_data_keeps_multiple_blank_slate_scenarios(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             blank_dir = root / config.BLANK_SLATE_SUBDIR
@@ -324,6 +352,20 @@ class BlankSlateTests(unittest.TestCase):
             pd.DataFrame(
                 [
                     {
+                        "scenario_hires": 10,
+                        "candidate_id": "airport_dfw",
+                        "candidate_type": "major_airport",
+                        "candidate_city": "Dallas",
+                        "candidate_state": "TX",
+                        "airport_iata": "DFW",
+                        "node_id": "TX__regular",
+                        "state_norm": "TX",
+                        "skill_class": "regular",
+                        "assigned_appointments": 1.0,
+                        "assigned_hours": 8.0,
+                        "total_travel_cost_usd": 100.0,
+                    },
+                    {
                         "scenario_hires": 11,
                         "candidate_id": "airport_dfw",
                         "candidate_type": "major_airport",
@@ -355,7 +397,7 @@ class BlankSlateTests(unittest.TestCase):
                 config.SIM_SCENARIO_MAX = old_max
 
             self.assertIsNotNone(data)
-            self.assertEqual(data["available_scenarios"], [11])
+            self.assertEqual(data["available_scenarios"], [10, 11])
 
 
 if __name__ == "__main__":

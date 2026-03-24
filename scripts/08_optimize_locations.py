@@ -1075,10 +1075,12 @@ def main() -> None:
     if not (0 < args.target_utilization <= 1.0):
         raise ValueError("--target-utilization must be in range (0, 1.0].")
     if args.blank_slate:
-        if args.min_new_hires != args.max_new_hires:
-            raise ValueError("--blank-slate requires --min-new-hires and --max-new-hires to match.")
+        if args.min_new_hires <= 0:
+            raise ValueError("--blank-slate requires --min-new-hires to be positive.")
         if args.max_new_hires <= 0:
             raise ValueError("--blank-slate requires a positive hire count.")
+        if args.min_new_hires > args.max_new_hires:
+            raise ValueError("--blank-slate requires --min-new-hires to be less than or equal to --max-new-hires.")
         if args.max_hires_per_base != 1:
             raise ValueError("--blank-slate requires --max-hires-per-base 1.")
 
@@ -1213,11 +1215,7 @@ def main() -> None:
             "they cannot cover Learning Space / AVS, and their HPS restriction remains active."
         )
 
-    scenario_counts = (
-        [args.max_new_hires]
-        if args.blank_slate
-        else list(range(args.min_new_hires, args.max_new_hires + 1))
-    )
+    scenario_counts = list(range(args.min_new_hires, args.max_new_hires + 1))
 
     for hire_count in scenario_counts:
         print(f"Solving scenario N={hire_count} new hires...")

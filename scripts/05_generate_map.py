@@ -1295,7 +1295,7 @@ def safe_number(value, default=0.0):
 
 
 def load_blank_slate_data():
-    """Load the single blank-slate scenario summary for the map panel."""
+    """Load blank-slate scenario summaries for the map panel."""
     if not getattr(config, "BLANK_SLATE_ENABLED", False):
         return None
 
@@ -1358,10 +1358,6 @@ def load_blank_slate_data():
     if summary_df.empty:
         return None
 
-    summary_df = summary_df.sort_values("scenario_hires").reset_index(drop=True)
-    row = summary_df.iloc[-1]
-    scenario = int(row["scenario_hires"])
-
     placements_df["scenario_hires"] = pd.to_numeric(
         placements_df.get("scenario_hires"), errors="coerce"
     )
@@ -1373,9 +1369,6 @@ def load_blank_slate_data():
         how="left",
     )
     placements_df = placements_df.dropna(subset=["lat", "lon"]).copy()
-    placements_df = placements_df[
-        placements_df["scenario_hires"] == scenario
-    ].sort_values(["assigned_hours", "assigned_appointments", "city"], ascending=[False, False, True])
 
     def annualize(value, default=0.0):
         raw = pd.to_numeric(value, errors="coerce")
@@ -1385,41 +1378,66 @@ def load_blank_slate_data():
             return float(raw)
         return float(raw) / data_span_years
 
-    placements = []
-    for _, p in placements_df.iterrows():
-        placements.append(
-            {
-                "candidate_id": str(p.get("candidate_id", "")),
-                "city": str(p.get("city", "")),
-                "state": str(p.get("state", "")),
-                "airport_iata": str(p.get("airport_iata", "")),
-                "hires_allocated": float(p.get("hires_allocated", 0)),
-                "assigned_appointments": float(p.get("assigned_appointments", 0)),
-                "assigned_hours": float(p.get("assigned_hours", 0)),
-                "lat": float(p.get("lat")),
-                "lon": float(p.get("lon")),
-            }
+    summary_df = summary_df.sort_values("scenario_hires").reset_index(drop=True)
+    available_scenarios = summary_df["scenario_hires"].astype(int).tolist()
+    if not available_scenarios:
+        return None
+
+    default_scenario = 10 if 10 in available_scenarios else min(available_scenarios)
+    scenarios = {}
+    for _, row in summary_df.iterrows():
+        scenario = int(row["scenario_hires"])
+        scenario_placements_df = placements_df[
+            placements_df["scenario_hires"] == scenario
+        ].sort_values(
+            ["assigned_hours", "assigned_appointments", "city"],
+            ascending=[False, False, True],
         )
 
-    total_placements = int(round(sum(p["hires_allocated"] for p in placements)))
-    total_cost_raw = row.get("economic_total_with_overhead_usd", row.get("modeled_total_cost_usd", 0))
+        placements = []
+        for _, p in scenario_placements_df.iterrows():
+            placements.append(
+                {
+                    "candidate_id": str(p.get("candidate_id", "")),
+                    "city": str(p.get("city", "")),
+                    "state": str(p.get("state", "")),
+                    "airport_iata": str(p.get("airport_iata", "")),
+                    "hires_allocated": float(p.get("hires_allocated", 0)),
+                    "assigned_appointments": float(p.get("assigned_appointments", 0)),
+                    "assigned_hours": float(p.get("assigned_hours", 0)),
+                    "lat": float(p.get("lat")),
+                    "lon": float(p.get("lon")),
+                }
+            )
+
+        total_placements = int(round(sum(p["hires_allocated"] for p in placements)))
+        total_cost_raw = row.get(
+            "economic_total_with_overhead_usd",
+            row.get("modeled_total_cost_usd", 0),
+        )
+        scenarios[str(scenario)] = {
+            "scenario_hires": scenario,
+            "data_span_years": data_span_years,
+            "total_appointments": int(round(safe_number(row.get("total_appointments", 0)))),
+            "travel_cost_usd": round(safe_number(row.get("travel_cost_usd", 0)), 2),
+            "annualized_total_cost_usd": round(annualize(total_cost_raw), 2),
+            "annualized_travel_cost_usd": round(annualize(row.get("travel_cost_usd", 0)), 2),
+            "annualized_hire_cost_usd": round(annualize(row.get("hire_cost_usd", 0)), 2),
+            "total_placements": total_placements,
+            "placements": placements,
+            "solver_proven_optimal": safe_number(row.get("solver_proven_optimal", 0), 0) == 1,
+            "solver_status": int(round(safe_number(row.get("solver_status", 0)))),
+            "solver_mip_gap": safe_number(row.get("solver_mip_gap"), default=np.nan)
+            if not pd.isna(pd.to_numeric(row.get("solver_mip_gap"), errors="coerce"))
+            else None,
+            "solver_message": str(row.get("solver_message", "")).strip(),
+            "source_provenance": source_provenance,
+        }
+
     return {
-        "scenario_hires": scenario,
-        "data_span_years": data_span_years,
-        "total_appointments": int(round(safe_number(row.get("total_appointments", 0)))),
-        "travel_cost_usd": round(safe_number(row.get("travel_cost_usd", 0)), 2),
-        "annualized_total_cost_usd": round(annualize(total_cost_raw), 2),
-        "annualized_travel_cost_usd": round(annualize(row.get("travel_cost_usd", 0)), 2),
-        "annualized_hire_cost_usd": round(annualize(row.get("hire_cost_usd", 0)), 2),
-        "total_placements": total_placements,
-        "placements": placements,
-        "solver_proven_optimal": safe_number(row.get("solver_proven_optimal", 0), 0) == 1,
-        "solver_status": int(round(safe_number(row.get("solver_status", 0)))),
-        "solver_mip_gap": safe_number(row.get("solver_mip_gap"), default=np.nan)
-        if not pd.isna(pd.to_numeric(row.get("solver_mip_gap"), errors="coerce"))
-        else None,
-        "solver_message": str(row.get("solver_message", "")).strip(),
-        "source_provenance": source_provenance,
+        "available_scenarios": available_scenarios,
+        "default_scenario": default_scenario,
+        "scenarios": scenarios,
     }
 
 
@@ -2829,12 +2847,19 @@ def build_simulation_panel_css(ui_preset):
         font-size: 11px;
         color: #64748b;
       }}
-      #sim-buttons {{
+      #sim-buttons,
+      #blank-sim-buttons {{
         display: grid;
-        grid-template-columns: repeat(5, minmax(0, 1fr));
         gap: 6px;
       }}
-      .sim-btn {{
+      #sim-buttons {{
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+      }}
+      #blank-sim-buttons {{
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }}
+      .sim-btn,
+      .blank-sim-btn {{
         border: 1px solid rgba(15, 23, 42, 0.12);
         background: #f8fafc;
         color: #102235;
@@ -2844,11 +2869,13 @@ def build_simulation_panel_css(ui_preset):
         cursor: pointer;
         transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.15s;
       }}
-      .sim-btn:hover {{
+      .sim-btn:hover,
+      .blank-sim-btn:hover {{
         border-color: rgba(17, 32, 51, 0.32);
         background: #f1f5f9;
       }}
-      .sim-btn.active {{
+      .sim-btn.active,
+      .blank-sim-btn.active {{
         background: #183b58;
         border-color: #183b58;
         color: #fff;
@@ -3301,6 +3328,11 @@ def build_simulation_panel_markup():
           <p class="sim-section-caption">Modeled rebuild with all hires placed from scratch</p>
         </div>
 
+        <div class="sim-section" id="blank-scenarios-section">
+          <div class="sim-section-label">Scenarios</div>
+          <div id="blank-sim-buttons"></div>
+        </div>
+
         <div class="sim-section">
           <h3 class="sim-section-heading">Modeled Cost</h3>
           <p class="sim-section-caption">Travel cost only, excludes hire payroll</p>
@@ -3377,8 +3409,7 @@ def build_simulation_panel_script(
     historical_tech_colors_js=None,
     tech_markers_layer_name=None,
     blank_slate_payload_js=None,
-    blank_slate_placement_layer_js=None,
-    blank_slate_dots_layer_js=None,
+    blank_slate_layer_names_js=None,
     heat_map_layer_names_js=None,
 ):
     """Return the panel JavaScript."""
@@ -3389,8 +3420,7 @@ def build_simulation_panel_script(
     hist_colors = historical_tech_colors_js or "{}"
     tech_markers_js = json.dumps(tech_markers_layer_name) if tech_markers_layer_name else "null"
     blank_payload = blank_slate_payload_js or "null"
-    blank_placements = blank_slate_placement_layer_js or "null"
-    blank_dots = blank_slate_dots_layer_js or "null"
+    blank_layers = blank_slate_layer_names_js or "null"
     heat_layers = heat_map_layer_names_js or "null"
     return f"""
     <script>
@@ -3427,20 +3457,25 @@ def build_simulation_panel_script(
       const historicalBasesLayerName = {hist_bases};
       const historicalTechColors = {hist_colors};
       const blankSlateData = {blank_payload};
-      const blankSlatePlacementLayerName = {blank_placements};
-      const blankSlateDotsLayerName = {blank_dots};
+      const blankSlateLayerNames = {blank_layers};
       const techMarkersLayerName = {tech_markers_js};
       const heatLayerNames = {heat_layers};
       let activeView = "optimized";
       let historicalDotLayer = null;
       let historicalBasesLayer = null;
-      let blankSlatePlacementLayer = null;
-      let blankSlateDotsLayer = null;
+      let blankSlatePlacementLayers = {{}};
+      let blankSlateDotsLayers = {{}};
       let techMarkersLayer = null;
       let heatDotsLayer = null;
       let heatCountLayer = null;
       let heatHoursLayer = null;
       let lastOptimizedScenario = defaultScenario;
+      let lastBlankSlateScenario = blankSlateData
+        ? String(
+            blankSlateData.default_scenario ||
+            ((blankSlateData.available_scenarios || [])[0] || "")
+          )
+        : null;
       let histCoverageExpanded = false;
       let activeHeatMode = "count";
 
@@ -3494,6 +3529,45 @@ def build_simulation_panel_script(
       function setActiveButton(scenario) {{
         document.querySelectorAll(".sim-btn").forEach((button) => {{
           button.classList.toggle("active", button.getAttribute("data-scenario") === scenario);
+        }});
+      }}
+
+      function getBlankSlateScenarioData(scenario) {{
+        if (!blankSlateData || !blankSlateData.scenarios) return null;
+        const resolvedScenario = String(
+          scenario ||
+          lastBlankSlateScenario ||
+          blankSlateData.default_scenario ||
+          ((blankSlateData.available_scenarios || [])[0] || "")
+        );
+        return blankSlateData.scenarios[resolvedScenario] || null;
+      }}
+
+      function renderBlankSlateButtons() {{
+        const sectionEl = document.getElementById("blank-scenarios-section");
+        const container = document.getElementById("blank-sim-buttons");
+        if (!sectionEl || !container) return;
+        if (!blankSlateData || !Array.isArray(blankSlateData.available_scenarios) || !blankSlateData.available_scenarios.length) {{
+          sectionEl.style.display = "none";
+          return;
+        }}
+        sectionEl.style.display = "";
+        container.innerHTML = "";
+        blankSlateData.available_scenarios.forEach((scenario) => {{
+          const scenarioKey = String(scenario);
+          const button = document.createElement("button");
+          button.className = "blank-sim-btn";
+          button.textContent = "N=" + scenarioKey;
+          button.setAttribute("data-blank-scenario", scenarioKey);
+          button.addEventListener("click", () => showBlankSlateScenario(scenarioKey));
+          container.appendChild(button);
+        }});
+        setActiveBlankSlateButton(String(lastBlankSlateScenario || blankSlateData.default_scenario));
+      }}
+
+      function setActiveBlankSlateButton(scenario) {{
+        document.querySelectorAll(".blank-sim-btn").forEach((button) => {{
+          button.classList.toggle("active", button.getAttribute("data-blank-scenario") === String(scenario));
         }});
       }}
 
@@ -3788,12 +3862,39 @@ def build_simulation_panel_script(
       }}
 
       function hideBlankSlateLayers() {{
-        if (blankSlatePlacementLayer && mapRef && mapRef.hasLayer(blankSlatePlacementLayer)) {{
-          mapRef.removeLayer(blankSlatePlacementLayer);
+        Object.values(blankSlatePlacementLayers).forEach((layer) => {{
+          if (layer && mapRef && mapRef.hasLayer(layer)) {{
+            mapRef.removeLayer(layer);
+          }}
+        }});
+        Object.values(blankSlateDotsLayers).forEach((layer) => {{
+          if (layer && mapRef && mapRef.hasLayer(layer)) {{
+            mapRef.removeLayer(layer);
+          }}
+        }});
+      }}
+
+      function showBlankSlateScenario(scenario) {{
+        if (!mapRef || !blankSlateData) return;
+        const scenarioKey = String(
+          scenario ||
+          lastBlankSlateScenario ||
+          blankSlateData.default_scenario ||
+          ((blankSlateData.available_scenarios || [])[0] || "")
+        );
+        hideBlankSlateLayers();
+        const placementLayer = blankSlatePlacementLayers[scenarioKey];
+        const dotsLayer = blankSlateDotsLayers[scenarioKey];
+        if (placementLayer && !mapRef.hasLayer(placementLayer)) {{
+          mapRef.addLayer(placementLayer);
         }}
-        if (blankSlateDotsLayer && mapRef && mapRef.hasLayer(blankSlateDotsLayer)) {{
-          mapRef.removeLayer(blankSlateDotsLayer);
+        if (dotsLayer && !mapRef.hasLayer(dotsLayer)) {{
+          mapRef.addLayer(dotsLayer);
         }}
+        lastBlankSlateScenario = scenarioKey;
+        setActiveBlankSlateButton(scenarioKey);
+        renderBlankSlateKpis(scenarioKey);
+        renderBlankSlatePlacements(scenarioKey);
       }}
 
       function switchView(view) {{
@@ -3846,16 +3947,7 @@ def build_simulation_panel_script(
           if (techMarkersLayer && mapRef && mapRef.hasLayer(techMarkersLayer)) {{
             mapRef.removeLayer(techMarkersLayer);
           }}
-
-          if (blankSlatePlacementLayer && mapRef && !mapRef.hasLayer(blankSlatePlacementLayer)) {{
-            mapRef.addLayer(blankSlatePlacementLayer);
-          }}
-          if (blankSlateDotsLayer && mapRef && !mapRef.hasLayer(blankSlateDotsLayer)) {{
-            mapRef.addLayer(blankSlateDotsLayer);
-          }}
-
-          renderBlankSlateKpis();
-          renderBlankSlatePlacements();
+          showBlankSlateScenario(lastBlankSlateScenario);
           return;
         }}
 
@@ -3943,26 +4035,28 @@ def build_simulation_panel_script(
         }}
       }}
 
-      function renderBlankSlateKpis() {{
-        if (!blankSlateData) return;
+      function renderBlankSlateKpis(scenario) {{
+        const item = getBlankSlateScenarioData(scenario);
+        if (!item) return;
         const apptsEl = document.getElementById("blank-kpi-appts");
         const totalTravelEl = document.getElementById("blank-kpi-travel-total");
         const annualTravelEl = document.getElementById("blank-kpi-travel-annual");
         const placementsEl = document.getElementById("blank-kpi-placements");
-        if (apptsEl) apptsEl.textContent = Number(blankSlateData.total_appointments || 0).toLocaleString();
-        if (totalTravelEl) totalTravelEl.textContent = money(blankSlateData.travel_cost_usd);
-        if (annualTravelEl) annualTravelEl.textContent = money(blankSlateData.annualized_travel_cost_usd);
-        if (placementsEl) placementsEl.textContent = Number(blankSlateData.total_placements || 0).toLocaleString();
+        if (apptsEl) apptsEl.textContent = Number(item.total_appointments || 0).toLocaleString();
+        if (totalTravelEl) totalTravelEl.textContent = money(item.travel_cost_usd);
+        if (annualTravelEl) annualTravelEl.textContent = money(item.annualized_travel_cost_usd);
+        if (placementsEl) placementsEl.textContent = Number(item.total_placements || 0).toLocaleString();
       }}
 
-      function renderBlankSlatePlacements() {{
+      function renderBlankSlatePlacements(scenario) {{
         const listEl = document.getElementById("blank-placement-list");
         if (!listEl) return;
-        if (!blankSlateData || !Array.isArray(blankSlateData.placements) || !blankSlateData.placements.length) {{
+        const item = getBlankSlateScenarioData(scenario);
+        if (!item || !Array.isArray(item.placements) || !item.placements.length) {{
           listEl.innerHTML = '<div class="sim-empty">No blank-slate placements available.</div>';
           return;
         }}
-        listEl.innerHTML = blankSlateData.placements.map((p) => {{
+        listEl.innerHTML = item.placements.map((p) => {{
           const color = p.color || {json.dumps(ui_preset["new_hire_marker_color"])};
           const stroke = getDotStroke(color);
           const cityLabel = `${{p.city}}, ${{p.state}} (${{p.airport_iata}})`;
@@ -4078,11 +4172,19 @@ def build_simulation_panel_script(
         if (historicalBasesLayerName && window[historicalBasesLayerName]) {{
           historicalBasesLayer = window[historicalBasesLayerName];
         }}
-        if (blankSlatePlacementLayerName && window[blankSlatePlacementLayerName]) {{
-          blankSlatePlacementLayer = window[blankSlatePlacementLayerName];
+        if (blankSlateLayerNames && blankSlateLayerNames.placements_by_scenario) {{
+          Object.entries(blankSlateLayerNames.placements_by_scenario).forEach(([scenario, layerName]) => {{
+            if (layerName && window[layerName]) {{
+              blankSlatePlacementLayers[scenario] = window[layerName];
+            }}
+          }});
         }}
-        if (blankSlateDotsLayerName && window[blankSlateDotsLayerName]) {{
-          blankSlateDotsLayer = window[blankSlateDotsLayerName];
+        if (blankSlateLayerNames && blankSlateLayerNames.dots_by_scenario) {{
+          Object.entries(blankSlateLayerNames.dots_by_scenario).forEach(([scenario, layerName]) => {{
+            if (layerName && window[layerName]) {{
+              blankSlateDotsLayers[scenario] = window[layerName];
+            }}
+          }});
         }}
         if (techMarkersLayerName && window[techMarkersLayerName]) {{
           techMarkersLayer = window[techMarkersLayerName];
@@ -4099,6 +4201,7 @@ def build_simulation_panel_script(
 
         renderHeatSummary();
         renderButtons();
+        renderBlankSlateButtons();
         const unmetCard = document.getElementById("kpi-unmet-card");
         if (unmetCard && !showUnmetKpi) {{
           unmetCard.style.display = "none";
@@ -4173,11 +4276,7 @@ def add_simulation_panel(
         hist_bases_js = None
     hist_colors_js = json.dumps(historical_tech_colors) if historical_tech_colors else None
     blank_payload_js = json.dumps(blank_slate_data) if blank_slate_data else None
-    blank_placement_js = None
-    blank_dots_js = None
-    if blank_slate_layer_names and isinstance(blank_slate_layer_names, dict):
-        blank_placement_js = json.dumps(blank_slate_layer_names.get("placements_layer"))
-        blank_dots_js = json.dumps(blank_slate_layer_names.get("dots_layer"))
+    blank_layers_js = json.dumps(blank_slate_layer_names) if blank_slate_layer_names else None
     heat_layers_js = json.dumps(heat_map_layer_names) if heat_map_layer_names else None
 
     panel_html = (
@@ -4199,8 +4298,7 @@ def add_simulation_panel(
             historical_tech_colors_js=hist_colors_js,
             tech_markers_layer_name=tech_markers_layer_name,
             blank_slate_payload_js=blank_payload_js,
-            blank_slate_placement_layer_js=blank_placement_js,
-            blank_slate_dots_layer_js=blank_dots_js,
+            blank_slate_layer_names_js=blank_layers_js,
             heat_map_layer_names_js=heat_layers_js,
         )
     )
@@ -4427,10 +4525,14 @@ def main():
             blank_slate_data = load_blank_slate_data()
             blank_slate_layer_names = None
             if blank_slate_data:
+                blank_scenarios = [str(s) for s in blank_slate_data["available_scenarios"]]
+                default_blank_scenario = str(blank_slate_data["default_scenario"])
+                default_blank_item = blank_slate_data["scenarios"][default_blank_scenario]
                 print(
-                    f"  Blank slate: {blank_slate_data['scenario_hires']} hires, "
-                    f"{blank_slate_data['total_placements']} placements, "
-                    f"annualized cost ${blank_slate_data['annualized_total_cost_usd']:,.0f}"
+                    f"  Blank slate scenarios: {', '.join(blank_scenarios)} "
+                    f"(default N={default_blank_scenario}, "
+                    f"{default_blank_item['total_placements']} placements, "
+                    f"annualized cost ${default_blank_item['annualized_total_cost_usd']:,.0f})"
                 )
                 blank_territory_data = load_blank_slate_assignment_data()
                 blank_slate_color_map = build_tech_color_map(
@@ -4438,7 +4540,7 @@ def main():
                     getattr(config, "BLANK_SLATE_ASSIGNMENT_PALETTE", ui_preset["territory_palette"]),
                     include_existing=False,
                 ) if blank_territory_data else None
-                blank_slate_dots_info = None
+                blank_slate_dots = {}
                 if blank_territory_data:
                     print("  Resolving blank-slate appointment assignments...")
                     blank_assignment_map = resolve_appointment_assignments(blank_territory_data)
@@ -4456,24 +4558,23 @@ def main():
                         default_visible_scenario=None,
                         layer_name_prefix="Blank Slate Dots",
                     )
-                    blank_slate_dots_info = blank_slate_dots.get(
-                        str(blank_slate_data["scenario_hires"])
-                    )
                 if blank_slate_color_map:
-                    colored_placements = []
-                    for placement in blank_slate_data["placements"]:
-                        placement_with_color = dict(placement)
-                        placement_with_color["color"] = (
-                            blank_slate_color_map.get(placement.get("candidate_id"))
-                            or ui_preset["new_hire_marker_color"]
-                        )
-                        colored_placements.append(placement_with_color)
-                    blank_slate_data["placements"] = colored_placements
+                    for scenario_key, scenario_item in blank_slate_data["scenarios"].items():
+                        colored_placements = []
+                        for placement in scenario_item["placements"]:
+                            placement_with_color = dict(placement)
+                            placement_with_color["color"] = (
+                                blank_slate_color_map.get(placement.get("candidate_id"))
+                                or ui_preset["new_hire_marker_color"]
+                            )
+                            colored_placements.append(placement_with_color)
+                        scenario_item["placements"] = colored_placements
                 blank_slate_payload = {
-                    str(blank_slate_data["scenario_hires"]): {
-                        "scenario_hires": blank_slate_data["scenario_hires"],
-                        "placements": blank_slate_data["placements"],
+                    scenario_key: {
+                        "scenario_hires": scenario_item["scenario_hires"],
+                        "placements": scenario_item["placements"],
                     }
+                    for scenario_key, scenario_item in blank_slate_data["scenarios"].items()
                 }
                 blank_slate_marker_layers = add_simulation_layers(
                     m,
@@ -4484,14 +4585,12 @@ def main():
                     layer_name_prefix="Blank Slate",
                 )
                 blank_slate_layer_names = {
-                    "placements_layer": blank_slate_marker_layers.get(
-                        str(blank_slate_data["scenario_hires"])
-                    ),
-                    "dots_layer": (
-                        blank_slate_dots_info.get("dots_layer")
-                        if blank_slate_dots_info
-                        else None
-                    ),
+                    "default_scenario": default_blank_scenario,
+                    "placements_by_scenario": blank_slate_marker_layers,
+                    "dots_by_scenario": {
+                        scenario_key: info.get("dots_layer")
+                        for scenario_key, info in (blank_slate_dots or {}).items()
+                    },
                 }
 
             heat_map_data = load_heat_map_data()

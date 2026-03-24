@@ -80,7 +80,7 @@ python scripts/06_build_optimization_inputs.py
 python scripts/11_build_full_cost_table.py
 python scripts/08_optimize_locations.py --min-new-hires 0 --max-new-hires 4 --max-hires-per-base 1 --time-limit-sec 600
 python scripts/09_analyze_scenarios.py
-python scripts/08_optimize_locations.py --blank-slate --min-new-hires 11 --max-new-hires 11 --max-hires-per-base 1 --time-limit-sec 600
+python scripts/08_optimize_locations.py --blank-slate --min-new-hires 10 --max-new-hires 11 --max-hires-per-base 1 --time-limit-sec 600
 python scripts/05_generate_map.py
 ```
 
