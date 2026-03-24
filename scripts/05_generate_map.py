@@ -641,20 +641,18 @@ def add_service_appointments(m, appts, layer_name, show=True):
 
 
 def add_heat_map_layers(m, heat_df, ui_preset):
-    """Add optimization-scope demand dots plus weighted heat layers."""
+    """Add optimization-scope demand dots plus an appointment-count heat layer."""
     if heat_df is None or heat_df.empty:
         return None
 
     dots_fg = folium.FeatureGroup(name="Heat Map Appointments", show=False, control=False)
     count_fg = folium.FeatureGroup(name="Heat Map Count", show=False, control=False)
-    hours_fg = folium.FeatureGroup(name="Heat Map Duration", show=False, control=False)
 
     dot_color = "#334155"
     for _, row in heat_df.iterrows():
         account_name = str(row.get("Account: Account Name", "N/A"))
         city = str(row.get("city", ""))
         state = str(row.get("state_norm", ""))
-        duration_hours = safe_number(row.get("duration_hours", 0.0))
         service_type = str(row.get("Service Type", ""))
         skill_class = str(row.get("skill_class", ""))
         popup_html = (
@@ -662,8 +660,7 @@ def add_heat_map_layers(m, heat_df, ui_preset):
             f"Appointment: {row.get('Appointment Number', row.get('appointment_id', ''))}<br>"
             f"Location: {city}, {state}<br>"
             f"Service Type: {service_type}<br>"
-            f"Skill Class: {skill_class}<br>"
-            f"Duration Hours: {duration_hours:,.1f}"
+            f"Skill Class: {skill_class}"
         )
         folium.CircleMarker(
             location=[float(row["lat"]), float(row["lon"])],
@@ -696,7 +693,6 @@ def add_heat_map_layers(m, heat_df, ui_preset):
         1.00: "#7f1d1d",
     }
     count_points = heat_df[["lat", "lon"]].values.tolist()
-    hours_points = heat_df[["lat", "lon", "duration_hours"]].values.tolist()
     broad_heat_kwargs = {
         "min_opacity": 0.18,
         "radius": 34,
@@ -713,16 +709,12 @@ def add_heat_map_layers(m, heat_df, ui_preset):
     }
     HeatMap(count_points, **broad_heat_kwargs).add_to(count_fg)
     HeatMap(count_points, **hotspot_heat_kwargs).add_to(count_fg)
-    HeatMap(hours_points, **broad_heat_kwargs).add_to(hours_fg)
-    HeatMap(hours_points, **hotspot_heat_kwargs).add_to(hours_fg)
 
     dots_fg.add_to(m)
     count_fg.add_to(m)
-    hours_fg.add_to(m)
     return {
         "dots_layer": dots_fg.get_name(),
         "count_layer": count_fg.get_name(),
-        "hours_layer": hours_fg.get_name(),
         "total_appointments": int(len(heat_df)),
     }
 
@@ -1456,9 +1448,6 @@ def load_heat_map_data():
 
     heat_df["lat"] = pd.to_numeric(heat_df.get("lat"), errors="coerce")
     heat_df["lon"] = pd.to_numeric(heat_df.get("lon"), errors="coerce")
-    heat_df["duration_hours"] = pd.to_numeric(
-        heat_df.get("duration_hours"), errors="coerce"
-    ).fillna(0.0)
     heat_df = heat_df.dropna(subset=["lat", "lon"]).copy()
     if heat_df.empty:
         return None
@@ -3136,31 +3125,6 @@ def build_simulation_panel_css(ui_preset):
       #optimized-content.hidden {{
         display: none;
       }}
-      .heat-mode-toggle {{
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 6px;
-        margin-top: 10px;
-      }}
-      .heat-mode-btn {{
-        border: 1px solid rgba(15, 23, 42, 0.12);
-        background: #f8fafc;
-        color: #102235;
-        padding: 8px 10px;
-        border-radius: 999px;
-        font: 600 12px {ui_preset["font_family"]};
-        cursor: pointer;
-        transition: background 0.15s, color 0.15s, border-color 0.15s;
-      }}
-      .heat-mode-btn:hover {{
-        border-color: rgba(17, 32, 51, 0.32);
-        background: #f1f5f9;
-      }}
-      .heat-mode-btn.active {{
-        background: #183b58;
-        border-color: #183b58;
-        color: #fff;
-      }}
       .hist-kpi-grid {{
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -3372,15 +3336,11 @@ def build_simulation_panel_markup():
         <div class="sim-section">
           <div class="sim-section-label">Heat Map</div>
           <p class="sim-section-caption">Optimization-scope US service appointment demand shown as a heat surface over actual appointment points.</p>
-          <div class="heat-mode-toggle" id="heat-mode-toggle">
-            <button class="heat-mode-btn active" data-heat-mode="count">Appointment Count</button>
-            <button class="heat-mode-btn" data-heat-mode="hours">Duration Hours</button>
-          </div>
           <p class="sim-section-caption" id="heat-plotted-count" style="margin-top:10px;">&mdash; appointments plotted</p>
         </div>
 
         <div id="heat-footnote" style="margin-top:16px;padding-top:12px;border-top:1px solid #edf2f7;font-size:11px;line-height:1.45;color:#64748b;">
-          Heat Map uses the same US-only demand rows as the optimization model. Appointment Count weights each visit equally; Duration Hours weights each visit by modeled duration.
+          Heat Map uses the same US-only demand rows as the optimization model, with each service appointment counted once.
         </div>
       </div>
     </div>
@@ -3470,7 +3430,6 @@ def build_simulation_panel_script(
       let techMarkersLayer = null;
       let heatDotsLayer = null;
       let heatCountLayer = null;
-      let heatHoursLayer = null;
       let lastOptimizedScenario = defaultScenario;
       let lastBlankSlateScenario = blankSlateData
         ? String(
@@ -3479,7 +3438,6 @@ def build_simulation_panel_script(
           )
         : null;
       let histCoverageExpanded = false;
-      let activeHeatMode = "count";
 
       function money(v) {{
         const n = Math.abs(Number(v || 0));
@@ -4079,21 +4037,12 @@ def build_simulation_panel_script(
         }}).join("");
       }}
 
-      function setActiveHeatModeButton() {{
-        document.querySelectorAll(".heat-mode-btn").forEach((btn) => {{
-          btn.classList.toggle("active", btn.getAttribute("data-heat-mode") === activeHeatMode);
-        }});
-      }}
-
       function hideHeatLayers() {{
         if (heatDotsLayer && mapRef && mapRef.hasLayer(heatDotsLayer)) {{
           mapRef.removeLayer(heatDotsLayer);
         }}
         if (heatCountLayer && mapRef && mapRef.hasLayer(heatCountLayer)) {{
           mapRef.removeLayer(heatCountLayer);
-        }}
-        if (heatHoursLayer && mapRef && mapRef.hasLayer(heatHoursLayer)) {{
-          mapRef.removeLayer(heatHoursLayer);
         }}
       }}
 
@@ -4102,11 +4051,9 @@ def build_simulation_panel_script(
         if (heatDotsLayer && !mapRef.hasLayer(heatDotsLayer)) {{
           mapRef.addLayer(heatDotsLayer);
         }}
-        const activeLayer = activeHeatMode === "hours" ? heatHoursLayer : heatCountLayer;
-        if (activeLayer && !mapRef.hasLayer(activeLayer)) {{
-          mapRef.addLayer(activeLayer);
+        if (heatCountLayer && !mapRef.hasLayer(heatCountLayer)) {{
+          mapRef.addLayer(heatCountLayer);
         }}
-        setActiveHeatModeButton();
       }}
 
       function renderHeatSummary() {{
@@ -4142,19 +4089,6 @@ def build_simulation_panel_script(
         btn.addEventListener("click", () => {{
           histCoverageExpanded = !histCoverageExpanded;
           renderHistoricalCoverage();
-        }});
-      }}
-
-      function wireHeatModeToggle() {{
-        document.querySelectorAll(".heat-mode-btn").forEach((btn) => {{
-          btn.addEventListener("click", () => {{
-            activeHeatMode = btn.getAttribute("data-heat-mode") || "count";
-            setActiveHeatModeButton();
-            if (activeView === "heat") {{
-              hideHeatLayers();
-              showActiveHeatLayers();
-            }}
-          }});
         }});
       }}
 
@@ -4202,9 +4136,6 @@ def build_simulation_panel_script(
         if (heatLayerNames && heatLayerNames.count_layer && window[heatLayerNames.count_layer]) {{
           heatCountLayer = window[heatLayerNames.count_layer];
         }}
-        if (heatLayerNames && heatLayerNames.hours_layer && window[heatLayerNames.hours_layer]) {{
-          heatHoursLayer = window[heatLayerNames.hours_layer];
-        }}
 
         renderHeatSummary();
         renderButtons();
@@ -4219,8 +4150,6 @@ def build_simulation_panel_script(
         wireKpiModal();
         wireViewToggle();
         wireHistCoverageToggle();
-        wireHeatModeToggle();
-        setActiveHeatModeButton();
         showScenario(defaultScenario);
         syncAirportLayerVisibility();
       }}
