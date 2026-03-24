@@ -194,7 +194,12 @@ def build_scenario_family_breakdown(
 
     records: list[dict] = []
     for _, scenario_row in summary.iterrows():
-        installs_enabled = float(scenario_row.get("install_units_enabled", 0.0) or 0.0)
+        installs_enabled_raw = pd.to_numeric(
+            scenario_row.get("install_units_enabled"), errors="coerce"
+        )
+        if pd.isna(installs_enabled_raw):
+            continue
+        installs_enabled = float(installs_enabled_raw)
         scenario_hires = int(scenario_row["scenario_hires"])
         for _, family_row in family_table.iterrows():
             family = family_row["family"]
@@ -336,10 +341,17 @@ def main() -> None:
             contractor_usage["total_hub_penalty_usd"] / data_span_years
         )
 
+    summary["solver_status"] = pd.to_numeric(summary.get("solver_status"), errors="coerce")
+    feasible_mask = summary["solver_status"] != -1
+
     base_row = summary.loc[summary["scenario_hires"] == 0]
     if base_row.empty:
         raise ValueError("Scenario summary must include N=0 baseline.")
-    base_cost = float(base_row.iloc[0]["economic_total_with_overhead_usd"])
+    base_cost_raw = pd.to_numeric(
+        base_row.iloc[0].get("economic_total_with_overhead_usd"), errors="coerce"
+    )
+    base_row_feasible = bool(base_row.iloc[0]["solver_status"] != -1)
+    base_cost = float(base_cost_raw) if base_row_feasible and not pd.isna(base_cost_raw) else np.nan
     baseline_solver = {
         "scenario_hires": 0,
         "solver_proven_optimal": bool(
@@ -356,19 +368,36 @@ def main() -> None:
         "solver_message": str(base_row.iloc[0].get("solver_message", "")).strip(),
     }
 
-    summary["savings_vs_n0_usd"] = base_cost - summary["economic_total_with_overhead_usd"]
-    summary["savings_vs_n0_pct"] = np.where(
-        base_cost > 0,
-        (summary["savings_vs_n0_usd"] / base_cost) * 100.0,
-        0.0,
+    summary["savings_vs_n0_usd"] = np.where(
+        feasible_mask & np.isfinite(base_cost),
+        base_cost - summary["economic_total_with_overhead_usd"],
+        np.nan,
     )
-    summary["marginal_savings_from_prev_usd"] = summary["economic_total_with_overhead_usd"].shift(1) - summary["economic_total_with_overhead_usd"]
-    summary["marginal_savings_from_prev_usd"] = summary["marginal_savings_from_prev_usd"].fillna(0.0)
+    summary["savings_vs_n0_pct"] = np.where(
+        feasible_mask & np.isfinite(base_cost) & (base_cost > 0),
+        (summary["savings_vs_n0_usd"] / base_cost) * 100.0,
+        np.nan,
+    )
+    prev_cost = summary["economic_total_with_overhead_usd"].shift(1)
+    prev_feasible = feasible_mask.shift(1, fill_value=False)
+    summary["marginal_savings_from_prev_usd"] = np.where(
+        feasible_mask & prev_feasible,
+        prev_cost - summary["economic_total_with_overhead_usd"],
+        np.nan,
+    )
 
-    baseline_existing_hours = float(util.loc[util["scenario_hires"] == 0, "assigned_hours"].sum())
+    baseline_existing_hours = (
+        float(util.loc[util["scenario_hires"] == 0, "assigned_hours"].sum())
+        if base_row_feasible
+        else np.nan
+    )
     hours_freed_list = []
     for _, row in summary.iterrows():
         n = int(row["scenario_hires"])
+        scenario_feasible = pd.to_numeric(row.get("solver_status"), errors="coerce") != -1
+        if not scenario_feasible or not np.isfinite(baseline_existing_hours):
+            hours_freed_list.append(np.nan)
+            continue
         existing_hours_at_n = float(util.loc[util["scenario_hires"] == n, "assigned_hours"].sum())
         hours_freed_list.append(baseline_existing_hours - existing_hours_at_n)
     summary["hours_freed_existing_techs"] = pd.Series(hours_freed_list, dtype="float64") / data_span_years
@@ -413,20 +442,62 @@ def main() -> None:
     summary["install_profit_enabled_usd"] = (
         summary["install_units_enabled"] * weighted_avg_install_profit_per_install_usd
     )
-    summary["net_cost_increase_usd"] = summary["economic_total_with_overhead_usd"] - base_cost
-    summary["net_economic_value_install_usd"] = (
-        summary["install_profit_enabled_usd"] - summary["net_cost_increase_usd"]
+    summary["net_cost_increase_usd"] = np.where(
+        feasible_mask & np.isfinite(base_cost),
+        summary["economic_total_with_overhead_usd"] - base_cost,
+        np.nan,
+    )
+    summary["net_economic_value_install_usd"] = np.where(
+        feasible_mask & np.isfinite(summary["install_profit_enabled_usd"]) & np.isfinite(summary["net_cost_increase_usd"]),
+        summary["install_profit_enabled_usd"] - summary["net_cost_increase_usd"],
+        np.nan,
     )
     summary["roi_install_pct"] = np.where(
-        summary["net_cost_increase_usd"] > 0,
+        feasible_mask & (summary["net_cost_increase_usd"] > 0),
         (summary["net_economic_value_install_usd"] / summary["net_cost_increase_usd"]) * 100.0,
         np.nan,
     )
     summary["break_even_install_units"] = np.where(
-        (summary["net_cost_increase_usd"] > 0) & (weighted_avg_install_profit_per_install_usd > 0),
+        feasible_mask
+        & (summary["net_cost_increase_usd"] > 0)
+        & (weighted_avg_install_profit_per_install_usd > 0),
         summary["net_cost_increase_usd"] / weighted_avg_install_profit_per_install_usd,
-        0.0,
+        np.nan,
     )
+
+    summary.loc[~feasible_mask, [
+        "hours_freed_existing_techs",
+        "freed_calendar_days_total",
+        "freed_calendar_days_available",
+        "theoretical_max_installations",
+        "linear_install_units_enabled",
+        "install_units_enabled",
+        "realistic_installations_enabled",
+        "install_revenue_enabled_usd",
+        "install_profit_enabled_usd",
+        "net_cost_increase_usd",
+        "net_economic_value_install_usd",
+        "roi_install_pct",
+        "break_even_install_units",
+    ]] = np.nan
+    if not np.isfinite(base_cost):
+        summary.loc[:, [
+            "hours_freed_existing_techs",
+            "freed_calendar_days_total",
+            "freed_calendar_days_available",
+            "theoretical_max_installations",
+            "linear_install_units_enabled",
+            "install_units_enabled",
+            "realistic_installations_enabled",
+            "install_revenue_enabled_usd",
+            "install_profit_enabled_usd",
+            "net_cost_increase_usd",
+            "net_economic_value_install_usd",
+            "roi_install_pct",
+            "break_even_install_units",
+            "savings_vs_n0_usd",
+            "savings_vs_n0_pct",
+        ]] = np.nan
 
     # Compatibility aliases for existing outputs and map payload.
     summary["gross_revenue_moderate_usd"] = summary["install_revenue_enabled_usd"]
@@ -459,6 +530,9 @@ def main() -> None:
     special_tech_constraints = assumptions.get("special_tech_constraints", [])
     scenario_hires_list = [int(v) for v in summary["scenario_hires"].tolist()]
     scenario_labels = ", ".join(f"N={scenario}" for scenario in scenario_hires_list)
+    base_cost_label = (
+        f"${base_cost:,.2f}" if np.isfinite(base_cost) else "unavailable (N=0 infeasible)"
+    )
     utilization_metrics_by_scenario = []
     for scenario_hires in scenario_hires_list:
         util_scenario = util[util["scenario_hires"] == scenario_hires].copy()
@@ -612,7 +686,7 @@ def main() -> None:
         "",
         f"- Capacity model time unit: **{config.PATIENT_SIM_CAPACITY_TIME_UNIT}**",
         f"- Scenarios analyzed: **{scenario_labels}**",
-        f"- Baseline (N=0) cost with overhead: **${base_cost:,.2f}**",
+        f"- Baseline (N=0) cost with overhead: **{base_cost_label}**",
         f"- Data period: **{data_span_years:.2f} years**",
         f"- Baseline N=0 proven optimal: **{baseline_solver['solver_proven_optimal']}**",
         "",

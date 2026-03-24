@@ -20,8 +20,11 @@ DEFAULT_OUT_OF_REGION_PENALTY_USD = 0.0
 # Verified current field-tech roster count (includes HTX contractors).
 EXPECTED_CURRENT_TECH_COUNT = 16
 # Blank-slate rebuilds should keep each synthetic hire at or below the
-# historical high-water mark for annual appointment count.
+# observed historical high-water mark for appointment count over the full data span.
 BLANK_SLATE_MAX_APPOINTMENTS_PER_HIRE = 163
+# Optimized scenarios should keep every assignable person at or below that same
+# observed appointment-count ceiling over the full data span.
+OPTIMIZED_MAX_APPOINTMENTS_PER_PERSON = 163
 
 # Source Excel files
 SERVICE_APPTS_DISPATCH = os.path.join(

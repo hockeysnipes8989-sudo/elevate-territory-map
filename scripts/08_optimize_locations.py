@@ -463,6 +463,7 @@ def solve_scenario(
     time_limit_sec: int,
     blank_slate: bool = False,
     blank_slate_max_appointments_per_hire: int | None = None,
+    optimized_max_appointments_per_person: int | None = None,
 ) -> dict:
     """Solve one MILP scenario for a fixed new-hire count."""
     nodes = nodes.reset_index(drop=True).copy()
@@ -690,8 +691,30 @@ def solve_scenario(
         upper.append(0.0)
         r += 1
 
-    # Blank-slate-only per-hire appointment cap.
-    if blank_slate and blank_slate_max_appointments_per_hire is not None:
+    # Optimized-scenario appointment cap across all existing assignable people,
+    # including contractors. This is appointment count, not hours.
+    if (not blank_slate) and optimized_max_appointments_per_person is not None:
+        for ti in tech.index:
+            for ni in nodes.index:
+                idx = x_idx.get((ti, ni))
+                if idx is None:
+                    continue
+                rows.append(r)
+                cols.append(idx)
+                data.append(1.0)
+            lower.append(-np.inf)
+            upper.append(float(optimized_max_appointments_per_person))
+            r += 1
+
+    # Per-hire appointment cap for synthetic hires. In optimized mode this cap
+    # scales with hires allocated at a base; in blank-slate mode max_hires_per_base
+    # is already fixed at 1.
+    synthetic_hire_appointment_cap = (
+        blank_slate_max_appointments_per_hire
+        if blank_slate
+        else optimized_max_appointments_per_person
+    )
+    if synthetic_hire_appointment_cap is not None:
         for ci in candidate_indices:
             for ni in nodes.index:
                 idx = z_idx[(ci, ni)]
@@ -700,7 +723,7 @@ def solve_scenario(
                 data.append(1.0)
             rows.append(r)
             cols.append(y_idx[ci])
-            data.append(-float(blank_slate_max_appointments_per_hire))
+            data.append(-float(synthetic_hire_appointment_cap))
             lower.append(-np.inf)
             upper.append(0.0)
             r += 1
@@ -1090,6 +1113,16 @@ def main() -> None:
             "mode. Applies to appointment count, not duration hours."
         ),
     )
+    parser.add_argument(
+        "--optimized-max-appointments-per-person",
+        type=int,
+        default=config.OPTIMIZED_MAX_APPOINTMENTS_PER_PERSON,
+        help=(
+            "Hard cap on assigned appointments per assignable person in normal "
+            "optimized scenarios. Applies to current techs, contractors, and "
+            "synthetic hires. Uses appointment count, not duration hours."
+        ),
+    )
     args = parser.parse_args()
     if args.annual_hire_cost_usd < 0:
         raise ValueError("--annual-hire-cost-usd must be non-negative.")
@@ -1099,6 +1132,8 @@ def main() -> None:
         raise ValueError("--max-hires-per-base must be at least 1.")
     if args.blank_slate_max_appointments_per_hire < 1:
         raise ValueError("--blank-slate-max-appointments-per-hire must be at least 1.")
+    if args.optimized_max_appointments_per_person < 1:
+        raise ValueError("--optimized-max-appointments-per-person must be at least 1.")
     if not (0 < args.target_utilization <= 1.0):
         raise ValueError("--target-utilization must be in range (0, 1.0].")
     if args.blank_slate:
@@ -1277,6 +1312,9 @@ def main() -> None:
                 blank_slate_max_appointments_per_hire=(
                     args.blank_slate_max_appointments_per_hire if args.blank_slate else None
                 ),
+                optimized_max_appointments_per_person=(
+                    None if args.blank_slate else args.optimized_max_appointments_per_person
+                ),
             )
         except RuntimeError as exc:
             msg = f"Solver error for N={hire_count}: {exc}"
@@ -1384,6 +1422,18 @@ def main() -> None:
             f"{int(args.blank_slate_max_appointments_per_hire)} assigned appointments each. "
             "This is an appointment-count ceiling, not a duration-hours or utilization cap."
             if args.blank_slate
+            else None
+        ),
+        "optimized_max_appointments_per_person": (
+            None if args.blank_slate else int(args.optimized_max_appointments_per_person)
+        ),
+        "optimized_appointment_cap_note": (
+            f"Optimized scenarios cap every assignable person at "
+            f"{int(args.optimized_max_appointments_per_person)} assigned appointments over "
+            "the full data span. This applies to current techs, contractors, and synthetic "
+            "hires, and it is an appointment-count ceiling, not a duration-hours or "
+            "utilization cap."
+            if not args.blank_slate
             else None
         ),
         "target_utilization": args.target_utilization,

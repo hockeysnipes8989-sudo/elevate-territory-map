@@ -1160,6 +1160,7 @@ def load_simulation_data():
 
     placements_df = pd.read_csv(placements_path)
     candidates_df = pd.read_csv(candidates_path)
+    assumptions = load_optimized_assumptions(assumptions_path)
 
     if summary_df.empty or "scenario_hires" not in summary_df.columns:
         return None
@@ -1182,72 +1183,100 @@ def load_simulation_data():
     summary_df["scenario_hires"] = pd.to_numeric(summary_df["scenario_hires"], errors="coerce")
     summary_df = summary_df.dropna(subset=["scenario_hires"]).copy()
     summary_df["scenario_hires"] = summary_df["scenario_hires"].astype(int)
+    if "solver_status" in summary_df.columns:
+        summary_df["solver_status"] = pd.to_numeric(summary_df["solver_status"], errors="coerce")
+    else:
+        summary_df["solver_status"] = 0
+    is_infeasible_mask = summary_df["solver_status"] == -1
 
     # Build baseline deltas if enhanced columns are missing.
     if "economic_total_with_overhead_usd" not in summary_df.columns:
         if "modeled_total_cost_usd" in summary_df.columns:
             summary_df["economic_total_with_overhead_usd"] = pd.to_numeric(
                 summary_df["modeled_total_cost_usd"], errors="coerce"
-            ).fillna(0.0)
+            )
         else:
-            summary_df["economic_total_with_overhead_usd"] = 0.0
+            summary_df["economic_total_with_overhead_usd"] = np.nan
+    summary_df["economic_total_with_overhead_usd"] = pd.to_numeric(
+        summary_df["economic_total_with_overhead_usd"], errors="coerce"
+    )
+    if (summary_df["scenario_hires"] == 0).any():
+        fallback_base_cost = pd.to_numeric(
+            summary_df.loc[
+                summary_df["scenario_hires"] == 0, "economic_total_with_overhead_usd"
+            ].head(1).squeeze(),
+            errors="coerce",
+        )
+    else:
+        fallback_base_cost = pd.to_numeric(
+            summary_df.loc[~is_infeasible_mask, "economic_total_with_overhead_usd"].max(),
+            errors="coerce",
+        )
     if "savings_vs_n0_usd" not in summary_df.columns:
-        base = float(
-            summary_df.loc[summary_df["scenario_hires"] == 0, "economic_total_with_overhead_usd"]
-            .head(1)
-            .squeeze()
-        ) if (summary_df["scenario_hires"] == 0).any() else float(
-            summary_df["economic_total_with_overhead_usd"].max()
+        summary_df["savings_vs_n0_usd"] = np.where(
+            pd.notna(fallback_base_cost),
+            fallback_base_cost - summary_df["economic_total_with_overhead_usd"],
+            np.nan,
         )
-        summary_df["savings_vs_n0_usd"] = base - summary_df["economic_total_with_overhead_usd"]
     if "savings_vs_n0_pct" not in summary_df.columns:
-        base = float(
-            summary_df.loc[summary_df["scenario_hires"] == 0, "economic_total_with_overhead_usd"]
-            .head(1)
-            .squeeze()
-        ) if (summary_df["scenario_hires"] == 0).any() else float(
-            summary_df["economic_total_with_overhead_usd"].max()
-        )
-        summary_df["savings_vs_n0_pct"] = (
-            (summary_df["savings_vs_n0_usd"] / base) * 100.0 if base > 0 else 0.0
+        summary_df["savings_vs_n0_pct"] = np.where(
+            pd.notna(fallback_base_cost) & (fallback_base_cost > 0),
+            (summary_df["savings_vs_n0_usd"] / fallback_base_cost) * 100.0,
+            np.nan,
         )
     if "marginal_savings_from_prev_usd" not in summary_df.columns:
         summary_df = summary_df.sort_values("scenario_hires")
-        summary_df["marginal_savings_from_prev_usd"] = (
-            summary_df["economic_total_with_overhead_usd"].shift(1)
-            - summary_df["economic_total_with_overhead_usd"]
-        ).fillna(0.0)
+        prev_cost = summary_df["economic_total_with_overhead_usd"].shift(1)
+        curr_cost = summary_df["economic_total_with_overhead_usd"]
+        summary_df["marginal_savings_from_prev_usd"] = np.where(
+            prev_cost.notna() & curr_cost.notna(),
+            prev_cost - curr_cost,
+            np.nan,
+        )
 
     summary_df = summary_df.sort_values("scenario_hires").reset_index(drop=True)
     if (summary_df["scenario_hires"] == 0).any():
-        baseline_cost = float(
+        baseline_cost = pd.to_numeric(
             summary_df.loc[
                 summary_df["scenario_hires"] == 0, "economic_total_with_overhead_usd"
-            ].iloc[0]
+            ].iloc[0],
+            errors="coerce",
         )
     else:
-        baseline_cost = float(summary_df["economic_total_with_overhead_usd"].iloc[0])
-    summary_df["annual_cost_delta_vs_n0_usd"] = (
-        summary_df["economic_total_with_overhead_usd"] - baseline_cost
+        feasible_costs = summary_df.loc[
+            summary_df["solver_status"] != -1, "economic_total_with_overhead_usd"
+        ]
+        baseline_cost = (
+            pd.to_numeric(feasible_costs.iloc[0], errors="coerce")
+            if not feasible_costs.empty
+            else np.nan
+        )
+    summary_df["annual_cost_delta_vs_n0_usd"] = np.where(
+        pd.notna(baseline_cost),
+        summary_df["economic_total_with_overhead_usd"] - baseline_cost,
+        np.nan,
     )
     summary_df["annual_cost_delta_vs_n0_pct"] = np.where(
-        baseline_cost != 0,
+        pd.notna(baseline_cost) & (baseline_cost != 0),
         (summary_df["annual_cost_delta_vs_n0_usd"] / baseline_cost) * 100.0,
-        0.0,
+        np.nan,
     )
-    summary_df["incremental_cost_vs_prior_usd"] = (
-        summary_df["economic_total_with_overhead_usd"]
-        - summary_df["economic_total_with_overhead_usd"].shift(1)
-    ).fillna(0.0)
+    prev_cost = summary_df["economic_total_with_overhead_usd"].shift(1)
+    curr_cost = summary_df["economic_total_with_overhead_usd"]
+    summary_df["incremental_cost_vs_prior_usd"] = np.where(
+        prev_cost.notna() & curr_cost.notna(),
+        curr_cost - prev_cost,
+        np.nan,
+    )
 
     if "unmet_appointments" not in summary_df.columns:
-        summary_df["unmet_appointments"] = 0.0
+        summary_df["unmet_appointments"] = np.nan
     if "hire_cost_usd" not in summary_df.columns:
-        summary_df["hire_cost_usd"] = 0.0
+        summary_df["hire_cost_usd"] = np.nan
     if "mean_existing_utilization" not in summary_df.columns:
-        summary_df["mean_existing_utilization"] = 0.0
+        summary_df["mean_existing_utilization"] = np.nan
     if "max_existing_utilization" not in summary_df.columns:
-        summary_df["max_existing_utilization"] = 0.0
+        summary_df["max_existing_utilization"] = np.nan
 
     placements_df["scenario_hires"] = pd.to_numeric(
         placements_df.get("scenario_hires"), errors="coerce"
@@ -1275,20 +1304,11 @@ def load_simulation_data():
     if summary_df.empty:
         return None
 
-    # Skip infeasible scenarios (solver_status == -1) so NaN/None cost
-    # fields don't break json.dumps or the simulation panel UI.
-    if "solver_status" in summary_df.columns:
-        infeasible_mask = pd.to_numeric(summary_df["solver_status"], errors="coerce") == -1
-        n_infeasible = int(infeasible_mask.sum())
-        if n_infeasible:
-            print(f"  Skipping {n_infeasible} infeasible scenario(s) from simulation panel.")
-            summary_df = summary_df[~infeasible_mask].copy()
-    if summary_df.empty:
-        return None
-
     payload = {}
     for _, row in summary_df.sort_values("scenario_hires").iterrows():
         scenario = int(row["scenario_hires"])
+        solver_status = pd.to_numeric(row.get("solver_status"), errors="coerce")
+        is_infeasible = not pd.isna(solver_status) and int(solver_status) == -1
         subset = (
             placements_df[placements_df["scenario_hires"] == scenario]
             .copy()
@@ -1319,6 +1339,7 @@ def load_simulation_data():
 
         payload[str(scenario)] = {
             "scenario_hires": scenario,
+            "is_infeasible": is_infeasible,
             "solver_proven_optimal": safe_int(row, "solver_proven_optimal", default=0) == 1,
             "solver_status": safe_int(row, "solver_status", default=0),
             "solver_mip_gap": safe_float(row, "solver_mip_gap", default=None),
@@ -1326,29 +1347,47 @@ def load_simulation_data():
             "analysis_is_stale": analysis_is_stale,
             "analysis_staleness_reason": analysis_staleness_reason,
             "source_provenance": provenance,
+            "optimized_max_appointments_per_person": assumptions.get(
+                "optimized_max_appointments_per_person"
+            ),
+            "optimized_appointment_cap_note": str(
+                assumptions.get("optimized_appointment_cap_note", "") or ""
+            ),
             "kpis": {
-                "economic_total_with_overhead_usd": float(
-                    row.get("economic_total_with_overhead_usd", 0)
+                "economic_total_with_overhead_usd": safe_float(
+                    row, "economic_total_with_overhead_usd", default=None
                 ),
-                "annual_cost_delta_vs_n0_usd": float(
-                    row.get("annual_cost_delta_vs_n0_usd", 0)
+                "annual_cost_delta_vs_n0_usd": safe_float(
+                    row, "annual_cost_delta_vs_n0_usd", default=None
                 ),
-                "annual_cost_delta_vs_n0_pct": float(
-                    row.get("annual_cost_delta_vs_n0_pct", 0)
+                "annual_cost_delta_vs_n0_pct": safe_float(
+                    row, "annual_cost_delta_vs_n0_pct", default=None
                 ),
-                "incremental_cost_vs_prior_usd": float(
-                    row.get("incremental_cost_vs_prior_usd", 0)
+                "incremental_cost_vs_prior_usd": safe_float(
+                    row, "incremental_cost_vs_prior_usd", default=None
                 ),
-                "unmet_appointments": float(row.get("unmet_appointments", 0)),
-                "hire_cost_usd": float(row.get("hire_cost_usd", 0)),
-                "mean_existing_utilization": float(row.get("mean_existing_utilization", 0)),
-                "max_existing_utilization": float(row.get("max_existing_utilization", 0)),
-                "install_units_enabled": safe_float(row, "install_units_enabled"),
-                "install_revenue_enabled_usd": safe_float(row, "install_revenue_enabled_usd"),
-                "install_profit_enabled_usd": safe_float(row, "install_profit_enabled_usd"),
-                "net_economic_value_install_usd": safe_float(row, "net_economic_value_install_usd"),
-                "break_even_install_units": safe_float(row, "break_even_install_units"),
-                "roi_install_pct": safe_float(row, "roi_install_pct"),
+                "unmet_appointments": safe_float(row, "unmet_appointments", default=None),
+                "hire_cost_usd": safe_float(row, "hire_cost_usd", default=None),
+                "mean_existing_utilization": safe_float(
+                    row, "mean_existing_utilization", default=None
+                ),
+                "max_existing_utilization": safe_float(
+                    row, "max_existing_utilization", default=None
+                ),
+                "install_units_enabled": safe_float(row, "install_units_enabled", default=None),
+                "install_revenue_enabled_usd": safe_float(
+                    row, "install_revenue_enabled_usd", default=None
+                ),
+                "install_profit_enabled_usd": safe_float(
+                    row, "install_profit_enabled_usd", default=None
+                ),
+                "net_economic_value_install_usd": safe_float(
+                    row, "net_economic_value_install_usd", default=None
+                ),
+                "break_even_install_units": safe_float(
+                    row, "break_even_install_units", default=None
+                ),
+                "roi_install_pct": safe_float(row, "roi_install_pct", default=None),
             },
             "placements": placement_records,
         }
@@ -1567,6 +1606,14 @@ def load_blank_slate_data():
             assumptions.get("blank_slate_appointment_cap_note", "") or ""
         ),
     }
+
+
+def load_optimized_assumptions(assumptions_path):
+    """Load optimized solver assumptions if present."""
+    if not os.path.exists(assumptions_path):
+        return {}
+    with open(assumptions_path, "r") as f:
+        return json.load(f)
 
 
 def load_heat_map_data():
@@ -3380,6 +3427,10 @@ def build_simulation_panel_markup():
           <div id="sim-buttons"></div>
         </div>
 
+        <div class="sim-section" id="opt-status-section" style="display:none;">
+          <div id="opt-status" class="sim-list-box sim-empty"></div>
+        </div>
+
         <div class="sim-section">
           <div id="sim-kpis" class="sim-card-grid">
             <div class="sim-kpi kpi-clickable" data-kpi="total-cost">
@@ -3658,6 +3709,10 @@ def build_simulation_panel_script(
         return brightness >= 165 ? darkDotStroke : lightDotStroke;
       }}
 
+      function hasValue(value) {{
+        return value !== null && value !== undefined && !Number.isNaN(Number(value));
+      }}
+
       function renderButtons() {{
         const container = document.getElementById("sim-buttons");
         if (!container) return;
@@ -3751,6 +3806,7 @@ def build_simulation_panel_script(
         const item = scenarioData[scenario];
         if (!item) return;
         const k = item.kpis || {{}};
+        const isInfeasible = !!item.is_infeasible;
 
         const totalEl = document.getElementById("kpi-total");
         const annualDeltaEl = document.getElementById("kpi-annual-delta");
@@ -3759,16 +3815,26 @@ def build_simulation_panel_script(
         const netValueEl = document.getElementById("kpi-net-value");
         const breakEvenEl = document.getElementById("kpi-break-even");
 
-        if (totalEl) totalEl.textContent = money(k.economic_total_with_overhead_usd);
-        if (annualDeltaEl) {{
-          annualDeltaEl.textContent = signedMoney(k.annual_cost_delta_vs_n0_usd) + " (" + signedPct(k.annual_cost_delta_vs_n0_pct, 2) + ")";
+        if (totalEl) {{
+          totalEl.textContent = isInfeasible || !hasValue(k.economic_total_with_overhead_usd)
+            ? "—"
+            : money(k.economic_total_with_overhead_usd);
         }}
-        if (hireEl) hireEl.textContent = money(k.hire_cost_usd);
+        if (annualDeltaEl) {{
+          annualDeltaEl.textContent = isInfeasible || !hasValue(k.annual_cost_delta_vs_n0_usd) || !hasValue(k.annual_cost_delta_vs_n0_pct)
+            ? "—"
+            : signedMoney(k.annual_cost_delta_vs_n0_usd) + " (" + signedPct(k.annual_cost_delta_vs_n0_pct, 2) + ")";
+        }}
+        if (hireEl) {{
+          hireEl.textContent = isInfeasible || !hasValue(k.hire_cost_usd)
+            ? "—"
+            : money(k.hire_cost_usd);
+        }}
 
         setSignedValueColor(annualDeltaEl, k.annual_cost_delta_vs_n0_usd);
 
-        const installUnits = Number(k.install_units_enabled || 0);
-        const hasInstallUpside = installUnits > 0;
+        const installUnits = hasValue(k.install_units_enabled) ? Number(k.install_units_enabled) : null;
+        const hasInstallUpside = !isInfeasible && installUnits !== null && installUnits > 0;
         if (installProfitEl) {{
           installProfitEl.textContent = hasInstallUpside ? money(k.install_profit_enabled_usd) : "—";
         }}
@@ -3781,10 +3847,37 @@ def build_simulation_panel_script(
         setSignedValueColor(netValueEl, k.net_economic_value_install_usd);
       }}
 
+      function renderOptimizedStatus(scenario) {{
+        const item = scenarioData[scenario];
+        const sectionEl = document.getElementById("opt-status-section");
+        const statusEl = document.getElementById("opt-status");
+        if (!sectionEl || !statusEl || !item) return;
+        if (!item.is_infeasible) {{
+          sectionEl.style.display = "none";
+          statusEl.textContent = "";
+          return;
+        }}
+
+        const cap = item.optimized_max_appointments_per_person;
+        const capLabel = cap == null
+          ? "the configured appointment cap"
+          : `${{cap}} appointments per person`;
+        let message = `Optimized scenario N=${{item.scenario_hires}} could not be solved under ${{capLabel}}.`;
+        if (item.solver_message) {{
+          message += ` Solver status: ${{item.solver_message}}`;
+        }}
+        sectionEl.style.display = "block";
+        statusEl.textContent = message;
+      }}
+
       function renderRecommendations(scenario) {{
         const recWrap = document.getElementById("sim-recs");
         if (!recWrap) return;
         const item = scenarioData[scenario];
+        if (item && item.is_infeasible) {{
+          recWrap.innerHTML = '<div class="sim-empty">No placements are available because this optimized scenario is infeasible under the 163-appointment cap.</div>';
+          return;
+        }}
         const recs = item ? (item.placements || []) : [];
         if (!recs.length) {{
           recWrap.innerHTML = '<div class="sim-empty">No new-hire placements in this scenario.</div>';
@@ -3826,6 +3919,12 @@ def build_simulation_panel_script(
         }}
 
         const item = scenarioData[scenario];
+        if (item && item.is_infeasible) {{
+          sectionEl.style.display = "block";
+          listEl.innerHTML = '<div class="sim-empty">No coverage assignment summary is available because this optimized scenario is infeasible.</div>';
+          toggleEl.style.display = "none";
+          return;
+        }}
         const stats = item ? (item.tech_stats || {{}}) : {{}};
         const entries = Object.entries(stats).sort(
           (a, b) => Number(b[1].appointments || 0) - Number(a[1].appointments || 0)
@@ -3899,6 +3998,7 @@ def build_simulation_panel_script(
         }}
 
         setActiveButton(scenario);
+        renderOptimizedStatus(scenario);
         renderKpis(scenario);
         renderRecommendations(scenario);
         renderCoverageAssignments(scenario);
