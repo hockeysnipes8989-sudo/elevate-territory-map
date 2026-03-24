@@ -448,6 +448,188 @@ def _infeasible_summary(hire_count: int, message: str, baseline_canceled_voided_
     }
 
 
+def build_existing_assignment_row(
+    hire_count: int,
+    trow: pd.Series,
+    nrow: pd.Series,
+    assigned_appointments: float,
+    base_cost: float,
+    out_region_penalty: float,
+    timezone_penalty: float,
+    hub_penalty: float,
+    zone_policy: str,
+    zone_jump_count_value: int | None,
+    cost_meta: dict,
+) -> dict:
+    """Return one existing-tech assignment output row."""
+    hours = float(assigned_appointments) * float(nrow["avg_hours_per_appointment"])
+    return {
+        "scenario_hires": hire_count,
+        "tech_id": trow["tech_id"],
+        "tech_name": trow["tech_name"],
+        "employment_type": trow["employment_type"],
+        "base_state": trow["base_state"],
+        "base_airport_iata": trow["base_airport_iata"],
+        "base_hub_tier": trow.get("base_hub_tier"),
+        "assignment_scope_mode": trow.get("assignment_scope_mode"),
+        "assignment_scope_states": trow.get("assignment_scope_states"),
+        "anchor_site_name": trow.get("anchor_site_name"),
+        "anchor_reserved_fte": trow.get("anchor_reserved_fte"),
+        "external_field_fte": trow.get("external_field_fte"),
+        "node_id": nrow["node_id"],
+        "state_norm": nrow["state_norm"],
+        "skill_class": nrow["skill_class"],
+        "assigned_appointments": float(assigned_appointments),
+        "assigned_hours": hours,
+        "unit_travel_cost_usd": base_cost,
+        "unit_out_region_penalty_usd": out_region_penalty,
+        "unit_timezone_penalty_usd": timezone_penalty,
+        "unit_hub_penalty_usd": hub_penalty,
+        "zone_policy": zone_policy,
+        "zone_jump_count": zone_jump_count_value,
+        "base_operational_zone_label": trow.get("base_operational_zone_label"),
+        "node_operational_zone_label": nrow.get("node_operational_zone_label"),
+        "travel_cost_policy": cost_meta.get("travel_cost_policy", trow.get("travel_cost_policy")),
+        "trip_mode": cost_meta.get("trip_mode"),
+        "ground_transport_mode": cost_meta.get("ground_transport_mode"),
+        "median_dist_mi": cost_meta.get("median_dist_mi"),
+        "trip_span_days": cost_meta.get("trip_span_days"),
+        "rental_days": cost_meta.get("rental_days"),
+        "employee_style_unit_cost_usd": cost_meta.get("employee_style_unit_cost_usd", base_cost),
+        "effective_unit_cost_usd": cost_meta.get("effective_unit_cost_usd", base_cost),
+        "total_travel_cost_usd": float(assigned_appointments) * base_cost,
+        "total_out_region_penalty_usd": float(assigned_appointments) * out_region_penalty,
+        "total_timezone_penalty_usd": float(assigned_appointments) * timezone_penalty,
+        "total_hub_penalty_usd": float(assigned_appointments) * hub_penalty,
+    }
+
+
+def reserve_curt_florida_assignments(
+    hire_count: int,
+    tech: pd.DataFrame,
+    nodes: pd.DataFrame,
+    full_cost_lookup: dict[tuple[str, str], dict],
+    contractor_scope: str,
+    out_of_region_penalty: float,
+    fallback_cost: float,
+    optimized_max_appointments_per_person: int | None,
+) -> tuple[pd.DataFrame, pd.DataFrame, list[dict], dict]:
+    """Reserve Curt against Florida regular/HPS demand before the MILP runs."""
+    reserved_rows: list[dict] = []
+    reserved_totals = {
+        "appointments": 0.0,
+        "travel_cost_usd": 0.0,
+        "out_of_region_penalty_usd": 0.0,
+        "timezone_penalty_usd": 0.0,
+        "hub_penalty_usd": 0.0,
+    }
+    if optimized_max_appointments_per_person is None:
+        return tech, nodes, reserved_rows, reserved_totals
+
+    curt_id = str(getattr(config, "CURT_CORDER_TECH_ID", "curt_corder"))
+    curt_matches = tech.index[tech["tech_id"].astype(str).eq(curt_id)]
+    if len(curt_matches) == 0:
+        return tech, nodes, reserved_rows, reserved_totals
+
+    curt_idx = int(curt_matches[0])
+    curt = tech.loc[curt_idx]
+    remaining_hours_raw = pd.to_numeric(curt.get("capacity_hours"), errors="coerce")
+    remaining_hours = 0.0 if pd.isna(remaining_hours_raw) else float(remaining_hours_raw)
+    remaining_appointments = int(optimized_max_appointments_per_person)
+    if remaining_hours <= 1e-9 or remaining_appointments <= 0:
+        return tech, nodes, reserved_rows, reserved_totals
+
+    florida_candidates: list[tuple[int, float, float, str]] = []
+    for ni, nrow in nodes.iterrows():
+        if str(nrow.get("state_norm", "")).strip() != "FL":
+            continue
+        if str(nrow.get("skill_class", "")).strip().lower() not in {"regular", "hps"}:
+            continue
+        if float(pd.to_numeric(nrow.get("appointment_count"), errors="coerce") or 0.0) <= 0:
+            continue
+        if not tech_eligible_for_node(curt, nrow, contractor_scope):
+            continue
+        florida_candidates.append(
+            (
+                int(ni),
+                float(nrow["avg_hours_per_appointment"]),
+                float(nrow["appointment_count"]),
+                str(nrow["node_id"]),
+            )
+        )
+
+    florida_candidates.sort(key=lambda item: (item[1], -item[2], item[3]))
+
+    for ni, avg_hours_per_appointment, appointment_count, _node_id in florida_candidates:
+        if remaining_hours <= 1e-9 or remaining_appointments <= 0:
+            break
+        if avg_hours_per_appointment <= 0:
+            max_by_hours = int(np.floor(appointment_count))
+        else:
+            max_by_hours = int(np.floor((remaining_hours + 1e-9) / avg_hours_per_appointment))
+        reserve_appointments = min(
+            int(np.floor(appointment_count + 1e-9)),
+            remaining_appointments,
+            max_by_hours,
+        )
+        if reserve_appointments <= 0:
+            continue
+
+        nrow = nodes.loc[ni]
+        cost_meta = full_cost_lookup.get((curt_id, str(nrow["node_id"])), {})
+        base_cost = float(cost_meta.get("unit_cost_usd", fallback_cost))
+        is_out_region = int(str(curt.get("base_state", "")) != str(nrow["state_norm"]))
+        out_region = out_of_region_penalty if is_out_region else 0.0
+        trip_mode = cost_meta.get("trip_mode")
+        zone_policy = str(
+            curt.get("zone_policy", config.ZONE_POLICY_STANDARD)
+        ).strip() or config.ZONE_POLICY_STANDARD
+        jump = zone_jump_count(
+            curt.get("base_operational_zone_rank"),
+            nrow.get("node_operational_zone_rank"),
+        )
+        _, zone_penalty = evaluate_zone_policy(jump, zone_policy)
+        hub_penalty = evaluate_hub_penalty(curt.get("base_hub_tier"), trip_mode)
+
+        reserved_rows.append(
+            build_existing_assignment_row(
+                hire_count=hire_count,
+                trow=curt,
+                nrow=nrow,
+                assigned_appointments=float(reserve_appointments),
+                base_cost=base_cost,
+                out_region_penalty=out_region,
+                timezone_penalty=zone_penalty,
+                hub_penalty=hub_penalty,
+                zone_policy=zone_policy,
+                zone_jump_count_value=jump,
+                cost_meta=cost_meta,
+            )
+        )
+
+        reserved_hours = float(reserve_appointments) * avg_hours_per_appointment
+        nodes.at[ni, "appointment_count"] = max(
+            0.0,
+            float(nodes.at[ni, "appointment_count"]) - float(reserve_appointments),
+        )
+        nodes.at[ni, "demand_hours"] = max(
+            0.0,
+            float(nodes.at[ni, "demand_hours"]) - reserved_hours,
+        )
+        remaining_hours -= reserved_hours
+        remaining_appointments -= reserve_appointments
+        reserved_totals["appointments"] += float(reserve_appointments)
+        reserved_totals["travel_cost_usd"] += float(reserve_appointments) * base_cost
+        reserved_totals["out_of_region_penalty_usd"] += float(reserve_appointments) * out_region
+        reserved_totals["timezone_penalty_usd"] += float(reserve_appointments) * zone_penalty
+        reserved_totals["hub_penalty_usd"] += float(reserve_appointments) * hub_penalty
+
+    if reserved_rows:
+        tech.at[curt_idx, "capacity_hours"] = max(0.0, remaining_hours)
+
+    return tech, nodes, reserved_rows, reserved_totals
+
+
 def solve_scenario(
     hire_count: int,
     tech: pd.DataFrame,
@@ -475,6 +657,7 @@ def solve_scenario(
         ].reset_index(drop=True)
 
     total_demand_hours = float(nodes["demand_hours"].sum())
+    original_total_appointments = float(nodes["appointment_count"].sum())
     total_availability = float(tech["availability_fte"].sum())
     # The solver normalizes capacity against the same appointment-duration
     # demand pool used on the workload side. The resulting utilization output is
@@ -489,6 +672,14 @@ def solve_scenario(
 
     tech["capacity_hours"] = tech["availability_fte"] * hours_per_unit
     new_hire_capacity_hours = hours_per_unit
+    existing_appointment_caps = {
+        int(ti): (
+            int(optimized_max_appointments_per_person)
+            if (not blank_slate) and optimized_max_appointments_per_person is not None
+            else None
+        )
+        for ti in tech.index
+    }
 
     var_names: list[str] = []
     lb: list[float] = []
@@ -509,6 +700,39 @@ def solve_scenario(
         + (config.RENTAL_CAR_DAILY_RATE_USD * _fallback_trip_span_days)
         + (config.HOTEL_NIGHTLY_RATE_USD * _fallback_trip_span_days)
     )
+
+    curt_reserved_rows: list[dict] = []
+    curt_reserved_totals = {
+        "appointments": 0.0,
+        "travel_cost_usd": 0.0,
+        "out_of_region_penalty_usd": 0.0,
+        "timezone_penalty_usd": 0.0,
+        "hub_penalty_usd": 0.0,
+    }
+    if not blank_slate:
+        tech, nodes, curt_reserved_rows, curt_reserved_totals = reserve_curt_florida_assignments(
+            hire_count=hire_count,
+            tech=tech,
+            nodes=nodes,
+            full_cost_lookup=full_cost_lookup,
+            contractor_scope=contractor_scope,
+            out_of_region_penalty=out_of_region_penalty,
+            fallback_cost=_fallback_cost,
+            optimized_max_appointments_per_person=optimized_max_appointments_per_person,
+        )
+        if curt_reserved_rows:
+            curt_idx = tech.index[tech["tech_id"].astype(str).eq(
+                str(getattr(config, "CURT_CORDER_TECH_ID", "curt_corder"))
+            )]
+            if len(curt_idx) > 0:
+                reserved_appts = int(
+                    round(sum(float(row["assigned_appointments"]) for row in curt_reserved_rows))
+                )
+                if existing_appointment_caps[int(curt_idx[0])] is not None:
+                    existing_appointment_caps[int(curt_idx[0])] = max(
+                        0,
+                        int(existing_appointment_caps[int(curt_idx[0])]) - reserved_appts,
+                    )
 
     # Existing tech assignment vars: appointments assigned to node.
     for ti, trow in tech.iterrows():
@@ -703,7 +927,7 @@ def solve_scenario(
                 cols.append(idx)
                 data.append(1.0)
             lower.append(-np.inf)
-            upper.append(float(optimized_max_appointments_per_person))
+            upper.append(float(existing_appointment_caps[ti]))
             r += 1
 
     # Per-hire appointment cap for synthetic hires. In optimized mode this cap
@@ -763,14 +987,14 @@ def solve_scenario(
     y_values = {ci: solution[idx] for ci, idx in y_idx.items()}
 
     # Build detailed outputs and cost breakdown.
-    existing_rows = []
+    existing_rows = list(curt_reserved_rows)
     new_rows = []
     util_rows = []
 
-    travel_cost = 0.0
-    out_region_cost = 0.0
-    timezone_penalty_cost = 0.0
-    hub_penalty_cost = 0.0
+    travel_cost = float(curt_reserved_totals["travel_cost_usd"])
+    out_region_cost = float(curt_reserved_totals["out_of_region_penalty_usd"])
+    timezone_penalty_cost = float(curt_reserved_totals["timezone_penalty_usd"])
+    hub_penalty_cost = float(curt_reserved_totals["hub_penalty_usd"])
     unmet_appointments = 0.0
 
     for (ti, ni), idx in x_idx.items():
@@ -789,47 +1013,20 @@ def solve_scenario(
         out_region_cost += val * pen
         timezone_penalty_cost += val * zone_penalty
         hub_penalty_cost += val * hub_penalty
-        hours = val * float(nrow["avg_hours_per_appointment"])
         existing_rows.append(
-            {
-                "scenario_hires": hire_count,
-                "tech_id": trow["tech_id"],
-                "tech_name": trow["tech_name"],
-                "employment_type": trow["employment_type"],
-                "base_state": trow["base_state"],
-                "base_airport_iata": trow["base_airport_iata"],
-                "base_hub_tier": trow.get("base_hub_tier"),
-                "assignment_scope_mode": trow.get("assignment_scope_mode"),
-                "assignment_scope_states": trow.get("assignment_scope_states"),
-                "anchor_site_name": trow.get("anchor_site_name"),
-                "anchor_reserved_fte": trow.get("anchor_reserved_fte"),
-                "external_field_fte": trow.get("external_field_fte"),
-                "node_id": nrow["node_id"],
-                "state_norm": nrow["state_norm"],
-                "skill_class": nrow["skill_class"],
-                "assigned_appointments": val,
-                "assigned_hours": hours,
-                "unit_travel_cost_usd": base,
-                "unit_out_region_penalty_usd": pen,
-                "unit_timezone_penalty_usd": zone_penalty,
-                "unit_hub_penalty_usd": hub_penalty,
-                "zone_policy": m.get("zone_policy"),
-                "zone_jump_count": m.get("zone_jump_count"),
-                "base_operational_zone_label": trow.get("base_operational_zone_label"),
-                "node_operational_zone_label": nrow.get("node_operational_zone_label"),
-                "travel_cost_policy": cost_meta.get("travel_cost_policy", trow.get("travel_cost_policy")),
-                "trip_mode": cost_meta.get("trip_mode"),
-                "ground_transport_mode": cost_meta.get("ground_transport_mode"),
-                "median_dist_mi": cost_meta.get("median_dist_mi"),
-                "trip_span_days": cost_meta.get("trip_span_days"),
-                "rental_days": cost_meta.get("rental_days"),
-                "employee_style_unit_cost_usd": cost_meta.get("employee_style_unit_cost_usd", base),
-                "effective_unit_cost_usd": cost_meta.get("effective_unit_cost_usd", base),
-                "total_travel_cost_usd": val * base,
-                "total_out_region_penalty_usd": val * pen,
-                "total_timezone_penalty_usd": val * zone_penalty,
-                "total_hub_penalty_usd": val * hub_penalty,
-            }
+            build_existing_assignment_row(
+                hire_count=hire_count,
+                trow=trow,
+                nrow=nrow,
+                assigned_appointments=val,
+                base_cost=base,
+                out_region_penalty=pen,
+                timezone_penalty=zone_penalty,
+                hub_penalty=hub_penalty,
+                zone_policy=m.get("zone_policy"),
+                zone_jump_count_value=m.get("zone_jump_count"),
+                cost_meta=cost_meta,
+            )
         )
 
     for (ci, ni), idx in z_idx.items():
@@ -1026,9 +1223,9 @@ def solve_scenario(
         "solver_message": str(result.message),
         "solver_mip_gap": float(getattr(result, "mip_gap", np.nan)),
         "solver_mip_node_count": int(getattr(result, "mip_node_count", 0) or 0),
-        "objective_value": float(result.fun),
-        "total_appointments": float(nodes["appointment_count"].sum()),
-        "served_appointments": float(nodes["appointment_count"].sum() - unmet_appointments),
+        "objective_value": modeled_total,
+        "total_appointments": float(original_total_appointments),
+        "served_appointments": float(original_total_appointments - unmet_appointments),
         "unmet_appointments": float(unmet_appointments),
         "travel_cost_usd": travel_cost,
         "out_of_region_penalty_usd": out_region_cost,
@@ -1433,6 +1630,14 @@ def main() -> None:
             "the full data span. This applies to current techs, contractors, and synthetic "
             "hires, and it is an appointment-count ceiling, not a duration-hours or "
             "utilization cap."
+            if not args.blank_slate
+            else None
+        ),
+        "optimized_curt_florida_rule_note": (
+            "In optimized scenarios only, Curt Corder is manually modeled as "
+            "Florida-only, patient-sim plus HPS capable, not Learning Space "
+            "capable, and he is reserved onto Florida regular/HPS demand before "
+            "the main MILP assigns the remaining work."
             if not args.blank_slate
             else None
         ),

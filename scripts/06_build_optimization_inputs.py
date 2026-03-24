@@ -453,6 +453,25 @@ def enrich_candidate_zone_fields(
     return pd.DataFrame(rows)
 
 
+def apply_manual_tech_policy_overrides(tech_master: pd.DataFrame) -> pd.DataFrame:
+    """Apply stable manual technician-policy overrides after enrichment."""
+    overrides = getattr(config, "OPTIMIZATION_TECH_POLICY_OVERRIDES", {})
+    if tech_master.empty or not overrides:
+        return tech_master.copy()
+
+    tech_master = tech_master.copy()
+    tech_ids = tech_master["tech_id"].astype(str)
+    for tech_id, fields in overrides.items():
+        mask = tech_ids.eq(str(tech_id))
+        if not mask.any():
+            continue
+        for field, value in dict(fields).items():
+            if field not in tech_master.columns:
+                tech_master[field] = ""
+            tech_master.loc[mask, field] = value
+    return tech_master
+
+
 def build_tech_master(
     tech_path: str,
     airports_df: pd.DataFrame,
@@ -806,13 +825,12 @@ def build_tech_master(
         )
         print(f"  WARNING: {warning}")
         source_meta["source_warnings"].append(warning)
-    return (
-        apply_anchor_allocations(
-            tech_master,
-            anchor_allocations if anchor_allocations is not None else pd.DataFrame(),
-        ),
-        source_meta,
+    tech_master = apply_anchor_allocations(
+        tech_master,
+        anchor_allocations if anchor_allocations is not None else pd.DataFrame(),
     )
+    tech_master = apply_manual_tech_policy_overrides(tech_master)
+    return (tech_master, source_meta)
 
 
 def build_demand_appointments(

@@ -144,6 +144,22 @@ INACTIVE_TECH_NAMES = {
     "Alex Rondero",
 }
 
+CURT_CORDER_TECH_ID = "curt_corder"
+
+# Manual optimization-policy overrides for edge-case technicians whose real
+# dispatch role is known to differ from what the raw roster history alone shows.
+OPTIMIZATION_TECH_POLICY_OVERRIDES = {
+    CURT_CORDER_TECH_ID: {
+        "skill_hps": 1,
+        "skill_ls": 0,
+        "skill_patient": 1,
+        "constraint_florida_only": 1,
+        "assignment_scope_mode": "state_limited",
+        "assignment_scope_state": "FL",
+        "assignment_scope_states": "",
+    },
+}
+
 # Technician name aliases (canonical form lookup used in optimization pipeline).
 # Normalized via optimization_utils.normalize_name() before lookup.
 TECH_NAME_ALIASES = {
