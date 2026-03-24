@@ -241,6 +241,16 @@ class BlankSlateTests(unittest.TestCase):
             pd.DataFrame(
                 [
                     {
+                        "scenario_hires": 9,
+                        "solver_status": 0,
+                        "solver_message": "Optimal",
+                        "total_appointments": 90.0,
+                        "travel_cost_usd": 280000.0,
+                        "hire_cost_usd": 135000.0,
+                        "modeled_total_cost_usd": 415000.0,
+                        "economic_total_with_overhead_usd": 415000.0,
+                    },
+                    {
                         "scenario_hires": 10,
                         "solver_status": 0,
                         "solver_message": "Optimal",
@@ -264,6 +274,16 @@ class BlankSlateTests(unittest.TestCase):
             ).to_csv(blank_dir / "scenario_summary.csv", index=False)
             pd.DataFrame(
                 [
+                    {
+                        "scenario_hires": 9,
+                        "candidate_id": "airport_ord",
+                        "city": "Chicago",
+                        "state": "IL",
+                        "airport_iata": "ORD",
+                        "hires_allocated": 1,
+                        "assigned_appointments": 90.0,
+                        "assigned_hours": 360.0,
+                    },
                     {
                         "scenario_hires": 10,
                         "candidate_id": "airport_ord",
@@ -297,7 +317,7 @@ class BlankSlateTests(unittest.TestCase):
                 config.OPTIMIZATION_DIR = old_opt_dir
 
             self.assertIsNotNone(payload)
-            self.assertEqual(payload["available_scenarios"], [10, 11])
+            self.assertEqual(payload["available_scenarios"], [9, 10, 11])
             self.assertEqual(payload["default_scenario"], 10)
             self.assertEqual(payload["scenarios"]["10"]["total_placements"], 1)
             self.assertEqual(payload["scenarios"]["10"]["annualized_total_cost_usd"], 225000.0)
@@ -352,6 +372,20 @@ class BlankSlateTests(unittest.TestCase):
             pd.DataFrame(
                 [
                     {
+                        "scenario_hires": 9,
+                        "candidate_id": "airport_dfw",
+                        "candidate_type": "major_airport",
+                        "candidate_city": "Dallas",
+                        "candidate_state": "TX",
+                        "airport_iata": "DFW",
+                        "node_id": "TX__regular",
+                        "state_norm": "TX",
+                        "skill_class": "regular",
+                        "assigned_appointments": 1.0,
+                        "assigned_hours": 8.0,
+                        "total_travel_cost_usd": 100.0,
+                    },
+                    {
                         "scenario_hires": 10,
                         "candidate_id": "airport_dfw",
                         "candidate_type": "major_airport",
@@ -397,7 +431,7 @@ class BlankSlateTests(unittest.TestCase):
                 config.SIM_SCENARIO_MAX = old_max
 
             self.assertIsNotNone(data)
-            self.assertEqual(data["available_scenarios"], [10, 11])
+            self.assertEqual(data["available_scenarios"], [9, 10, 11])
 
 
 if __name__ == "__main__":
