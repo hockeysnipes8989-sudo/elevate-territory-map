@@ -543,6 +543,10 @@ BLANK_SLATE_ASSIGNMENT_PALETTE = [
     "#0369A1",
     "#B45309",
 ]
+BLANK_SLATE_ASSIGNMENT_COLOR_MAP = {
+    "airport_las": "#9333EA",  # vivid purple
+    "airport_slc": "#06B6D4",  # bright cyan for clear separation from Las Vegas
+}
 TERRITORY_DOT_RADIUS = 6            # CircleMarker radius for assignment dots
 TERRITORY_DOT_OPACITY = 0.85        # CircleMarker fill opacity
 ENABLE_SIMULATION_UI = True

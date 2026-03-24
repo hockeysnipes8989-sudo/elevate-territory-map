@@ -1784,6 +1784,8 @@ def build_tech_color_map(territory_data, palette, include_existing=True):
     newhires_df = territory_data["newhires"]
     core_color_maps = build_core_technician_color_maps(territory_data)
     explicit_color_map = dict(getattr(config, "TECH_ASSIGNMENT_COLOR_MAP", {}))
+    if not include_existing:
+        explicit_color_map.update(getattr(config, "BLANK_SLATE_ASSIGNMENT_COLOR_MAP", {}))
     fallback_palette = palette or getattr(
         config, "TECH_ASSIGNMENT_FALLBACK_PALETTE", getattr(config, "TECH_TERRITORY_PALETTE", [])
     )
