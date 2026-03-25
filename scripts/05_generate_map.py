@@ -1353,6 +1353,9 @@ def load_simulation_data():
             "optimized_appointment_cap_note": str(
                 assumptions.get("optimized_appointment_cap_note", "") or ""
             ),
+            "optimized_existing_appointment_cap_formula": str(
+                assumptions.get("optimized_existing_appointment_cap_formula", "") or ""
+            ),
             "kpis": {
                 "economic_total_with_overhead_usd": safe_float(
                     row, "economic_total_with_overhead_usd", default=None
@@ -3865,9 +3868,10 @@ def build_simulation_panel_script(
         }}
 
         const cap = item.optimized_max_appointments_per_person;
-        const capLabel = cap == null
-          ? "the configured appointment cap"
-          : `${{cap}} appointments per person`;
+        const formula = item.optimized_existing_appointment_cap_formula;
+        const capLabel = formula
+          ? `the FTE-scaled appointment cap (${{formula}})`
+          : (cap == null ? "the configured appointment cap" : `${{cap}} full-time benchmark`);
         let message = `Optimized scenario N=${{item.scenario_hires}} could not be solved under ${{capLabel}}.`;
         if (item.solver_message) {{
           message += ` Solver status: ${{item.solver_message}}`;
@@ -3881,7 +3885,7 @@ def build_simulation_panel_script(
         if (!recWrap) return;
         const item = scenarioData[scenario];
         if (item && item.is_infeasible) {{
-          recWrap.innerHTML = '<div class="sim-empty">No placements are available because this optimized scenario is infeasible under the 163-appointment cap.</div>';
+          recWrap.innerHTML = '<div class="sim-empty">No placements are available because this optimized scenario is infeasible under the FTE-scaled appointment cap.</div>';
           return;
         }}
         const recs = item ? (item.placements || []) : [];

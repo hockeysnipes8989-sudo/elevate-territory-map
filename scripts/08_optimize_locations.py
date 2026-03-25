@@ -448,6 +448,28 @@ def _infeasible_summary(hire_count: int, message: str, baseline_canceled_voided_
     }
 
 
+def compute_optimized_existing_appointment_cap(
+    availability_fte: object,
+    optimized_max_appointments_per_person: int | None,
+) -> int | None:
+    """Return the optimized existing-person appointment cap scaled by FTE."""
+    if optimized_max_appointments_per_person is None:
+        return None
+    fte = pd.to_numeric(availability_fte, errors="coerce")
+    if pd.isna(fte):
+        return 0
+    return max(0, int(round(float(optimized_max_appointments_per_person) * float(fte))))
+
+
+def find_curt_index(tech: pd.DataFrame) -> int | None:
+    """Return Curt's row index if present."""
+    curt_id = str(getattr(config, "CURT_CORDER_TECH_ID", "curt_corder"))
+    matches = tech.index[tech["tech_id"].astype(str).eq(curt_id)]
+    if len(matches) == 0:
+        return None
+    return int(matches[0])
+
+
 def build_existing_assignment_row(
     hire_count: int,
     trow: pd.Series,
@@ -512,7 +534,7 @@ def reserve_curt_florida_assignments(
     contractor_scope: str,
     out_of_region_penalty: float,
     fallback_cost: float,
-    optimized_max_appointments_per_person: int | None,
+    curt_appointment_cap: int | None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[dict], dict]:
     """Reserve Curt against Florida regular/HPS demand before the MILP runs."""
     reserved_rows: list[dict] = []
@@ -523,19 +545,18 @@ def reserve_curt_florida_assignments(
         "timezone_penalty_usd": 0.0,
         "hub_penalty_usd": 0.0,
     }
-    if optimized_max_appointments_per_person is None:
+    if curt_appointment_cap is None:
         return tech, nodes, reserved_rows, reserved_totals
 
     curt_id = str(getattr(config, "CURT_CORDER_TECH_ID", "curt_corder"))
-    curt_matches = tech.index[tech["tech_id"].astype(str).eq(curt_id)]
-    if len(curt_matches) == 0:
+    curt_idx = find_curt_index(tech)
+    if curt_idx is None:
         return tech, nodes, reserved_rows, reserved_totals
 
-    curt_idx = int(curt_matches[0])
     curt = tech.loc[curt_idx]
     remaining_hours_raw = pd.to_numeric(curt.get("capacity_hours"), errors="coerce")
     remaining_hours = 0.0 if pd.isna(remaining_hours_raw) else float(remaining_hours_raw)
-    remaining_appointments = int(optimized_max_appointments_per_person)
+    remaining_appointments = int(curt_appointment_cap)
     if remaining_hours <= 1e-9 or remaining_appointments <= 0:
         return tech, nodes, reserved_rows, reserved_totals
 
@@ -674,8 +695,11 @@ def solve_scenario(
     new_hire_capacity_hours = hours_per_unit
     existing_appointment_caps = {
         int(ti): (
-            int(optimized_max_appointments_per_person)
-            if (not blank_slate) and optimized_max_appointments_per_person is not None
+            compute_optimized_existing_appointment_cap(
+                tech.loc[ti, "availability_fte"],
+                optimized_max_appointments_per_person,
+            )
+            if not blank_slate
             else None
         )
         for ti in tech.index
@@ -710,6 +734,7 @@ def solve_scenario(
         "hub_penalty_usd": 0.0,
     }
     if not blank_slate:
+        curt_idx = find_curt_index(tech)
         tech, nodes, curt_reserved_rows, curt_reserved_totals = reserve_curt_florida_assignments(
             hire_count=hire_count,
             tech=tech,
@@ -718,20 +743,18 @@ def solve_scenario(
             contractor_scope=contractor_scope,
             out_of_region_penalty=out_of_region_penalty,
             fallback_cost=_fallback_cost,
-            optimized_max_appointments_per_person=optimized_max_appointments_per_person,
+            curt_appointment_cap=(
+                existing_appointment_caps.get(curt_idx) if curt_idx is not None else None
+            ),
         )
-        if curt_reserved_rows:
-            curt_idx = tech.index[tech["tech_id"].astype(str).eq(
-                str(getattr(config, "CURT_CORDER_TECH_ID", "curt_corder"))
-            )]
-            if len(curt_idx) > 0:
-                reserved_appts = int(
-                    round(sum(float(row["assigned_appointments"]) for row in curt_reserved_rows))
-                )
-                if existing_appointment_caps[int(curt_idx[0])] is not None:
-                    existing_appointment_caps[int(curt_idx[0])] = max(
+        if curt_reserved_rows and curt_idx is not None:
+            reserved_appts = int(
+                round(sum(float(row["assigned_appointments"]) for row in curt_reserved_rows))
+            )
+            if existing_appointment_caps[curt_idx] is not None:
+                existing_appointment_caps[curt_idx] = max(
                         0,
-                        int(existing_appointment_caps[int(curt_idx[0])]) - reserved_appts,
+                        int(existing_appointment_caps[curt_idx]) - reserved_appts,
                     )
 
     # Existing tech assignment vars: appointments assigned to node.
@@ -1624,12 +1647,19 @@ def main() -> None:
         "optimized_max_appointments_per_person": (
             None if args.blank_slate else int(args.optimized_max_appointments_per_person)
         ),
+        "optimized_existing_appointment_cap_formula": (
+            f"round({int(args.optimized_max_appointments_per_person)} × availability_fte)"
+            if not args.blank_slate
+            else None
+        ),
         "optimized_appointment_cap_note": (
-            f"Optimized scenarios cap every assignable person at "
-            f"{int(args.optimized_max_appointments_per_person)} assigned appointments over "
-            "the full data span. This applies to current techs, contractors, and synthetic "
-            "hires, and it is an appointment-count ceiling, not a duration-hours or "
-            "utilization cap."
+            f"Optimized scenarios cap each existing assignable person using "
+            f"round({int(args.optimized_max_appointments_per_person)} × availability_fte) "
+            "over the full data span. Full-time people stay at the 163 benchmark, "
+            "while part-time people scale down with FTE. Synthetic hires remain capped "
+            f"at {int(args.optimized_max_appointments_per_person)} assigned appointments "
+            "per allocated hire. This is an appointment-count ceiling, not a duration-hours "
+            "or utilization cap."
             if not args.blank_slate
             else None
         ),
