@@ -3235,6 +3235,12 @@ def build_simulation_panel_css(ui_preset):
         font-size: 11px;
         color: #64748b;
       }}
+      .coverage-note {{
+        margin-top: 4px;
+        font-size: 10px;
+        line-height: 1.35;
+        color: #7c5c14;
+      }}
       .sim-link-btn {{
         margin-top: 8px;
         border: none;
@@ -3943,12 +3949,16 @@ def build_simulation_panel_script(
           const color = techColors[techId] || "#64748b";
           const stroke = getDotStroke(color);
           const base = stat.base ? String(stat.base) : "Base unavailable";
+          const curtNote = techId === "curt_corder"
+            ? '<div class="coverage-note">Has additional Florida-only service work in real life that is not fully tracked in this simulation.</div>'
+            : "";
           return `
             <div class="coverage-row">
               <span class="coverage-dot" style="background:${{color}}; border-color:${{stroke}};"></span>
               <div>
                 <div class="coverage-name">${{stat.name}}</div>
                 <div class="coverage-meta">${{Number(stat.appointments || 0).toFixed(0)}} appointments &middot; ${{base}}</div>
+                ${{curtNote}}
               </div>
             </div>`;
         }}).join("");
