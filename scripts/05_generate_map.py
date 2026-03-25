@@ -3800,12 +3800,12 @@ def build_simulation_panel_script(
         toggle.setAttribute("aria-pressed", airportVisible ? "true" : "false");
       }}
 
-      function setSignedValueColor(element, value) {{
+      function setSignedValueColor(element, value, positiveIsGood = false) {{
         if (!element) return;
         if (Number(value || 0) > 0) {{
-          element.style.color = "#b42318";
+          element.style.color = positiveIsGood ? "#1f7a40" : "#b42318";
         }} else if (Number(value || 0) < 0) {{
-          element.style.color = "#1f7a40";
+          element.style.color = positiveIsGood ? "#b42318" : "#1f7a40";
         }} else {{
           element.style.color = "#102235";
         }}
@@ -3853,7 +3853,7 @@ def build_simulation_panel_script(
         if (breakEvenEl) {{
           breakEvenEl.textContent = hasInstallUpside ? Number(k.break_even_install_units || 0).toFixed(1) : "—";
         }}
-        setSignedValueColor(netValueEl, k.net_economic_value_install_usd);
+        setSignedValueColor(netValueEl, k.net_economic_value_install_usd, true);
       }}
 
       function renderOptimizedStatus(scenario) {{
