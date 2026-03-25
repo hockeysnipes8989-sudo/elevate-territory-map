@@ -158,6 +158,19 @@ OPTIMIZATION_TECH_POLICY_OVERRIDES = {
         "assignment_scope_state": "FL",
         "assignment_scope_states": "",
     },
+    "damion_lyn": {
+        "skill_ls": 1,
+    },
+    "hakim_mouazer": {
+        "skill_hps": 1,
+        "skill_ls": 1,
+    },
+    "josh_brown": {
+        "skill_hps": 0,
+    },
+    "scott_fogo": {
+        "skill_hps": 1,
+    },
 }
 
 # Technician name aliases (canonical form lookup used in optimization pipeline).
