@@ -69,6 +69,31 @@ def classify_service_type(service_type):
         return "Other"
 
 
+def first_present_text(row, *keys):
+    """Return the first non-empty string value found in the given row keys."""
+    for key in keys:
+        value = row.get(key)
+        if pd.isna(value):
+            continue
+        text = str(value).strip()
+        if text and text.lower() != "nan":
+            return text
+    return ""
+
+
+def build_location_label(row):
+    """Return a readable city/state label for appointment popups."""
+    city_state = first_present_text(row, "display_location", "City State")
+    if city_state:
+        return city_state
+
+    city = first_present_text(row, "city", "City")
+    state = first_present_text(row, "state_norm", "State/Province")
+    if city and state:
+        return f"{city}, {state}"
+    return city or state
+
+
 def get_map_ui_preset():
     """Return the active stakeholder/debug UI preset."""
     mode = str(getattr(config, "MAP_UI_MODE", "stakeholder")).strip().lower()
@@ -713,28 +738,55 @@ def add_service_appointments(m, appts, layer_name, show=True):
     return fg
 
 
-def add_heat_map_layers(m, heat_df, ui_preset):
-    """Add optimization-scope demand dots plus an appointment-count heat layer."""
-    if heat_df is None or heat_df.empty:
+def add_appointment_density_layers(
+    m,
+    appointments_df,
+    ui_preset,
+    layer_name_prefix,
+    dot_color="#334155",
+    include_density=True,
+):
+    """Add appointment dots plus a density surface for a single appointment set."""
+    if appointments_df is None or appointments_df.empty:
         return None
 
-    dots_fg = folium.FeatureGroup(name="Heat Map Appointments", show=False, control=False)
-    count_fg = folium.FeatureGroup(name="Heat Map Count", show=False, control=False)
-
-    dot_color = "#334155"
-    for _, row in heat_df.iterrows():
-        account_name = str(row.get("Account: Account Name", "N/A"))
-        city = str(row.get("city", ""))
-        state = str(row.get("state_norm", ""))
-        service_type = str(row.get("Service Type", ""))
-        skill_class = str(row.get("skill_class", ""))
-        popup_html = (
-            f"<b>{account_name}</b><br>"
-            f"Appointment: {row.get('Appointment Number', row.get('appointment_id', ''))}<br>"
-            f"Location: {city}, {state}<br>"
-            f"Service Type: {service_type}<br>"
-            f"Skill Class: {skill_class}"
+    dots_fg = folium.FeatureGroup(
+        name=f"{layer_name_prefix} Appointments", show=False, control=False
+    )
+    count_fg = (
+        folium.FeatureGroup(
+            name=f"{layer_name_prefix} Count", show=False, control=False
         )
+        if include_density
+        else None
+    )
+
+    for _, row in appointments_df.iterrows():
+        account_name = first_present_text(row, "Account: Account Name") or "N/A"
+        appointment_id = first_present_text(
+            row, "Appointment Number", "appointment_id"
+        )
+        location_label = build_location_label(row)
+        service_type = first_present_text(row, "Service Type")
+        skill_class = first_present_text(row, "skill_class")
+        tech_name = first_present_text(row, "Service Resource: Name")
+        scheduled_start = row.get("Scheduled Start")
+
+        popup_parts = [f"<b>{html.escape(account_name)}</b>"]
+        if appointment_id:
+            popup_parts.append(f"Appointment: {html.escape(appointment_id)}")
+        if location_label:
+            popup_parts.append(f"Location: {html.escape(location_label)}")
+        if service_type:
+            popup_parts.append(f"Service Type: {html.escape(service_type)}")
+        if skill_class:
+            popup_parts.append(f"Skill Class: {html.escape(skill_class)}")
+        if tech_name:
+            popup_parts.append(f"Tech: {html.escape(tech_name)}")
+        if pd.notna(scheduled_start):
+            popup_parts.append(f"Date: {html.escape(str(scheduled_start)[:10])}")
+        popup_html = "<br>".join(popup_parts)
+
         folium.CircleMarker(
             location=[float(row["lat"]), float(row["lon"])],
             radius=max(2, ui_preset["assignment_dot_radius"] - 3),
@@ -765,7 +817,7 @@ def add_heat_map_layers(m, heat_df, ui_preset):
         0.82: "#b91c1c",
         1.00: "#7f1d1d",
     }
-    count_points = heat_df[["lat", "lon"]].values.tolist()
+    count_points = appointments_df[["lat", "lon"]].values.tolist()
     broad_heat_kwargs = {
         "min_opacity": 0.18,
         "radius": 34,
@@ -780,16 +832,62 @@ def add_heat_map_layers(m, heat_df, ui_preset):
         "max_zoom": 8,
         "gradient": hotspot_gradient,
     }
-    HeatMap(count_points, **broad_heat_kwargs).add_to(count_fg)
-    HeatMap(count_points, **hotspot_heat_kwargs).add_to(count_fg)
+    if count_fg is not None:
+        HeatMap(count_points, **broad_heat_kwargs).add_to(count_fg)
+        HeatMap(count_points, **hotspot_heat_kwargs).add_to(count_fg)
 
     dots_fg.add_to(m)
-    count_fg.add_to(m)
+    if count_fg is not None:
+        count_fg.add_to(m)
     return {
         "dots_layer": dots_fg.get_name(),
-        "count_layer": count_fg.get_name(),
-        "total_appointments": int(len(heat_df)),
+        "count_layer": count_fg.get_name() if count_fg is not None else None,
+        "total_appointments": int(len(appointments_df)),
     }
+
+
+def add_heat_map_layers(m, heat_df, ui_preset):
+    """Add optimization-scope demand dots plus an appointment-count heat layer."""
+    return add_appointment_density_layers(
+        m,
+        heat_df,
+        ui_preset,
+        layer_name_prefix="Heat Map",
+        dot_color="#334155",
+    )
+
+
+def add_2025_split_layers(m, split_data, ui_preset):
+    """Add one dot-plus-density layer set for each 2025 workbook category."""
+    if not split_data or not split_data.get("categories"):
+        return None
+
+    category_styles = {
+        "regular": {"dot_color": "#2563eb"},
+        "learningspace": {"dot_color": "#0f766e"},
+    }
+    layer_info = {
+        "default_category": split_data.get("default_category"),
+        "categories": {},
+    }
+
+    for category_key, category_info in split_data["categories"].items():
+        appointments_df = category_info.get("appointments")
+        if appointments_df is None or appointments_df.empty:
+            continue
+        style = category_styles.get(category_key, {})
+        layers = add_appointment_density_layers(
+            m,
+            appointments_df,
+            ui_preset,
+            layer_name_prefix=f"2025 {category_info.get('label', category_key)}",
+            dot_color=style.get("dot_color", "#334155"),
+            include_density=False,
+        )
+        if layers:
+            layer_info["categories"][category_key] = layers
+
+    return layer_info if layer_info["categories"] else None
 
 
 def add_technician_markers(
@@ -1639,6 +1737,115 @@ def load_heat_map_data():
         return None
 
     return heat_df
+
+
+def load_2025_split_data():
+    """Load actual 2025 workbook appointments for the 2025 split view."""
+    workbook_path = str(
+        getattr(config, "SERVICE_APPTS_2025_SPLIT_XLSX", "") or ""
+    ).strip()
+    if not workbook_path or not os.path.exists(workbook_path):
+        print("  2025 split view: workbook missing, skipping.")
+        return None
+
+    geocoded_appts = safe_read_csv(config.GEOCODED_APPTS_CSV)
+    if geocoded_appts.empty or "Appointment Number" not in geocoded_appts.columns:
+        print("  2025 split view: missing geocoded appointments, skipping.")
+        return None
+
+    join_columns = [
+        "Appointment Number",
+        "Service Type",
+        "City",
+        "State/Province",
+        "lat",
+        "lon",
+    ]
+    geocoded_lookup = geocoded_appts[
+        [col for col in join_columns if col in geocoded_appts.columns]
+    ].copy()
+    geocoded_lookup["Appointment Number"] = (
+        geocoded_lookup["Appointment Number"].astype(str).str.strip()
+    )
+    geocoded_lookup = geocoded_lookup.drop_duplicates(
+        subset=["Appointment Number"], keep="first"
+    )
+
+    category_specs = [
+        {
+            "key": "regular",
+            "label": "Patient Sims",
+            "sheet_name": getattr(
+                config, "APPTS_2025_REGULAR_SHEET", "2025 Regular Patient Sims"
+            ),
+        },
+        {
+            "key": "learningspace",
+            "label": "LearningSpace",
+            "sheet_name": getattr(
+                config, "APPTS_2025_LEARNINGSPACE_SHEET", "2025 LearningSpace"
+            ),
+        },
+    ]
+
+    categories = {}
+    for spec in category_specs:
+        try:
+            raw_df = pd.read_excel(workbook_path, sheet_name=spec["sheet_name"])
+        except ValueError:
+            print(
+                f"  2025 split view: sheet '{spec['sheet_name']}' not found, skipping."
+            )
+            continue
+        except Exception as exc:
+            print(
+                f"  2025 split view: failed reading '{spec['sheet_name']}': {exc}"
+            )
+            continue
+
+        if raw_df.empty or "Appointment Number" not in raw_df.columns:
+            print(
+                f"  2025 split view: sheet '{spec['sheet_name']}' has no appointments, skipping."
+            )
+            continue
+
+        raw_df = raw_df.copy()
+        raw_df["Appointment Number"] = (
+            raw_df["Appointment Number"].astype(str).str.strip()
+        )
+        raw_df = raw_df[raw_df["Appointment Number"].ne("")].copy()
+        merged = raw_df.merge(geocoded_lookup, on="Appointment Number", how="left")
+        merged["lat"] = pd.to_numeric(merged.get("lat"), errors="coerce")
+        merged["lon"] = pd.to_numeric(merged.get("lon"), errors="coerce")
+        plotted = merged.dropna(subset=["lat", "lon"]).copy()
+
+        missing_coords = int(len(merged) - len(plotted))
+        if missing_coords:
+            print(
+                f"  2025 split view: {missing_coords} '{spec['label']}' rows were missing coordinates."
+            )
+
+        if plotted.empty:
+            print(
+                f"  2025 split view: no mappable rows found for '{spec['label']}', skipping."
+            )
+            continue
+
+        categories[spec["key"]] = {
+            "label": spec["label"],
+            "sheet_name": spec["sheet_name"],
+            "total_appointments": int(len(plotted)),
+            "appointments": plotted,
+        }
+
+    if not categories:
+        return None
+
+    default_category = "regular" if "regular" in categories else next(iter(categories))
+    return {
+        "default_category": default_category,
+        "categories": categories,
+    }
 
 
 def load_assignment_data(assignment_dir, static_dir=None, scenario_min=None, scenario_max=None, label="Territory viz"):
@@ -3071,18 +3278,21 @@ def build_simulation_panel_css(ui_preset):
         color: #64748b;
       }}
       #sim-buttons,
-      #blank-sim-buttons {{
+      #blank-sim-buttons,
+      #split-2025-buttons {{
         display: grid;
         gap: 6px;
       }}
       #sim-buttons {{
         grid-template-columns: repeat(5, minmax(0, 1fr));
       }}
-      #blank-sim-buttons {{
+      #blank-sim-buttons,
+      #split-2025-buttons {{
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }}
       .sim-btn,
-      .blank-sim-btn {{
+      .blank-sim-btn,
+      .split-2025-btn {{
         border: 1px solid rgba(15, 23, 42, 0.12);
         background: #f8fafc;
         color: #102235;
@@ -3093,12 +3303,14 @@ def build_simulation_panel_css(ui_preset):
         transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.15s;
       }}
       .sim-btn:hover,
-      .blank-sim-btn:hover {{
+      .blank-sim-btn:hover,
+      .split-2025-btn:hover {{
         border-color: rgba(17, 32, 51, 0.32);
         background: #f1f5f9;
       }}
       .sim-btn.active,
-      .blank-sim-btn.active {{
+      .blank-sim-btn.active,
+      .split-2025-btn.active {{
         background: #183b58;
         border-color: #183b58;
         color: #fff;
@@ -3320,7 +3532,7 @@ def build_simulation_panel_css(ui_preset):
       }}
       #view-toggle-buttons {{
         display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
         gap: 6px;
       }}
       .view-btn {{
@@ -3352,6 +3564,12 @@ def build_simulation_panel_css(ui_preset):
         display: none;
       }}
       #blank-content.active {{
+        display: block;
+      }}
+      #split-2025-content {{
+        display: none;
+      }}
+      #split-2025-content.active {{
         display: block;
       }}
       #heat-content {{
@@ -3426,6 +3644,7 @@ def build_simulation_panel_markup():
           <button class="view-btn active" data-view="optimized">Optimized</button>
           <button class="view-btn" data-view="blank">Blank Slate</button>
           <button class="view-btn" data-view="historical">Historical</button>
+          <button class="view-btn" data-view="split2025">2025 Split</button>
           <button class="view-btn" data-view="heat">Heat Map</button>
         </div>
       </div>
@@ -3578,6 +3797,35 @@ def build_simulation_panel_markup():
         </div>
       </div>
 
+      <div id="split-2025-content">
+        <div class="sim-section">
+          <div class="sim-section-label">2025 Service Appointments</div>
+          <p class="sim-section-caption">Actual 2025 workbook appointments, split between regular patient sims and LearningSpace.</p>
+        </div>
+
+        <div class="sim-section">
+          <div class="sim-section-label">View</div>
+          <div id="split-2025-buttons"></div>
+        </div>
+
+        <div class="sim-section">
+          <div class="hist-kpi-grid">
+            <div class="sim-kpi">
+              <div class="label">Selected View</div>
+              <div class="value" id="split-2025-selected">&mdash;</div>
+            </div>
+            <div class="sim-kpi">
+              <div class="label">Appointments Plotted</div>
+              <div class="value" id="split-2025-count">&mdash;</div>
+            </div>
+          </div>
+        </div>
+
+        <div id="split-2025-footnote" style="margin-top:16px;padding-top:12px;border-top:1px solid #edf2f7;font-size:11px;line-height:1.45;color:#64748b;">
+          This tab is a direct map of actual 2025 service appointments from the workbook. It does not use solver assignments or hiring logic.
+        </div>
+      </div>
+
       <div id="heat-content">
         <div class="sim-section">
           <div class="sim-section-label">Heat Map</div>
@@ -3619,6 +3867,8 @@ def build_simulation_panel_script(
     blank_slate_payload_js=None,
     blank_slate_layer_names_js=None,
     heat_map_layer_names_js=None,
+    split_2025_payload_js=None,
+    split_2025_layer_names_js=None,
 ):
     """Return the panel JavaScript."""
     explanations_js = json.dumps(build_simulation_kpi_explanations())
@@ -3630,6 +3880,8 @@ def build_simulation_panel_script(
     blank_payload = blank_slate_payload_js or "null"
     blank_layers = blank_slate_layer_names_js or "null"
     heat_layers = heat_map_layer_names_js or "null"
+    split_2025_payload = split_2025_payload_js or "null"
+    split_2025_layers = split_2025_layer_names_js or "null"
     return f"""
     <script>
     (function() {{
@@ -3668,11 +3920,15 @@ def build_simulation_panel_script(
       const blankSlateLayerNames = {blank_layers};
       const techMarkersLayerName = {tech_markers_js};
       const heatLayerNames = {heat_layers};
+      const split2025Data = {split_2025_payload};
+      const split2025LayerNames = {split_2025_layers};
       let activeView = "optimized";
       let historicalDotLayer = null;
       let historicalBasesLayer = null;
       let blankSlatePlacementLayers = {{}};
       let blankSlateDotsLayers = {{}};
+      let split2025DotsLayers = {{}};
+      let split2025CountLayers = {{}};
       let techMarkersLayer = null;
       let heatDotsLayer = null;
       let heatCountLayer = null;
@@ -3681,6 +3937,12 @@ def build_simulation_panel_script(
         ? String(
             blankSlateData.default_scenario ||
             ((blankSlateData.available_scenarios || [])[0] || "")
+          )
+        : null;
+      let active2025Category = split2025Data
+        ? String(
+            split2025Data.default_category ||
+            (Object.keys(split2025Data.categories || {{}})[0] || "")
           )
         : null;
       let histCoverageExpanded = false;
@@ -4175,8 +4437,9 @@ def build_simulation_panel_script(
         const optimizedEl = document.getElementById("optimized-content");
         const historicalEl = document.getElementById("historical-content");
         const blankEl = document.getElementById("blank-content");
+        const split2025El = document.getElementById("split-2025-content");
         const heatEl = document.getElementById("heat-content");
-        if (!optimizedEl || !historicalEl || !blankEl || !heatEl) return;
+        if (!optimizedEl || !historicalEl || !blankEl || !split2025El || !heatEl) return;
 
         document.querySelectorAll(".view-btn").forEach((btn) => {{
           btn.classList.toggle("active", btn.getAttribute("data-view") === view);
@@ -4190,11 +4453,13 @@ def build_simulation_panel_script(
         hideOptimizedLayers();
         hideHistoricalLayers();
         hideBlankSlateLayers();
+        hideSplit2025Layers();
         hideHeatLayers();
 
         optimizedEl.classList.toggle("hidden", view !== "optimized");
         historicalEl.classList.toggle("active", view === "historical");
         blankEl.classList.toggle("active", view === "blank");
+        split2025El.classList.toggle("active", view === "split2025");
         heatEl.classList.toggle("active", view === "heat");
 
         if (view === "historical") {{
@@ -4219,6 +4484,14 @@ def build_simulation_panel_script(
             mapRef.removeLayer(techMarkersLayer);
           }}
           showBlankSlateScenario(lastBlankSlateScenario);
+          return;
+        }}
+
+        if (view === "split2025") {{
+          if (techMarkersLayer && mapRef && mapRef.hasLayer(techMarkersLayer)) {{
+            mapRef.removeLayer(techMarkersLayer);
+          }}
+          showSplit2025Category(active2025Category);
           return;
         }}
 
@@ -4387,6 +4660,96 @@ def build_simulation_panel_script(
         }}).join("");
       }}
 
+      function getSplit2025CategoryData(category) {{
+        if (!split2025Data || !split2025Data.categories) return null;
+        const resolvedCategory = String(
+          category ||
+          active2025Category ||
+          split2025Data.default_category ||
+          (Object.keys(split2025Data.categories || {{}})[0] || "")
+        );
+        return split2025Data.categories[resolvedCategory] || null;
+      }}
+
+      function setActiveSplit2025Button(category) {{
+        document.querySelectorAll(".split-2025-btn").forEach((button) => {{
+          button.classList.toggle(
+            "active",
+            button.getAttribute("data-2025-category") === String(category)
+          );
+        }});
+      }}
+
+      function renderSplit2025Buttons() {{
+        const container = document.getElementById("split-2025-buttons");
+        if (!container) return;
+        if (!split2025Data || !split2025Data.categories) {{
+          container.innerHTML = "";
+          return;
+        }}
+        container.innerHTML = "";
+        Object.entries(split2025Data.categories).forEach(([categoryKey, categoryInfo]) => {{
+          const button = document.createElement("button");
+          button.className = "split-2025-btn";
+          button.textContent = categoryInfo.label || categoryKey;
+          button.setAttribute("data-2025-category", categoryKey);
+          button.addEventListener("click", () => showSplit2025Category(categoryKey));
+          container.appendChild(button);
+        }});
+        setActiveSplit2025Button(
+          active2025Category || split2025Data.default_category
+        );
+      }}
+
+      function renderSplit2025Summary(category) {{
+        const item = getSplit2025CategoryData(category);
+        const selectedEl = document.getElementById("split-2025-selected");
+        const countEl = document.getElementById("split-2025-count");
+        if (selectedEl) {{
+          selectedEl.textContent = item ? String(item.label || "—") : "—";
+        }}
+        if (countEl) {{
+          countEl.textContent = item
+            ? Number(item.total_appointments || 0).toLocaleString()
+            : "—";
+        }}
+      }}
+
+      function hideSplit2025Layers() {{
+        Object.values(split2025DotsLayers).forEach((layer) => {{
+          if (layer && mapRef && mapRef.hasLayer(layer)) {{
+            mapRef.removeLayer(layer);
+          }}
+        }});
+        Object.values(split2025CountLayers).forEach((layer) => {{
+          if (layer && mapRef && mapRef.hasLayer(layer)) {{
+            mapRef.removeLayer(layer);
+          }}
+        }});
+      }}
+
+      function showSplit2025Category(category) {{
+        if (!mapRef || !split2025Data) return;
+        const categoryKey = String(
+          category ||
+          active2025Category ||
+          split2025Data.default_category ||
+          (Object.keys(split2025Data.categories || {{}})[0] || "")
+        );
+        hideSplit2025Layers();
+        const dotsLayer = split2025DotsLayers[categoryKey];
+        const countLayer = split2025CountLayers[categoryKey];
+        if (dotsLayer && !mapRef.hasLayer(dotsLayer)) {{
+          mapRef.addLayer(dotsLayer);
+        }}
+        if (countLayer && !mapRef.hasLayer(countLayer)) {{
+          mapRef.addLayer(countLayer);
+        }}
+        active2025Category = categoryKey;
+        setActiveSplit2025Button(categoryKey);
+        renderSplit2025Summary(categoryKey);
+      }}
+
       function hideHeatLayers() {{
         if (heatDotsLayer && mapRef && mapRef.hasLayer(heatDotsLayer)) {{
           mapRef.removeLayer(heatDotsLayer);
@@ -4418,13 +4781,15 @@ def build_simulation_panel_script(
         if (!toggleContainer) return;
         const historicalBtn = toggleContainer.querySelector('[data-view="historical"]');
         const blankBtn = toggleContainer.querySelector('[data-view="blank"]');
+        const split2025Btn = toggleContainer.querySelector('[data-view="split2025"]');
         const heatBtn = toggleContainer.querySelector('[data-view="heat"]');
         if (historicalBtn) historicalBtn.style.display = historicalData ? "" : "none";
         if (blankBtn) blankBtn.style.display = blankSlateData ? "" : "none";
+        if (split2025Btn) split2025Btn.style.display = split2025Data ? "" : "none";
         if (heatBtn) {{
           heatBtn.style.display = heatLayerNames ? "" : "none";
         }}
-        if (!historicalData && !blankSlateData && !heatLayerNames) return;
+        if (!historicalData && !blankSlateData && !split2025Data && !heatLayerNames) return;
         toggleContainer.style.display = "block";
         document.querySelectorAll(".view-btn").forEach((btn) => {{
           btn.addEventListener("click", () => {{
@@ -4477,6 +4842,16 @@ def build_simulation_panel_script(
             }}
           }});
         }}
+        if (split2025LayerNames && split2025LayerNames.categories) {{
+          Object.entries(split2025LayerNames.categories).forEach(([categoryKey, layerInfo]) => {{
+            if (layerInfo && layerInfo.dots_layer && window[layerInfo.dots_layer]) {{
+              split2025DotsLayers[categoryKey] = window[layerInfo.dots_layer];
+            }}
+            if (layerInfo && layerInfo.count_layer && window[layerInfo.count_layer]) {{
+              split2025CountLayers[categoryKey] = window[layerInfo.count_layer];
+            }}
+          }});
+        }}
         if (techMarkersLayerName && window[techMarkersLayerName]) {{
           techMarkersLayer = window[techMarkersLayerName];
         }}
@@ -4490,6 +4865,8 @@ def build_simulation_panel_script(
         renderHeatSummary();
         renderButtons();
         renderBlankSlateButtons();
+        renderSplit2025Buttons();
+        renderSplit2025Summary(active2025Category);
         const unmetCard = document.getElementById("kpi-unmet-card");
         if (unmetCard && !showUnmetKpi) {{
           unmetCard.style.display = "none";
@@ -4526,6 +4903,8 @@ def add_simulation_panel(
     blank_slate_data=None,
     blank_slate_layer_names=None,
     heat_map_layer_names=None,
+    split_2025_data=None,
+    split_2025_layer_names=None,
 ):
     """Inject scenario controls and KPI cards into the map page."""
     if not simulation_payload or not scenario_layer_names:
@@ -4565,6 +4944,10 @@ def add_simulation_panel(
     blank_payload_js = json.dumps(blank_slate_data) if blank_slate_data else None
     blank_layers_js = json.dumps(blank_slate_layer_names) if blank_slate_layer_names else None
     heat_layers_js = json.dumps(heat_map_layer_names) if heat_map_layer_names else None
+    split_2025_payload_js = json.dumps(split_2025_data) if split_2025_data else None
+    split_2025_layers_js = (
+        json.dumps(split_2025_layer_names) if split_2025_layer_names else None
+    )
 
     panel_html = (
         build_simulation_panel_css(ui_preset)
@@ -4587,6 +4970,8 @@ def add_simulation_panel(
             blank_slate_payload_js=blank_payload_js,
             blank_slate_layer_names_js=blank_layers_js,
             heat_map_layer_names_js=heat_layers_js,
+            split_2025_payload_js=split_2025_payload_js,
+            split_2025_layer_names_js=split_2025_layers_js,
         )
     )
     m.get_root().html.add_child(folium.Element(panel_html))
@@ -4907,6 +5292,39 @@ def main():
                     ui_preset,
                 )
 
+            split_2025_raw = load_2025_split_data()
+            split_2025_panel_data = None
+            split_2025_layer_names = None
+            if split_2025_raw:
+                split_2025_panel_data = {
+                    "default_category": split_2025_raw["default_category"],
+                    "categories": {
+                        category_key: {
+                            "label": category_info["label"],
+                            "sheet_name": category_info["sheet_name"],
+                            "total_appointments": category_info["total_appointments"],
+                        }
+                        for category_key, category_info in split_2025_raw[
+                            "categories"
+                        ].items()
+                    },
+                }
+                print(
+                    "  2025 split view: "
+                    + ", ".join(
+                        f"{category_info['label']} {category_info['total_appointments']:,}"
+                        for category_info in split_2025_panel_data["categories"].values()
+                    )
+                    + " appointments"
+                )
+                split_2025_layer_names = add_2025_split_layers(
+                    m,
+                    split_2025_raw,
+                    ui_preset,
+                )
+                if not split_2025_layer_names:
+                    split_2025_panel_data = None
+
             scenario_layer_names = add_simulation_layers(
                 m,
                 simulation_payload,
@@ -4926,6 +5344,8 @@ def main():
                 blank_slate_data=blank_slate_data,
                 blank_slate_layer_names=blank_slate_layer_names,
                 heat_map_layer_names=heat_map_layer_names,
+                split_2025_data=split_2025_panel_data,
+                split_2025_layer_names=split_2025_layer_names,
             )
             print(f"  Loaded scenarios: {', '.join(sorted(simulation_payload.keys(), key=lambda x: int(x) if x.isdigit() else 999))}")
         else:

@@ -39,6 +39,11 @@ INSTALL_BASE = os.path.join(
 TECHNICIAN_ANCHOR_ALLOCATIONS_CSV = os.path.join(
     RAW_DIR, "technician_anchor_allocations.csv"
 )
+SERVICE_APPTS_2025_SPLIT_XLSX = os.environ.get(
+    "ELEVATE_2025_SPLIT_SOURCE",
+    "/Users/patricklipinski/elevate/company-data/excel-primary/"
+    "2025 Service Appointments with Dispatch Date.xlsx",
+)
 
 # External source-of-truth workbooks used by optimization scripts.
 # Set env vars (ELEVATE_APPTS_SOURCE, ELEVATE_TECH_SOURCE) to override the
@@ -82,6 +87,8 @@ APPTS_RAW_SHEET = "report1770130594436"
 APPTS_DISPATCH_SHEET = "Derived Fields"
 APPTS_REPORT_RESOURCES_SHEET = "Resources"
 INSTALL_BASE_SHEET = "report1769446081737"
+APPTS_2025_REGULAR_SHEET = "2025 Regular Patient Sims"
+APPTS_2025_LEARNINGSPACE_SHEET = "2025 LearningSpace"
 
 # ---------------------------------------------------------------------------
 # Technician name mapping (service appointment names → canonical names)
