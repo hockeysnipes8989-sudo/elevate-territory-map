@@ -891,7 +891,7 @@ def add_2025_split_layers(m, split_data, ui_preset):
             layer_name_prefix=f"2025 {category_info.get('label', category_key)}",
             dot_color=style.get("dot_color", "#334155"),
             include_density=False,
-            dot_radius=ui_preset["assignment_dot_radius"],
+            dot_radius=max(3, ui_preset["assignment_dot_radius"] - 1),
             dot_fill_opacity=1.0,
             dot_opacity=1.0,
             dot_weight=1.0,
