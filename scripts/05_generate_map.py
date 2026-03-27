@@ -745,6 +745,10 @@ def add_appointment_density_layers(
     layer_name_prefix,
     dot_color="#334155",
     include_density=True,
+    dot_radius=None,
+    dot_fill_opacity=None,
+    dot_opacity=None,
+    dot_weight=None,
 ):
     """Add appointment dots plus a density surface for a single appointment set."""
     if appointments_df is None or appointments_df.empty:
@@ -789,13 +793,17 @@ def add_appointment_density_layers(
 
         folium.CircleMarker(
             location=[float(row["lat"]), float(row["lon"])],
-            radius=max(2, ui_preset["assignment_dot_radius"] - 3),
+            radius=(
+                dot_radius
+                if dot_radius is not None
+                else max(2, ui_preset["assignment_dot_radius"] - 3)
+            ),
             color=dot_color,
             fill=True,
             fill_color=dot_color,
-            fill_opacity=0.16,
-            weight=0.3,
-            opacity=0.26,
+            fill_opacity=dot_fill_opacity if dot_fill_opacity is not None else 0.16,
+            weight=dot_weight if dot_weight is not None else 0.3,
+            opacity=dot_opacity if dot_opacity is not None else 0.26,
             popup=folium.Popup(popup_html, max_width=300),
             tooltip=account_name,
         ).add_to(dots_fg)
@@ -883,6 +891,10 @@ def add_2025_split_layers(m, split_data, ui_preset):
             layer_name_prefix=f"2025 {category_info.get('label', category_key)}",
             dot_color=style.get("dot_color", "#334155"),
             include_density=False,
+            dot_radius=ui_preset["assignment_dot_radius"],
+            dot_fill_opacity=1.0,
+            dot_opacity=1.0,
+            dot_weight=1.0,
         )
         if layers:
             layer_info["categories"][category_key] = layers
