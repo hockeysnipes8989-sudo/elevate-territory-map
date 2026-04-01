@@ -52,6 +52,15 @@ CORE_TECHNICIAN_PALETTE = [
     "#808000",
 ]
 CORE_TECHNICIAN_SLOT_ORDER = [0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15]
+OPERATIONAL_ZONE_COLOR_MAP = {
+    "Eastern": "#2563EB",
+    "Central": "#0F766E",
+    "Mountain": "#D97706",
+    "Pacific": "#DC2626",
+    "Alaska": "#7C3AED",
+    "Hawaii": "#DB2777",
+    "Unknown": "#64748B",
+}
 
 
 def classify_service_type(service_type):
@@ -67,6 +76,20 @@ def classify_service_type(service_type):
         return "Install"
     else:
         return "Other"
+
+
+def get_operational_zone_color(zone_label):
+    """Return the display color for a solver operational zone label."""
+    label = "" if zone_label is None else str(zone_label).strip()
+    return OPERATIONAL_ZONE_COLOR_MAP.get(label, OPERATIONAL_ZONE_COLOR_MAP["Unknown"])
+
+
+def format_zone_rank(rank_value):
+    """Return stakeholder-readable zone rank text."""
+    numeric = pd.to_numeric(rank_value, errors="coerce")
+    if pd.isna(numeric):
+        return "Unknown"
+    return str(int(numeric))
 
 
 def first_present_text(row, *keys):
@@ -863,6 +886,104 @@ def add_heat_map_layers(m, heat_df, ui_preset):
         layer_name_prefix="Heat Map",
         dot_color="#334155",
     )
+
+
+def add_operational_zone_layers(m, operational_zone_data, ui_preset):
+    """Add the exact airport-based operational-zone layers used by the solver."""
+    if not operational_zone_data:
+        return None
+
+    airports_df = operational_zone_data.get("airports", pd.DataFrame()).copy()
+    appointments_df = operational_zone_data.get("appointments", pd.DataFrame()).copy()
+
+    airport_fg = folium.FeatureGroup(
+        name="Operational Zones Airports",
+        show=False,
+        control=False,
+    )
+    appointment_fg = folium.FeatureGroup(
+        name="Operational Zones Demand",
+        show=False,
+        control=False,
+    )
+
+    for airport in airports_df.to_dict(orient="records"):
+        zone_label = str(airport.get("operational_zone_label", "Unknown")).strip() or "Unknown"
+        color = get_operational_zone_color(zone_label)
+        city_label = str(airport.get("city_name", "")).strip()
+        state_abbr = str(airport.get("state_abbr", "") or "").strip()
+        if state_abbr:
+            city_label = f"{city_label}, {state_abbr}"
+        popup_html = (
+            f"<b>{airport['airport_code']} — {airport['airport_name']}</b><br>"
+            f"{html.escape(city_label)}<br>"
+            f"Operational zone: <b>{html.escape(zone_label)}</b><br>"
+            f"Zone rank: <b>{format_zone_rank(airport.get('operational_zone_rank'))}</b>"
+        )
+        folium.CircleMarker(
+            location=[float(airport["lat"]), float(airport["lon"])],
+            radius=7,
+            color="#FFFFFF",
+            weight=2.0,
+            fill=True,
+            fill_color=color,
+            fill_opacity=0.96,
+            popup=folium.Popup(popup_html, max_width=260),
+            tooltip=f"{airport['airport_code']} · {zone_label}",
+        ).add_to(airport_fg)
+
+    # This view intentionally does not draw fake polygons. The repo assigns
+    # operational zones to supported airports, and Step 06 copies those zone
+    # fields onto each demand row via the saved nearest_hub_airport.
+    for _, row in appointments_df.iterrows():
+        zone_label = (
+            str(row.get("nearest_hub_operational_zone_label", "Unknown")).strip()
+            or "Unknown"
+        )
+        nearest_airport = str(row.get("nearest_hub_airport", "")).strip().upper()
+        color = get_operational_zone_color(zone_label)
+        location_label = build_location_label(row)
+        account_name = first_present_text(row, "Account: Account Name") or "N/A"
+        appointment_id = first_present_text(row, "Appointment Number", "appointment_id")
+        skill_class = first_present_text(row, "skill_class")
+        popup_parts = [f"<b>{html.escape(account_name)}</b>"]
+        if appointment_id:
+            popup_parts.append(f"Appointment: {html.escape(appointment_id)}")
+        if location_label:
+            popup_parts.append(f"Location: {html.escape(location_label)}")
+        if skill_class:
+            popup_parts.append(f"Skill Class: {html.escape(skill_class)}")
+        if nearest_airport:
+            popup_parts.append(
+                "Nearest supported airport: "
+                f"<b>{html.escape(nearest_airport)}</b>"
+            )
+        popup_parts.append(f"Inherited zone: <b>{html.escape(zone_label)}</b>")
+        popup_parts.append(
+            "Zone rank: "
+            f"<b>{html.escape(format_zone_rank(row.get('nearest_hub_operational_zone_rank')))}</b>"
+        )
+
+        folium.CircleMarker(
+            location=[float(row["lat"]), float(row["lon"])],
+            radius=max(3, ui_preset["assignment_dot_radius"] - 1),
+            color="#FFFFFF",
+            weight=0.9,
+            fill=True,
+            fill_color=color,
+            fill_opacity=0.92,
+            popup=folium.Popup("<br>".join(popup_parts), max_width=320),
+            tooltip=account_name,
+        ).add_to(appointment_fg)
+
+    airport_fg.add_to(m)
+    appointment_fg.add_to(m)
+    return {
+        "airports_layer": airport_fg.get_name(),
+        "appointments_layer": appointment_fg.get_name(),
+        "plotted_airports": int(len(airports_df)),
+        "plotted_appointments": int(len(appointments_df)),
+    }
 
 
 def add_2025_split_layers(m, split_data, ui_preset):
@@ -1749,6 +1870,128 @@ def load_heat_map_data():
         return None
 
     return heat_df
+
+
+def load_operational_zone_data():
+    """Load the exact airport-based operational-zone inputs used by the solver."""
+    airports_df = build_airports_df(config.MAJOR_AIRPORTS).copy()
+    airports_df["operational_zone_rank"] = pd.to_numeric(
+        airports_df.get("operational_zone_rank"), errors="coerce"
+    )
+    airports_df = airports_df.sort_values(
+        ["operational_zone_rank", "airport_code"], na_position="last"
+    ).reset_index(drop=True)
+
+    demand_path = os.path.join(config.OPTIMIZATION_DIR, "demand_appointments.csv")
+    demand_df = safe_read_csv(demand_path)
+    if not demand_df.empty:
+        if "country" in demand_df.columns:
+            demand_df = demand_df[
+                demand_df["country"].fillna("").astype(str).str.strip().str.upper().eq("USA")
+            ].copy()
+
+        demand_df["lat"] = pd.to_numeric(demand_df.get("lat"), errors="coerce")
+        demand_df["lon"] = pd.to_numeric(demand_df.get("lon"), errors="coerce")
+        demand_df = demand_df.dropna(subset=["lat", "lon"]).copy()
+
+        airport_zone_lookup = (
+            airports_df[
+                [
+                    "airport_code",
+                    "operational_zone_label",
+                    "operational_zone_rank",
+                ]
+            ]
+            .drop_duplicates(subset=["airport_code"])
+            .set_index("airport_code")
+        )
+
+        if "nearest_hub_airport" in demand_df.columns:
+            nearest_airport_series = demand_df["nearest_hub_airport"]
+        else:
+            nearest_airport_series = pd.Series("", index=demand_df.index, dtype="object")
+        demand_df["nearest_hub_airport"] = (
+            nearest_airport_series.fillna("").astype(str).str.strip().str.upper()
+        )
+        fallback_zone_label = demand_df["nearest_hub_airport"].map(
+            airport_zone_lookup["operational_zone_label"].to_dict()
+        )
+        fallback_zone_rank = demand_df["nearest_hub_airport"].map(
+            airport_zone_lookup["operational_zone_rank"].to_dict()
+        )
+        if "nearest_hub_operational_zone_label" in demand_df.columns:
+            existing_zone_label = demand_df["nearest_hub_operational_zone_label"]
+        else:
+            existing_zone_label = pd.Series("", index=demand_df.index, dtype="object")
+        existing_zone_label = existing_zone_label.fillna("").astype(str).str.strip()
+        demand_df["nearest_hub_operational_zone_label"] = existing_zone_label.where(
+            existing_zone_label.ne(""),
+            fallback_zone_label.fillna("Unknown"),
+        )
+        if "nearest_hub_operational_zone_rank" in demand_df.columns:
+            existing_zone_rank = demand_df["nearest_hub_operational_zone_rank"]
+        else:
+            existing_zone_rank = pd.Series(np.nan, index=demand_df.index, dtype="float64")
+        demand_df["nearest_hub_operational_zone_rank"] = pd.to_numeric(
+            existing_zone_rank,
+            errors="coerce",
+        ).fillna(pd.to_numeric(fallback_zone_rank, errors="coerce"))
+    else:
+        demand_df = pd.DataFrame(
+            columns=[
+                "appointment_id",
+                "lat",
+                "lon",
+                "nearest_hub_airport",
+                "nearest_hub_operational_zone_label",
+                "nearest_hub_operational_zone_rank",
+            ]
+        )
+
+    airport_counts = (
+        airports_df.groupby("operational_zone_label")
+        .size()
+        .to_dict()
+    )
+    demand_counts = (
+        demand_df.groupby("nearest_hub_operational_zone_label")
+        .size()
+        .to_dict()
+        if not demand_df.empty
+        else {}
+    )
+
+    zone_rows = []
+    for zone_label, zone_info in config.OPERATIONAL_ZONE_DEFINITIONS.items():
+        zone_rows.append(
+            {
+                "label": zone_label,
+                "rank": int(zone_info["rank"]),
+                "utc_offset_standard": int(zone_info["utc_offset_standard"]),
+                "color": get_operational_zone_color(zone_label),
+                "airport_count": int(airport_counts.get(zone_label, 0)),
+                "demand_count": int(demand_counts.get(zone_label, 0)),
+            }
+        )
+
+    return {
+        "airports": airports_df,
+        "appointments": demand_df,
+        "panel": {
+            "zones": zone_rows,
+            "plotted_airports": int(len(airports_df)),
+            "plotted_appointments": int(len(demand_df)),
+            "employee_two_zone_penalty_usd": float(
+                config.EMPLOYEE_TWO_ZONE_JUMP_PENALTY_USD
+            ),
+            "contractor_two_zone_penalty_usd": float(
+                config.CONTRACTOR_TWO_ZONE_JUMP_PENALTY_USD
+            ),
+            "contractor_three_plus_zone_penalty_usd": float(
+                config.CONTRACTOR_THREE_PLUS_ZONE_JUMP_PENALTY_USD
+            ),
+        },
+    }
 
 
 def load_2025_split_data():
@@ -3480,6 +3723,30 @@ def build_simulation_panel_css(ui_preset):
       .sim-link-btn:hover {{
         color: #102235;
       }}
+      .zone-swatch {{
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        margin-top: 2px;
+        border: 1px solid rgba(255, 255, 255, 0.9);
+        box-shadow: 0 1px 4px rgba(15, 23, 42, 0.18);
+      }}
+      .sim-rule-row {{
+        padding: 8px 0;
+        border-top: 1px solid #edf2f7;
+        font-size: 12px;
+        line-height: 1.45;
+        color: #334155;
+      }}
+      .sim-rule-row:first-child {{
+        padding-top: 0;
+        border-top: none;
+      }}
+      .sim-rule-strong {{
+        display: block;
+        font-weight: 700;
+        color: #102235;
+      }}
       #sim-footnote {{
         margin-top: 16px;
         padding-top: 12px;
@@ -3590,6 +3857,12 @@ def build_simulation_panel_css(ui_preset):
       #heat-content.active {{
         display: block;
       }}
+      #zones-content {{
+        display: none;
+      }}
+      #zones-content.active {{
+        display: block;
+      }}
       #optimized-content.hidden {{
         display: none;
       }}
@@ -3656,6 +3929,7 @@ def build_simulation_panel_markup():
           <button class="view-btn active" data-view="optimized">Optimized</button>
           <button class="view-btn" data-view="blank">Blank Slate</button>
           <button class="view-btn" data-view="historical">Historical</button>
+          <button class="view-btn" data-view="zones">Operational Zones</button>
           <button class="view-btn" data-view="split2025">2025 Split</button>
           <button class="view-btn" data-view="heat">Heat Map</button>
         </div>
@@ -3849,6 +4123,40 @@ def build_simulation_panel_markup():
           Heat Map uses the same US-only demand rows as the optimization model, with each service appointment counted once.
         </div>
       </div>
+
+      <div id="zones-content">
+        <div class="sim-section">
+          <div class="sim-section-label">Operational Zones</div>
+          <p class="sim-section-caption">Supported airports are colored by the solver's saved operational-zone labels. Appointment dots are colored by the zone each row inherits from its saved nearest supported airport.</p>
+        </div>
+
+        <div class="sim-section">
+          <div class="hist-kpi-grid">
+            <div class="sim-kpi">
+              <div class="label">Supported Airports</div>
+              <div class="value" id="zones-kpi-airports">&mdash;</div>
+            </div>
+            <div class="sim-kpi">
+              <div class="label">Demand Appointments</div>
+              <div class="value" id="zones-kpi-demand">&mdash;</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="sim-section">
+          <h3 class="sim-section-heading">Zone Legend</h3>
+          <div id="zones-legend" class="sim-list-box"></div>
+        </div>
+
+        <div class="sim-section">
+          <h3 class="sim-section-heading">Jump Rules</h3>
+          <div id="zones-rules" class="sim-list-box"></div>
+        </div>
+
+        <div id="zones-footnote" style="margin-top:16px;padding-top:12px;border-top:1px solid #edf2f7;font-size:11px;line-height:1.45;color:#64748b;">
+          No colored regions are drawn here because the repo does not define zone polygons. The real logic is airport-based: zones live on supported airports, and Step 06 copies that zone onto each demand row through <code>nearest_hub_airport</code>.
+        </div>
+      </div>
     </div>
 
     <div id="kpi-modal-overlay">
@@ -3879,6 +4187,8 @@ def build_simulation_panel_script(
     blank_slate_payload_js=None,
     blank_slate_layer_names_js=None,
     heat_map_layer_names_js=None,
+    operational_zones_payload_js=None,
+    operational_zones_layer_names_js=None,
     split_2025_payload_js=None,
     split_2025_layer_names_js=None,
 ):
@@ -3892,6 +4202,8 @@ def build_simulation_panel_script(
     blank_payload = blank_slate_payload_js or "null"
     blank_layers = blank_slate_layer_names_js or "null"
     heat_layers = heat_map_layer_names_js or "null"
+    operational_zones_payload = operational_zones_payload_js or "null"
+    operational_zones_layers = operational_zones_layer_names_js or "null"
     split_2025_payload = split_2025_payload_js or "null"
     split_2025_layers = split_2025_layer_names_js or "null"
     return f"""
@@ -3932,6 +4244,8 @@ def build_simulation_panel_script(
       const blankSlateLayerNames = {blank_layers};
       const techMarkersLayerName = {tech_markers_js};
       const heatLayerNames = {heat_layers};
+      const operationalZonesData = {operational_zones_payload};
+      const operationalZoneLayerNames = {operational_zones_layers};
       const split2025Data = {split_2025_payload};
       const split2025LayerNames = {split_2025_layers};
       let activeView = "optimized";
@@ -3944,6 +4258,9 @@ def build_simulation_panel_script(
       let techMarkersLayer = null;
       let heatDotsLayer = null;
       let heatCountLayer = null;
+      let operationalZoneAirportLayer = null;
+      let operationalZoneAppointmentsLayer = null;
+      let airportSuppressedByView = false;
       let lastOptimizedScenario = defaultScenario;
       let lastBlankSlateScenario = blankSlateData
         ? String(
@@ -4064,7 +4381,7 @@ def build_simulation_panel_script(
         const toggle = document.getElementById("sim-hub-toggle");
         const label = document.getElementById("sim-hub-toggle-label");
         if (!toggle || !label) return;
-        if (!showHubToggle || !airportLayer) {{
+        if (!showHubToggle || !airportLayer || activeView === "zones") {{
           toggle.style.display = "none";
           return;
         }}
@@ -4253,7 +4570,11 @@ def build_simulation_panel_script(
 
       function syncAirportLayerVisibility() {{
         if (!mapRef || !airportLayer) return;
-        if (airportVisible) {{
+        if (airportSuppressedByView) {{
+          if (mapRef.hasLayer(airportLayer)) {{
+            mapRef.removeLayer(airportLayer);
+          }}
+        }} else if (airportVisible) {{
           if (!mapRef.hasLayer(airportLayer)) {{
             mapRef.addLayer(airportLayer);
           }}
@@ -4449,9 +4770,10 @@ def build_simulation_panel_script(
         const optimizedEl = document.getElementById("optimized-content");
         const historicalEl = document.getElementById("historical-content");
         const blankEl = document.getElementById("blank-content");
+        const zonesEl = document.getElementById("zones-content");
         const split2025El = document.getElementById("split-2025-content");
         const heatEl = document.getElementById("heat-content");
-        if (!optimizedEl || !historicalEl || !blankEl || !split2025El || !heatEl) return;
+        if (!optimizedEl || !historicalEl || !blankEl || !zonesEl || !split2025El || !heatEl) return;
 
         document.querySelectorAll(".view-btn").forEach((btn) => {{
           btn.classList.toggle("active", btn.getAttribute("data-view") === view);
@@ -4467,12 +4789,16 @@ def build_simulation_panel_script(
         hideBlankSlateLayers();
         hideSplit2025Layers();
         hideHeatLayers();
+        hideOperationalZoneLayers();
 
         optimizedEl.classList.toggle("hidden", view !== "optimized");
         historicalEl.classList.toggle("active", view === "historical");
         blankEl.classList.toggle("active", view === "blank");
+        zonesEl.classList.toggle("active", view === "zones");
         split2025El.classList.toggle("active", view === "split2025");
         heatEl.classList.toggle("active", view === "heat");
+        airportSuppressedByView = view === "zones";
+        syncAirportLayerVisibility();
 
         if (view === "historical") {{
           if (techMarkersLayer && mapRef && mapRef.hasLayer(techMarkersLayer)) {{
@@ -4496,6 +4822,15 @@ def build_simulation_panel_script(
             mapRef.removeLayer(techMarkersLayer);
           }}
           showBlankSlateScenario(lastBlankSlateScenario);
+          return;
+        }}
+
+        if (view === "zones") {{
+          if (techMarkersLayer && mapRef && mapRef.hasLayer(techMarkersLayer)) {{
+            mapRef.removeLayer(techMarkersLayer);
+          }}
+          showOperationalZoneLayers();
+          renderOperationalZonesSummary();
           return;
         }}
 
@@ -4788,20 +5123,116 @@ def build_simulation_panel_script(
         countEl.textContent = total.toLocaleString() + " appointments plotted";
       }}
 
+      function hideOperationalZoneLayers() {{
+        if (operationalZoneAirportLayer && mapRef && mapRef.hasLayer(operationalZoneAirportLayer)) {{
+          mapRef.removeLayer(operationalZoneAirportLayer);
+        }}
+        if (
+          operationalZoneAppointmentsLayer &&
+          mapRef &&
+          mapRef.hasLayer(operationalZoneAppointmentsLayer)
+        ) {{
+          mapRef.removeLayer(operationalZoneAppointmentsLayer);
+        }}
+      }}
+
+      function showOperationalZoneLayers() {{
+        if (!mapRef) return;
+        if (operationalZoneAirportLayer && !mapRef.hasLayer(operationalZoneAirportLayer)) {{
+          mapRef.addLayer(operationalZoneAirportLayer);
+        }}
+        if (
+          operationalZoneAppointmentsLayer &&
+          !mapRef.hasLayer(operationalZoneAppointmentsLayer)
+        ) {{
+          mapRef.addLayer(operationalZoneAppointmentsLayer);
+        }}
+      }}
+
+      function renderOperationalZonesSummary() {{
+        if (!operationalZonesData) return;
+        const airportsEl = document.getElementById("zones-kpi-airports");
+        const demandEl = document.getElementById("zones-kpi-demand");
+        const legendEl = document.getElementById("zones-legend");
+        const rulesEl = document.getElementById("zones-rules");
+
+        if (airportsEl) {{
+          airportsEl.textContent = Number(
+            operationalZonesData.plotted_airports || 0
+          ).toLocaleString();
+        }}
+        if (demandEl) {{
+          demandEl.textContent = Number(
+            operationalZonesData.plotted_appointments || 0
+          ).toLocaleString();
+        }}
+        if (legendEl) {{
+          const zones = Array.isArray(operationalZonesData.zones)
+            ? operationalZonesData.zones
+            : [];
+          legendEl.innerHTML = zones.map((zone) => {{
+            const airportCount = Number(zone.airport_count || 0).toLocaleString();
+            const demandCount = Number(zone.demand_count || 0).toLocaleString();
+            return `
+              <div class="coverage-row">
+                <span class="zone-swatch" style="background:${{zone.color || "#64748B"}};"></span>
+                <div>
+                  <div class="coverage-name">${{zone.label}} (rank ${{zone.rank}})</div>
+                  <div class="coverage-meta">${{airportCount}} supported airports &middot; ${{demandCount}} plotted demand appointments</div>
+                </div>
+              </div>`;
+          }}).join("");
+        }}
+        if (rulesEl) {{
+          const employeeTwo = money(
+            (operationalZonesData.employee_two_zone_penalty_usd || 0)
+          );
+          const contractorTwo = money(
+            (operationalZonesData.contractor_two_zone_penalty_usd || 0)
+          );
+          const contractorThreePlus = money(
+            (operationalZonesData.contractor_three_plus_zone_penalty_usd || 0)
+          );
+          rulesEl.innerHTML = `
+            <div class="sim-rule-row">
+              <span class="sim-rule-strong">Zone jumps are absolute rank differences.</span>
+              Pacific to Central is 2 jumps because Pacific = 3 and Central = 1.
+            </div>
+            <div class="sim-rule-row">
+              <span class="sim-rule-strong">Standard employees and normal new hires</span>
+              0-1 jumps are allowed, 2 jumps add ${{employeeTwo}} per appointment, and 3+ jumps are blocked.
+            </div>
+            <div class="sim-rule-row">
+              <span class="sim-rule-strong">HTX contractors</span>
+              0-1 jumps are allowed, 2 jumps add ${{contractorTwo}} per appointment, and 3+ jumps stay allowed with a ${{contractorThreePlus}} penalty per appointment.
+            </div>`;
+        }}
+      }}
+
       function wireViewToggle() {{
         const toggleContainer = document.getElementById("view-toggle");
         if (!toggleContainer) return;
         const historicalBtn = toggleContainer.querySelector('[data-view="historical"]');
         const blankBtn = toggleContainer.querySelector('[data-view="blank"]');
+        const zonesBtn = toggleContainer.querySelector('[data-view="zones"]');
         const split2025Btn = toggleContainer.querySelector('[data-view="split2025"]');
         const heatBtn = toggleContainer.querySelector('[data-view="heat"]');
         if (historicalBtn) historicalBtn.style.display = historicalData ? "" : "none";
         if (blankBtn) blankBtn.style.display = blankSlateData ? "" : "none";
+        if (zonesBtn) {{
+          zonesBtn.style.display = operationalZoneLayerNames ? "" : "none";
+        }}
         if (split2025Btn) split2025Btn.style.display = split2025Data ? "" : "none";
         if (heatBtn) {{
           heatBtn.style.display = heatLayerNames ? "" : "none";
         }}
-        if (!historicalData && !blankSlateData && !split2025Data && !heatLayerNames) return;
+        if (
+          !historicalData &&
+          !blankSlateData &&
+          !operationalZoneLayerNames &&
+          !split2025Data &&
+          !heatLayerNames
+        ) return;
         toggleContainer.style.display = "block";
         document.querySelectorAll(".view-btn").forEach((btn) => {{
           btn.addEventListener("click", () => {{
@@ -4873,8 +5304,23 @@ def build_simulation_panel_script(
         if (heatLayerNames && heatLayerNames.count_layer && window[heatLayerNames.count_layer]) {{
           heatCountLayer = window[heatLayerNames.count_layer];
         }}
+        if (
+          operationalZoneLayerNames &&
+          operationalZoneLayerNames.airports_layer &&
+          window[operationalZoneLayerNames.airports_layer]
+        ) {{
+          operationalZoneAirportLayer = window[operationalZoneLayerNames.airports_layer];
+        }}
+        if (
+          operationalZoneLayerNames &&
+          operationalZoneLayerNames.appointments_layer &&
+          window[operationalZoneLayerNames.appointments_layer]
+        ) {{
+          operationalZoneAppointmentsLayer = window[operationalZoneLayerNames.appointments_layer];
+        }}
 
         renderHeatSummary();
+        renderOperationalZonesSummary();
         renderButtons();
         renderBlankSlateButtons();
         renderSplit2025Buttons();
@@ -4915,6 +5361,8 @@ def add_simulation_panel(
     blank_slate_data=None,
     blank_slate_layer_names=None,
     heat_map_layer_names=None,
+    operational_zones_data=None,
+    operational_zones_layer_names=None,
     split_2025_data=None,
     split_2025_layer_names=None,
 ):
@@ -4956,6 +5404,14 @@ def add_simulation_panel(
     blank_payload_js = json.dumps(blank_slate_data) if blank_slate_data else None
     blank_layers_js = json.dumps(blank_slate_layer_names) if blank_slate_layer_names else None
     heat_layers_js = json.dumps(heat_map_layer_names) if heat_map_layer_names else None
+    operational_zones_payload_js = (
+        json.dumps(operational_zones_data) if operational_zones_data else None
+    )
+    operational_zones_layers_js = (
+        json.dumps(operational_zones_layer_names)
+        if operational_zones_layer_names
+        else None
+    )
     split_2025_payload_js = json.dumps(split_2025_data) if split_2025_data else None
     split_2025_layers_js = (
         json.dumps(split_2025_layer_names) if split_2025_layer_names else None
@@ -4982,6 +5438,8 @@ def add_simulation_panel(
             blank_slate_payload_js=blank_payload_js,
             blank_slate_layer_names_js=blank_layers_js,
             heat_map_layer_names_js=heat_layers_js,
+            operational_zones_payload_js=operational_zones_payload_js,
+            operational_zones_layer_names_js=operational_zones_layers_js,
             split_2025_payload_js=split_2025_payload_js,
             split_2025_layer_names_js=split_2025_layers_js,
         )
@@ -5304,6 +5762,22 @@ def main():
                     ui_preset,
                 )
 
+            operational_zone_panel_data = None
+            operational_zone_layer_names = None
+            operational_zone_data = load_operational_zone_data()
+            if operational_zone_data:
+                operational_zone_panel_data = operational_zone_data.get("panel")
+                print(
+                    "  Operational Zones: "
+                    f"{operational_zone_panel_data.get('plotted_airports', 0):,} supported airports, "
+                    f"{operational_zone_panel_data.get('plotted_appointments', 0):,} plotted demand appointments"
+                )
+                operational_zone_layer_names = add_operational_zone_layers(
+                    m,
+                    operational_zone_data,
+                    ui_preset,
+                )
+
             split_2025_raw = load_2025_split_data()
             split_2025_panel_data = None
             split_2025_layer_names = None
@@ -5356,6 +5830,8 @@ def main():
                 blank_slate_data=blank_slate_data,
                 blank_slate_layer_names=blank_slate_layer_names,
                 heat_map_layer_names=heat_map_layer_names,
+                operational_zones_data=operational_zone_panel_data,
+                operational_zones_layer_names=operational_zone_layer_names,
                 split_2025_data=split_2025_panel_data,
                 split_2025_layer_names=split_2025_layer_names,
             )
