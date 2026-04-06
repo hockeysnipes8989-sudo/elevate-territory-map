@@ -758,7 +758,11 @@ def main() -> None:
             max_hires_per_base=1,
             time_limit_sec=int(args.time_limit_sec),
             blank_slate=False,
-            optimized_max_appointments_per_person=None,
+            optimized_max_appointments_per_person=int(
+                getattr(config, "OPTIMIZE_TERRITORIES_MAX_APPOINTMENTS_PER_TECH", 80)
+            ),
+            use_existing_hours_capacity=False,
+            scale_optimized_existing_appointment_cap_by_fte=False,
         )
 
         assignments = enrich_assignment_costs(solve_result["existing_assignments"], original_lookup)
@@ -818,6 +822,9 @@ def main() -> None:
     )
 
     assumptions = {
+        "max_appointments_per_tech": int(
+            getattr(config, "OPTIMIZE_TERRITORIES_MAX_APPOINTMENTS_PER_TECH", 80)
+        ),
         "mode_kind": "fixed_current_roster_territory_optimization",
         "demand_year": int(getattr(config, "OPTIMIZE_TERRITORIES_YEAR", 2025)),
         "excluded_tech_names": excluded_names,
@@ -843,6 +850,19 @@ def main() -> None:
             ),
             "fly_trip_penalty_usd": float(
                 getattr(config, "OPTIMIZE_TERRITORIES_FLY_TRIP_PENALTY_USD", 0.0)
+            ),
+        },
+        "capacity_rule": {
+            "mode": "flat_appointments_per_tech",
+            "max_appointments_per_tech": int(
+                getattr(config, "OPTIMIZE_TERRITORIES_MAX_APPOINTMENTS_PER_TECH", 80)
+            ),
+            "hours_capacity_constraints_used": False,
+            "note": (
+                f"This mode uses a hard cap of "
+                f"{int(getattr(config, 'OPTIMIZE_TERRITORIES_MAX_APPOINTMENTS_PER_TECH', 80))} "
+                "assigned appointments per active technician and does not use "
+                "duration-hours-based capacity constraints."
             ),
         },
         "roster_note": (

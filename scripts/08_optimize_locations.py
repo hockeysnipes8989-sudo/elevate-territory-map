@@ -451,6 +451,7 @@ def _infeasible_summary(hire_count: int, message: str, baseline_canceled_voided_
 def compute_optimized_existing_appointment_cap(
     availability_fte: object,
     optimized_max_appointments_per_person: int | None,
+    scale_by_fte: bool = True,
 ) -> int | None:
     """Return the optimized existing-person appointment cap scaled by FTE."""
     if optimized_max_appointments_per_person is None:
@@ -458,6 +459,10 @@ def compute_optimized_existing_appointment_cap(
     fte = pd.to_numeric(availability_fte, errors="coerce")
     if pd.isna(fte):
         return 0
+    if float(fte) <= 0:
+        return 0
+    if not scale_by_fte:
+        return max(0, int(round(float(optimized_max_appointments_per_person))))
     return max(0, int(round(float(optimized_max_appointments_per_person) * float(fte))))
 
 
@@ -667,6 +672,8 @@ def solve_scenario(
     blank_slate: bool = False,
     blank_slate_max_appointments_per_hire: int | None = None,
     optimized_max_appointments_per_person: int | None = None,
+    use_existing_hours_capacity: bool = True,
+    scale_optimized_existing_appointment_cap_by_fte: bool = True,
 ) -> dict:
     """Solve one MILP scenario for a fixed new-hire count."""
     nodes = nodes.reset_index(drop=True).copy()
@@ -698,6 +705,7 @@ def solve_scenario(
             compute_optimized_existing_appointment_cap(
                 tech.loc[ti, "availability_fte"],
                 optimized_max_appointments_per_person,
+                scale_by_fte=scale_optimized_existing_appointment_cap_by_fte,
             )
             if not blank_slate
             else None
@@ -912,17 +920,18 @@ def solve_scenario(
         r += 1
 
     # Existing tech capacity constraints.
-    for ti, trow in tech.iterrows():
-        for ni, nrow in nodes.iterrows():
-            idx = x_idx.get((ti, ni))
-            if idx is None:
-                continue
-            rows.append(r)
-            cols.append(idx)
-            data.append(float(nrow["avg_hours_per_appointment"]))
-        lower.append(-np.inf)
-        upper.append(float(trow["capacity_hours"]))
-        r += 1
+    if use_existing_hours_capacity:
+        for ti, trow in tech.iterrows():
+            for ni, nrow in nodes.iterrows():
+                idx = x_idx.get((ti, ni))
+                if idx is None:
+                    continue
+                rows.append(r)
+                cols.append(idx)
+                data.append(float(nrow["avg_hours_per_appointment"]))
+            lower.append(-np.inf)
+            upper.append(float(trow["capacity_hours"]))
+            r += 1
 
     # Candidate hire capacity constraints.
     for ci in candidate_indices:

@@ -189,6 +189,102 @@ class PhaseOneModelingTests(unittest.TestCase):
         self.assertFalse(step08.tech_eligible_for_node(standard_tech, far_node, "anywhere"))
         self.assertTrue(step08.tech_eligible_for_node(contractor, node, "anywhere"))
 
+    def test_solve_scenario_can_use_flat_existing_appointment_cap_without_hours_capacity(self):
+        tech = pd.DataFrame(
+            [
+                {
+                    "tech_id": "eligible",
+                    "tech_name": "Eligible Tech",
+                    "employment_type": "fte",
+                    "base_state": "TX",
+                    "base_airport_iata": "DFW",
+                    "base_hub_tier": config.HUB_TIER_LARGE,
+                    "assignment_scope_mode": config.ASSIGNMENT_SCOPE_MODE_NATIONAL,
+                    "assignment_scope_states": "",
+                    "anchor_site_name": "",
+                    "anchor_reserved_fte": None,
+                    "external_field_fte": None,
+                    "availability_fte": 1.0,
+                    "skill_patient": 1,
+                    "skill_ls": 0,
+                    "skill_hps": 0,
+                    "constraint_florida_only": 0,
+                    "zone_policy": config.ZONE_POLICY_STANDARD,
+                    "base_operational_zone_label": "Central",
+                    "base_operational_zone_rank": 1,
+                },
+                {
+                    "tech_id": "ineligible",
+                    "tech_name": "Ineligible Tech",
+                    "employment_type": "fte",
+                    "base_state": "TX",
+                    "base_airport_iata": "DFW",
+                    "base_hub_tier": config.HUB_TIER_LARGE,
+                    "assignment_scope_mode": config.ASSIGNMENT_SCOPE_MODE_NATIONAL,
+                    "assignment_scope_states": "",
+                    "anchor_site_name": "",
+                    "anchor_reserved_fte": None,
+                    "external_field_fte": None,
+                    "availability_fte": 1.0,
+                    "skill_patient": 0,
+                    "skill_ls": 0,
+                    "skill_hps": 0,
+                    "constraint_florida_only": 0,
+                    "zone_policy": config.ZONE_POLICY_STANDARD,
+                    "base_operational_zone_label": "Central",
+                    "base_operational_zone_rank": 1,
+                },
+            ]
+        )
+        nodes = pd.DataFrame(
+            [
+                {
+                    "node_id": "TX__regular",
+                    "state_norm": "TX",
+                    "skill_class": "regular",
+                    "required_hps": 0,
+                    "required_ls": 0,
+                    "appointment_count": 2.0,
+                    "demand_hours": 100.0,
+                    "avg_hours_per_appointment": 50.0,
+                    "node_operational_zone_label": "Central",
+                    "node_operational_zone_rank": 1,
+                }
+            ]
+        )
+        full_cost_lookup = {
+            ("eligible", "TX__regular"): {
+                "unit_cost_usd": 100.0,
+                "trip_mode": "drive_day",
+                "ground_transport_mode": "personal_vehicle",
+            }
+        }
+
+        result = step08.solve_scenario(
+            hire_count=0,
+            tech=tech,
+            nodes=nodes,
+            candidates=pd.DataFrame(),
+            full_cost_lookup=full_cost_lookup,
+            contractor_scope="anywhere",
+            target_utilization=1.0,
+            out_of_region_penalty=0.0,
+            unmet_penalty=1000.0,
+            annual_hire_cost_usd=0.0,
+            max_hires_per_base=1,
+            time_limit_sec=10,
+            blank_slate=False,
+            optimized_max_appointments_per_person=2,
+            use_existing_hours_capacity=False,
+            scale_optimized_existing_appointment_cap_by_fte=False,
+        )
+
+        self.assertAlmostEqual(float(result["summary"]["unmet_appointments"]), 0.0)
+        self.assertEqual(
+            result["existing_assignments"]["assigned_appointments"].sum(),
+            2.0,
+        )
+
     def test_apply_anchor_allocations_sets_tameka_scope_and_capacity(self):
         tech_master = pd.DataFrame(
             [
