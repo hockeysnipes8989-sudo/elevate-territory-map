@@ -644,6 +644,18 @@ OPTIMIZE_TERRITORIES_MAP_HIDDEN_TECH_NAMES = {
     "Curt Corder",
     "Hakim Mouazer",
 }
+OPTIMIZE_TERRITORIES_COLOR_MAP = {
+    "ben_walker": "#009E73",       # teal-green
+    "bladimir_torres": "#0072B2",  # strong blue
+    "clarence_bonner": "#6A3D9A",  # violet
+    "curt_corder": "#8C564B",      # brown
+    "eric_olinger": "#17BECF",     # cyan
+    "hector_arias": "#E69F00",     # amber
+    "josh_brown": "#D55E00",       # orange-red
+    "robert_cohen": "#CC79A7",     # magenta
+    "scott_fogo": "#7F0000",       # dark red
+    "tameka_gongs": "#4D4D4D",     # charcoal
+}
 OPTIMIZE_TERRITORIES_EXCLUDED_STATES = {
     "FL",
 }
@@ -655,8 +667,8 @@ OPTIMIZE_TERRITORIES_TWO_ZONE_EXTRA_PENALTY_USD = 250.0
 OPTIMIZE_TERRITORIES_OVERNIGHT_TRIP_PENALTY_USD = 90.0
 OPTIMIZE_TERRITORIES_FLY_TRIP_PENALTY_USD = 325.0
 OPTIMIZE_TERRITORIES_TIME_LIMIT_SEC = 120
-OPTIMIZE_TERRITORIES_STATE_FILL_OPACITY = 0.14
-OPTIMIZE_TERRITORIES_STATE_FILL_WEIGHT = 1.0
+OPTIMIZE_TERRITORIES_STATE_FILL_OPACITY = 0.24
+OPTIMIZE_TERRITORIES_STATE_FILL_WEIGHT = 1.5
 
 # Known typo/mis-geocode overrides (applied every run)
 GEOCODE_OVERRIDES = {

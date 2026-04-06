@@ -28,6 +28,35 @@ step12 = load_module("step12_optimize_territories", "12_optimize_territories.py"
 
 
 class OptimizeTerritoriesViewTests(unittest.TestCase):
+    def test_build_optimize_territories_color_map_uses_dedicated_palette(self):
+        territory_data = {
+            "tech_master": pd.DataFrame(
+                [
+                    {
+                        "tech_id": "ben_walker",
+                        "tech_name": "Ben Walker",
+                        "availability_fte": 1.0,
+                    },
+                    {
+                        "tech_id": "scott_fogo",
+                        "tech_name": "Scott Fogo",
+                        "availability_fte": 1.0,
+                    },
+                    {
+                        "tech_id": "curt_corder",
+                        "tech_name": "Curt Corder",
+                        "availability_fte": 1.0,
+                    },
+                ]
+            )
+        }
+
+        color_map = step05.build_optimize_territories_color_map(territory_data)
+
+        self.assertEqual(color_map["ben_walker"], config.OPTIMIZE_TERRITORIES_COLOR_MAP["ben_walker"])
+        self.assertEqual(color_map["scott_fogo"], config.OPTIMIZE_TERRITORIES_COLOR_MAP["scott_fogo"])
+        self.assertEqual(color_map["curt_corder"], config.OPTIMIZE_TERRITORIES_COLOR_MAP["curt_corder"])
+
     def test_filter_optimize_territories_marker_techs_hides_only_requested_tab_markers(self):
         techs = pd.DataFrame(
             [
@@ -206,7 +235,7 @@ class OptimizeTerritoriesViewTests(unittest.TestCase):
             territory_dir.mkdir(parents=True, exist_ok=True)
 
             summary_payload = {
-                "available_modes": ["patient_sim", "learning_space"],
+                "available_modes": ["patient_sim", "learning_space", "combined"],
                 "default_mode": "patient_sim",
                 "mode_panels": {
                     "patient_sim": {
@@ -224,6 +253,15 @@ class OptimizeTerritoriesViewTests(unittest.TestCase):
                         "appointments_plotted": 4,
                         "active_owner_tech_count": 2,
                         "raw_travel_cost_usd": 600.0,
+                        "coverage_gap_count": 1,
+                        "training_gap_count": 1,
+                    },
+                    "combined": {
+                        "key": "combined",
+                        "label": "Combined",
+                        "appointments_plotted": 16,
+                        "active_owner_tech_count": 3,
+                        "raw_travel_cost_usd": 1800.0,
                         "coverage_gap_count": 1,
                         "training_gap_count": 1,
                     },
@@ -258,7 +296,18 @@ class OptimizeTerritoriesViewTests(unittest.TestCase):
                         "covered_skill_labels": "Patient Sim",
                         "raw_travel_cost_usd": 1200.0,
                         "share_two_zone_plus": 0.0,
-                    }
+                    },
+                    {
+                        "territory_mode": "combined",
+                        "tech_id": "curt_corder",
+                        "tech_name": "Curt Corder",
+                        "assigned_appointments": 0,
+                        "primary_states": None,
+                        "owned_states": None,
+                        "covered_skill_labels": "Patient Sim;HPS",
+                        "raw_travel_cost_usd": 0.0,
+                        "share_two_zone_plus": 0.0,
+                    },
                 ]
             ).to_csv(territory_dir / "territory_tech_summary.csv", index=False)
             pd.DataFrame(
@@ -304,6 +353,10 @@ class OptimizeTerritoriesViewTests(unittest.TestCase):
                 territory_data["modes"]["learning_space"]["gap_rows"][0]["skill_class"],
                 "ls",
             )
+            combined_rows = territory_data["modes"].get("combined", {}).get("tech_summaries", [])
+            if combined_rows:
+                curt_row = [row for row in combined_rows if row["tech_id"] == "curt_corder"][0]
+                self.assertEqual(curt_row["primary_states"], "FL")
 
         markup = step05.build_simulation_panel_markup()
         optimized_idx = markup.index('data-view="optimized"')
@@ -323,9 +376,11 @@ class OptimizeTerritoriesViewTests(unittest.TestCase):
             ["0"],
             "0",
             step05.get_map_ui_preset(),
+            territory_tech_colors_js='{"ben_walker":"#2E7D32"}',
             territory_opt_payload_js='{"available_modes":["patient_sim"],"default_mode":"patient_sim","modes":{"patient_sim":{"label":"Patient Sim","tech_summaries":[],"gap_rows":[]}}}',
             territory_opt_layer_names_js='{"patient_sim":{"dots_layer":"territory_dots","states_layer":"territory_states"}}',
         )
+        self.assertIn('const territoryTechColors = {"ben_walker":"#2E7D32"};', script)
         self.assertIn('const territoryOptimizeData = {"available_modes":["patient_sim"],"default_mode":"patient_sim","modes":{"patient_sim":{"label":"Patient Sim","tech_summaries":[],"gap_rows":[]}}};', script)
         self.assertIn('const territoryOptimizeLayerNames = {"patient_sim":{"dots_layer":"territory_dots","states_layer":"territory_states"}};', script)
         self.assertIn("const territoryTechMarkersLayerName = null;", script)

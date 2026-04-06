@@ -394,6 +394,48 @@ def build_current_tech_marker_color_map(territory_data, tech_color_map, ui_prese
     return color_lookup
 
 
+def build_optimize_territories_color_map(territory_data):
+    """Assign a territory-tab-only color map for the fixed current roster."""
+    if not territory_data:
+        return {}
+
+    tech_master = territory_data.get("tech_master", pd.DataFrame()).copy()
+    if tech_master.empty:
+        return {}
+
+    explicit_color_map = dict(getattr(config, "OPTIMIZE_TERRITORIES_COLOR_MAP", {}))
+    fallback_palette = [
+        "#2E7D32",
+        "#0288D1",
+        "#1D4ED8",
+        "#8D6E63",
+        "#6A1B9A",
+        "#F97316",
+        "#C62828",
+        "#00897B",
+        "#8E2430",
+        "#B7791F",
+    ]
+    active_techs = tech_master[
+        pd.to_numeric(tech_master["availability_fte"], errors="coerce").fillna(0) > 0
+    ].copy()
+    active_techs = active_techs.sort_values(["tech_name", "tech_id"], ascending=[True, True])
+
+    color_map = {}
+    fallback_idx = 0
+    for _, row in active_techs.iterrows():
+        tech_id = str(row.get("tech_id", "")).strip()
+        if not tech_id:
+            continue
+        color = explicit_color_map.get(tech_id)
+        if not color:
+            color = fallback_palette[fallback_idx % len(fallback_palette)]
+            fallback_idx += 1
+        color_map[tech_id] = color
+
+    return color_map
+
+
 def load_anchor_tech_metadata():
     """Load anchored-tech metadata from optimization tech_master if available."""
     tech_master_path = os.path.join(config.OPTIMIZATION_DIR, "tech_master.csv")
@@ -1913,8 +1955,26 @@ def load_optimize_territories_data():
     modes_payload = {}
     for mode_key in available_modes:
         panel = dict(mode_panels.get(mode_key, {}))
+        mode_tech_summary = tech_summary[
+            tech_summary["territory_mode"].astype(str) == mode_key
+        ].copy()
+        if not mode_tech_summary.empty:
+            if "primary_states" in mode_tech_summary.columns:
+                mode_tech_summary["primary_states"] = mode_tech_summary["primary_states"].astype("object")
+            if "owned_states" in mode_tech_summary.columns:
+                mode_tech_summary["owned_states"] = mode_tech_summary["owned_states"].astype("object")
+            curt_mask = mode_tech_summary["tech_id"].astype(str).eq(config.CURT_CORDER_TECH_ID)
+            if curt_mask.any():
+                mode_tech_summary.loc[
+                    curt_mask & mode_tech_summary["primary_states"].isna(),
+                    "primary_states",
+                ] = "FL"
+                mode_tech_summary.loc[
+                    curt_mask & mode_tech_summary["owned_states"].isna(),
+                    "owned_states",
+                ] = "FL"
         panel["tech_summaries"] = (
-            tech_summary[tech_summary["territory_mode"].astype(str) == mode_key]
+            mode_tech_summary
             .sort_values(["assigned_appointments", "tech_name"], ascending=[False, True])
             .replace({np.nan: None})
             .to_dict(orient="records")
@@ -3227,6 +3287,32 @@ def add_optimize_territory_layers(
             mode_states = state_summary[
                 state_summary["territory_mode"].astype(str) == str(mode_key)
             ].copy()
+            if str(mode_key) == "combined":
+                has_florida = mode_states["state_norm"].astype(str).str.upper().eq("FL").any()
+                if not has_florida:
+                    mode_states = pd.concat(
+                        [
+                            mode_states,
+                            pd.DataFrame(
+                                [
+                                    {
+                                        "territory_mode": mode_key,
+                                        "state_norm": "FL",
+                                        "state_name": "Florida",
+                                        "total_appointments": 0.0,
+                                        "dominant_owner_tech_id": config.CURT_CORDER_TECH_ID,
+                                        "dominant_owner_tech_name": "Curt Corder",
+                                        "dominant_owner_share": 1.0,
+                                        "coverage_gap_flag": False,
+                                        "training_gap_flag": False,
+                                        "gap_reason": "Primary Florida territory.",
+                                        "dominant_owner_color_key": config.CURT_CORDER_TECH_ID,
+                                    }
+                                ]
+                            ),
+                        ],
+                        ignore_index=True,
+                    )
             state_lookup = {}
             for _, row in mode_states.iterrows():
                 state_name = str(row.get("state_name", "")).strip()
@@ -4305,7 +4391,6 @@ def build_simulation_panel_markup():
       <div id="territories-content">
         <div class="sim-section">
           <div class="sim-section-label">Optimize Territories</div>
-          <p class="sim-section-caption">Combined 2025 patient sim, LearningSpace, and HPS demand with fixed current bases and tighter current-tech ownership recommendations.</p>
         </div>
 
         <div class="sim-section" id="territory-status-section" style="display:none;">
@@ -4327,7 +4412,6 @@ def build_simulation_panel_markup():
 
         <div class="sim-section">
           <h3 class="sim-section-heading">Recommended Owner Summaries</h3>
-          <p class="sim-section-caption">Each row is a practical ownership suggestion for the fixed current roster, not a new-hire scenario.</p>
           <div id="territory-tech-list" class="sim-list-box"></div>
           <button id="territory-tech-toggle" class="sim-link-btn" style="display:none;">Show all</button>
         </div>
@@ -4527,6 +4611,7 @@ def build_simulation_panel_script(
     historical_tech_colors_js=None,
     tech_markers_layer_name=None,
     territory_tech_markers_layer_name=None,
+    territory_tech_colors_js=None,
     territory_opt_payload_js=None,
     territory_opt_layer_names_js=None,
     blank_slate_payload_js=None,
@@ -4549,6 +4634,7 @@ def build_simulation_panel_script(
         if territory_tech_markers_layer_name
         else "null"
     )
+    territory_tech_colors = territory_tech_colors_js or "{}"
     territory_opt_payload = territory_opt_payload_js or "null"
     territory_opt_layers = territory_opt_layer_names_js or "null"
     blank_payload = blank_slate_payload_js or "null"
@@ -4598,6 +4684,7 @@ def build_simulation_panel_script(
       const blankSlateLayerNames = {blank_layers};
       const techMarkersLayerName = {tech_markers_js};
       const territoryTechMarkersLayerName = {territory_tech_markers_js};
+      const territoryTechColors = {territory_tech_colors};
       const heatLayerNames = {heat_layers};
       const operationalZonesData = {operational_zones_payload};
       const operationalZoneLayerNames = {operational_zones_layers};
@@ -5457,9 +5544,6 @@ def build_simulation_panel_script(
           return;
         }}
         const notes = [];
-        if (Number(item.excluded_florida_appointments || 0) > 0) {{
-          notes.push(`${{Number(item.excluded_florida_appointments || 0).toLocaleString()}} Florida appointments removed`);
-        }}
         if (Number(item.unmet_appointments || 0) > 0) {{
           notes.push(`${{Number(item.unmet_appointments || 0).toFixed(0)}} unmet appointments`);
         }}
@@ -5502,7 +5586,7 @@ def build_simulation_panel_script(
         const visibleRows = territoryCoverageExpanded ? rows : rows.slice(0, coverageDefaultCount);
         listEl.innerHTML = visibleRows.map((row) => {{
           const techId = String(row.tech_id || "");
-          const color = techColors[techId] || "#64748b";
+          const color = territoryTechColors[techId] || "#64748b";
           const stroke = getDotStroke(color);
           const primaryStates = row.primary_states
             ? String(row.primary_states).split(";").filter(Boolean).join(" / ")
@@ -5968,6 +6052,7 @@ def add_simulation_panel(
     historical_tech_colors=None,
     tech_markers_layer_name=None,
     territory_tech_markers_layer_name=None,
+    territory_tech_color_map=None,
     territory_opt_data=None,
     territory_opt_layer_names=None,
     blank_slate_data=None,
@@ -6013,6 +6098,9 @@ def add_simulation_panel(
         hist_dots_js = json.dumps(historical_layer_name) if historical_layer_name else None
         hist_bases_js = None
     hist_colors_js = json.dumps(historical_tech_colors) if historical_tech_colors else None
+    territory_tech_colors_js = (
+        json.dumps(territory_tech_color_map) if territory_tech_color_map else None
+    )
     territory_primary_mode = None
     if territory_opt_data:
         territory_primary_mode = "combined"
@@ -6078,6 +6166,7 @@ def add_simulation_panel(
             historical_tech_colors_js=hist_colors_js,
             tech_markers_layer_name=tech_markers_layer_name,
             territory_tech_markers_layer_name=territory_tech_markers_layer_name,
+            territory_tech_colors_js=territory_tech_colors_js,
             territory_opt_payload_js=territory_opt_payload_js,
             territory_opt_layer_names_js=territory_opt_layers_js,
             blank_slate_payload_js=blank_payload_js,
@@ -6200,6 +6289,8 @@ def main():
     territory_layer_info = None
     tech_color_map = None
     current_tech_marker_color_map = None
+    territory_tech_color_map = None
+    territory_tech_marker_color_map = None
     if getattr(config, "ENABLE_SIMULATION_UI", False):
         print("  Pre-loading territory assignment data...")
         territory_data = load_territory_assignment_data()
@@ -6207,9 +6298,15 @@ def main():
             tech_color_map = build_tech_color_map(
                 territory_data, ui_preset["territory_palette"]
             )
+            territory_tech_color_map = build_optimize_territories_color_map(territory_data)
             current_tech_marker_color_map = build_current_tech_marker_color_map(
                 territory_data,
                 tech_color_map,
+                ui_preset,
+            )
+            territory_tech_marker_color_map = build_current_tech_marker_color_map(
+                territory_data,
+                territory_tech_color_map,
                 ui_preset,
             )
 
@@ -6240,7 +6337,7 @@ def main():
             layer_name="Optimize Territories Technician Bases",
             ui_preset=ui_preset,
             anchor_metadata_by_name=anchor_metadata["by_name"],
-            marker_color_lookup=current_tech_marker_color_map,
+            marker_color_lookup=territory_tech_marker_color_map,
             show=False,
         )
         territory_tech_markers_layer_name = (
@@ -6340,7 +6437,7 @@ def main():
                 territory_opt_layer_names = add_optimize_territory_layers(
                     m,
                     territory_opt_panel_data,
-                    tech_color_map,
+                    territory_tech_color_map or tech_color_map,
                     ui_preset,
                 )
             elif territory_opt_panel_data:
@@ -6511,6 +6608,7 @@ def main():
                 historical_tech_colors=historical_color_map,
                 tech_markers_layer_name=tech_markers_layer_name,
                 territory_tech_markers_layer_name=territory_tech_markers_layer_name,
+                territory_tech_color_map=territory_tech_color_map,
                 territory_opt_data=territory_opt_panel_data,
                 territory_opt_layer_names=territory_opt_layer_names,
                 blank_slate_data=blank_slate_data,
