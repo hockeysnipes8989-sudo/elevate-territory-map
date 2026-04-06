@@ -14,6 +14,7 @@ from pandas.errors import EmptyDataError
 sys.path.insert(0, os.path.dirname(__file__))
 import config
 from optimization_utils import (
+    US_STATE_ABBR,
     build_airports_df,
     canonicalize_tech_name,
     compute_entity_node_costs,
@@ -29,6 +30,12 @@ SIM_CANDIDATES = "candidate_bases.csv"
 BLANK_SLATE_PLACEMENTS = "scenario_placements.csv"
 BLANK_SLATE_SUMMARY = "scenario_summary.csv"
 BLANK_SLATE_ASSUMPTIONS = "model_assumptions.json"
+OPTIMIZE_TERRITORIES_SUMMARY = "territory_summary.json"
+OPTIMIZE_TERRITORIES_ASSIGNMENTS = "territory_assignments.csv"
+OPTIMIZE_TERRITORIES_APPOINTMENTS = "territory_appointment_assignments.csv"
+OPTIMIZE_TERRITORIES_TECH_SUMMARY = "territory_tech_summary.csv"
+OPTIMIZE_TERRITORIES_GAP_SUMMARY = "territory_gap_summary.csv"
+OPTIMIZE_TERRITORIES_STATE_SUMMARY = "territory_state_summary.csv"
 SIM_UTILIZATION = "scenario_tech_utilization.csv"
 SIM_ASSUMPTIONS = "model_assumptions.json"
 OPT_INPUT_SUMMARY = "optimization_input_summary.json"
@@ -61,6 +68,7 @@ OPERATIONAL_ZONE_COLOR_MAP = {
     "Hawaii": "#DB2777",
     "Unknown": "#64748B",
 }
+STATE_ABBR_TO_NAME = {abbr: name.title() for name, abbr in US_STATE_ABBR.items()}
 
 
 def classify_service_type(service_type):
@@ -1023,6 +1031,22 @@ def add_2025_split_layers(m, split_data, ui_preset):
     return layer_info if layer_info["categories"] else None
 
 
+def filter_optimize_territories_marker_techs(techs):
+    """Hide specific tech markers only in the Optimize Territories tab."""
+    if techs is None or techs.empty:
+        return techs
+    hidden_names = {
+        canonicalize_tech_name(name)
+        for name in getattr(config, "OPTIMIZE_TERRITORIES_MAP_HIDDEN_TECH_NAMES", set())
+        if canonicalize_tech_name(name)
+    }
+    if not hidden_names:
+        return techs.copy()
+    filtered = techs.copy()
+    canonical_names = filtered["name"].fillna("").astype(str).map(canonicalize_tech_name)
+    return filtered.loc[~canonical_names.isin(hidden_names)].copy()
+
+
 def add_technician_markers(
     m,
     techs,
@@ -1030,9 +1054,10 @@ def add_technician_markers(
     ui_preset,
     anchor_metadata_by_name=None,
     marker_color_lookup=None,
+    show=True,
 ):
     """Add technician home base markers."""
-    fg = folium.FeatureGroup(name=layer_name, show=True)
+    fg = folium.FeatureGroup(name=layer_name, show=show)
     anchor_metadata_by_name = anchor_metadata_by_name or {}
     marker_color_lookup = marker_color_lookup or {}
 
@@ -1839,6 +1864,83 @@ def load_blank_slate_data():
         "blank_slate_appointment_cap_note": str(
             assumptions.get("blank_slate_appointment_cap_note", "") or ""
         ),
+    }
+
+
+def get_optimize_territories_dir():
+    """Return the output directory for fixed-roster territory optimization."""
+    return os.path.join(
+        config.OPTIMIZATION_DIR,
+        getattr(config, "OPTIMIZE_TERRITORIES_SUBDIR", "optimize_territories"),
+    )
+
+
+def load_optimize_territories_data():
+    """Load the fixed current-roster territory-optimization outputs for the map."""
+    if not getattr(config, "OPTIMIZE_TERRITORIES_ENABLED", False):
+        return None
+
+    territory_dir = get_optimize_territories_dir()
+    summary_path = os.path.join(territory_dir, OPTIMIZE_TERRITORIES_SUMMARY)
+    appointments_path = os.path.join(territory_dir, OPTIMIZE_TERRITORIES_APPOINTMENTS)
+    tech_summary_path = os.path.join(territory_dir, OPTIMIZE_TERRITORIES_TECH_SUMMARY)
+    gap_summary_path = os.path.join(territory_dir, OPTIMIZE_TERRITORIES_GAP_SUMMARY)
+    state_summary_path = os.path.join(territory_dir, OPTIMIZE_TERRITORIES_STATE_SUMMARY)
+
+    required = [summary_path, appointments_path, tech_summary_path, gap_summary_path, state_summary_path]
+    if any(not os.path.exists(path) for path in required):
+        return None
+
+    with open(summary_path, "r") as handle:
+        summary = json.load(handle)
+
+    appointment_assignments = safe_read_csv(appointments_path)
+    tech_summary = safe_read_csv(tech_summary_path)
+    gap_summary = safe_read_csv(gap_summary_path)
+    state_summary = safe_read_csv(state_summary_path)
+
+    available_modes = [
+        str(mode)
+        for mode in summary.get("available_modes", [])
+        if str(mode).strip()
+    ]
+    default_mode = str(
+        summary.get("default_mode")
+        or (available_modes[0] if available_modes else "")
+    )
+    mode_panels = dict(summary.get("mode_panels", {}))
+
+    modes_payload = {}
+    for mode_key in available_modes:
+        panel = dict(mode_panels.get(mode_key, {}))
+        panel["tech_summaries"] = (
+            tech_summary[tech_summary["territory_mode"].astype(str) == mode_key]
+            .sort_values(["assigned_appointments", "tech_name"], ascending=[False, True])
+            .replace({np.nan: None})
+            .to_dict(orient="records")
+        )
+        panel["gap_rows"] = (
+            gap_summary[
+                (gap_summary["territory_mode"].astype(str) == mode_key)
+                & (
+                    gap_summary["coverage_gap_flag"].astype(str).str.lower().isin({"true", "1"})
+                    | gap_summary["training_gap_flag"].astype(str).str.lower().isin({"true", "1"})
+                )
+            ]
+            .sort_values(["appointment_count", "state_norm"], ascending=[False, True])
+            .replace({np.nan: None})
+            .to_dict(orient="records")
+        )
+        modes_payload[mode_key] = panel
+
+    return {
+        "available_modes": available_modes,
+        "default_mode": default_mode,
+        "modes": modes_payload,
+        "assumptions": dict(summary.get("assumptions", {})),
+        "appointment_assignments": appointment_assignments,
+        "state_summary": state_summary,
+        "gap_summary": gap_summary,
     }
 
 
@@ -3050,6 +3152,197 @@ def get_assignment_dot_stroke(fill_hex, ui_preset):
     return ui_preset["assignment_dot_light_stroke"]
 
 
+def add_optimize_territory_layers(
+    m,
+    territory_opt_data,
+    tech_color_map,
+    ui_preset,
+):
+    """Add fixed-roster territory recommendation layers by mode."""
+    if not territory_opt_data:
+        return None
+
+    appointment_assignments = territory_opt_data["appointment_assignments"].copy()
+    state_summary = territory_opt_data["state_summary"].copy()
+    available_modes = territory_opt_data["available_modes"]
+    if appointment_assignments.empty and state_summary.empty:
+        return None
+
+    appointment_assignments["lat"] = pd.to_numeric(
+        appointment_assignments.get("lat"), errors="coerce"
+    )
+    appointment_assignments["lon"] = pd.to_numeric(
+        appointment_assignments.get("lon"), errors="coerce"
+    )
+
+    state_geojson = None
+    us_states_path = os.path.join(config.PROCESSED_DIR, "us-states.json")
+    if os.path.exists(us_states_path):
+        with open(us_states_path, "r") as handle:
+            state_geojson = json.load(handle)
+
+    layer_names = {}
+    for mode_key in available_modes:
+        mode_label = territory_opt_data["modes"].get(mode_key, {}).get("label", mode_key)
+        dots_fg = folium.FeatureGroup(
+            name=f"Optimize Territories Dots {mode_label}",
+            show=False,
+            control=False,
+        )
+        state_fg = folium.FeatureGroup(
+            name=f"Optimize Territories States {mode_label}",
+            show=False,
+            control=False,
+        )
+
+        mode_appts = appointment_assignments[
+            appointment_assignments["territory_mode"].astype(str) == str(mode_key)
+        ].copy()
+        for _, row in mode_appts.dropna(subset=["lat", "lon"]).iterrows():
+            tech_id = str(row.get("tech_id", "")).strip()
+            tech_name = str(row.get("tech_name", tech_id)).strip()
+            color = tech_color_map.get(tech_id, "#64748b")
+            stroke = get_assignment_dot_stroke(color, ui_preset)
+            popup_html = (
+                f"<b>{html.escape(str(row.get('account_name', 'N/A')))}</b><br>"
+                f"Location: {html.escape(str(row.get('city', '')))}, {html.escape(str(row.get('state_norm', '')))}<br>"
+                f"Skill: {html.escape(str(row.get('skill_class', '')))}<br>"
+                f"Recommended owner: <b>{html.escape(tech_name)}</b>"
+            )
+            folium.CircleMarker(
+                location=[float(row["lat"]), float(row["lon"])],
+                radius=ui_preset["assignment_dot_radius"],
+                color=stroke,
+                fill=True,
+                fill_color=color,
+                fill_opacity=ui_preset["assignment_dot_opacity"],
+                weight=ui_preset["assignment_dot_stroke_width"],
+                opacity=0.95,
+                stroke=True,
+                popup=folium.Popup(popup_html, max_width=320),
+                tooltip=f"{tech_name}: {row.get('account_name', '')}",
+            ).add_to(dots_fg)
+
+        if state_geojson is not None and not state_summary.empty:
+            mode_states = state_summary[
+                state_summary["territory_mode"].astype(str) == str(mode_key)
+            ].copy()
+            state_lookup = {}
+            for _, row in mode_states.iterrows():
+                state_name = str(row.get("state_name", "")).strip()
+                if not state_name:
+                    state_name = STATE_ABBR_TO_NAME.get(str(row.get("state_norm", "")).strip(), "")
+                if not state_name:
+                    continue
+                color = tech_color_map.get(
+                    str(row.get("dominant_owner_color_key", "")).strip(),
+                    "#94a3b8",
+                )
+                state_lookup[state_name] = {
+                    "state_name": state_name,
+                    "state_norm": str(row.get("state_norm", "")).strip(),
+                    "dominant_owner_tech_name": str(row.get("dominant_owner_tech_name", "")).strip(),
+                    "dominant_owner_share": pd.to_numeric(
+                        row.get("dominant_owner_share"), errors="coerce"
+                    ),
+                    "total_appointments": pd.to_numeric(
+                        row.get("total_appointments"), errors="coerce"
+                    ),
+                    "coverage_gap_flag": str(row.get("coverage_gap_flag", "")).strip().lower() in {"true", "1", "yes"},
+                    "training_gap_flag": str(row.get("training_gap_flag", "")).strip().lower() in {"true", "1", "yes"},
+                    "gap_reason": str(row.get("gap_reason", "")).strip(),
+                    "owner_color": color,
+                }
+
+            features = []
+            for feature in state_geojson.get("features", []):
+                name = str(feature.get("properties", {}).get("name", "")).strip()
+                if name not in state_lookup:
+                    continue
+                enriched = dict(feature)
+                enriched_props = dict(enriched.get("properties", {}))
+                enriched_props.update(state_lookup[name])
+                enriched["properties"] = enriched_props
+                features.append(enriched)
+
+            if features:
+                geojson_payload = {"type": "FeatureCollection", "features": features}
+
+                def style_function(feature):
+                    props = feature.get("properties", {})
+                    return {
+                        "fillColor": props.get("owner_color", "#94a3b8"),
+                        "color": props.get("owner_color", "#94a3b8"),
+                        "weight": float(
+                            getattr(config, "OPTIMIZE_TERRITORIES_STATE_FILL_WEIGHT", 1.0)
+                        ),
+                        "fillOpacity": float(
+                            getattr(config, "OPTIMIZE_TERRITORIES_STATE_FILL_OPACITY", 0.14)
+                        ),
+                    }
+
+                def highlight_function(_feature):
+                    return {
+                        "weight": 2.0,
+                        "fillOpacity": min(
+                            float(getattr(config, "OPTIMIZE_TERRITORIES_STATE_FILL_OPACITY", 0.14)) + 0.08,
+                            0.32,
+                        ),
+                    }
+
+                tooltip = folium.GeoJsonTooltip(
+                    fields=[
+                        "state_name",
+                        "dominant_owner_tech_name",
+                        "total_appointments",
+                        "gap_reason",
+                    ],
+                    aliases=[
+                        "State",
+                        "Recommended Owner",
+                        "Appointments",
+                        "Gap Note",
+                    ],
+                    localize=True,
+                    sticky=False,
+                )
+                popup = folium.GeoJsonPopup(
+                    fields=[
+                        "state_name",
+                        "state_norm",
+                        "dominant_owner_tech_name",
+                        "total_appointments",
+                        "gap_reason",
+                    ],
+                    aliases=[
+                        "State",
+                        "State Code",
+                        "Recommended Owner",
+                        "Appointments",
+                        "Gap Note",
+                    ],
+                    localize=True,
+                    labels=True,
+                )
+                folium.GeoJson(
+                    geojson_payload,
+                    style_function=style_function,
+                    highlight_function=highlight_function,
+                    tooltip=tooltip,
+                    popup=popup,
+                    name=f"Optimize Territories States {mode_label}",
+                ).add_to(state_fg)
+
+        dots_fg.add_to(m)
+        state_fg.add_to(m)
+        layer_names[mode_key] = {
+            "dots_layer": dots_fg.get_name(),
+            "states_layer": state_fg.get_name(),
+        }
+
+    return layer_names
+
+
 def add_territory_assignment_layers(
     m,
     assignment_map,
@@ -3533,6 +3826,7 @@ def build_simulation_panel_css(ui_preset):
         color: #64748b;
       }}
       #sim-buttons,
+      #territory-mode-buttons,
       #blank-sim-buttons,
       #split-2025-buttons {{
         display: grid;
@@ -3541,11 +3835,15 @@ def build_simulation_panel_css(ui_preset):
       #sim-buttons {{
         grid-template-columns: repeat(5, minmax(0, 1fr));
       }}
+      #territory-mode-buttons {{
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }}
       #blank-sim-buttons,
       #split-2025-buttons {{
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }}
       .sim-btn,
+      .territory-mode-btn,
       .blank-sim-btn,
       .split-2025-btn {{
         border: 1px solid rgba(15, 23, 42, 0.12);
@@ -3558,12 +3856,14 @@ def build_simulation_panel_css(ui_preset):
         transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.15s;
       }}
       .sim-btn:hover,
+      .territory-mode-btn:hover,
       .blank-sim-btn:hover,
       .split-2025-btn:hover {{
         border-color: rgba(17, 32, 51, 0.32);
         background: #f1f5f9;
       }}
       .sim-btn.active,
+      .territory-mode-btn.active,
       .blank-sim-btn.active,
       .split-2025-btn.active {{
         background: #183b58;
@@ -3839,6 +4139,12 @@ def build_simulation_panel_css(ui_preset):
       #historical-content.active {{
         display: block;
       }}
+      #territories-content {{
+        display: none;
+      }}
+      #territories-content.active {{
+        display: block;
+      }}
       #blank-content {{
         display: none;
       }}
@@ -3927,6 +4233,7 @@ def build_simulation_panel_markup():
       <div id="view-toggle" style="display:none;">
         <div id="view-toggle-buttons">
           <button class="view-btn active" data-view="optimized">Optimized</button>
+          <button class="view-btn" data-view="territories">Optimize Territories</button>
           <button class="view-btn" data-view="blank">Blank Slate</button>
           <button class="view-btn" data-view="historical">Historical</button>
           <button class="view-btn" data-view="zones">Operational Zones</button>
@@ -3992,6 +4299,41 @@ def build_simulation_panel_markup():
         <div id="sim-footnote">
           Selected scenario results from the cost-first optimization. Load ratios are modeled
           capacity proxies. Install cards show family-weighted patient-sim install-only upside.
+        </div>
+      </div>
+
+      <div id="territories-content">
+        <div class="sim-section">
+          <div class="sim-section-label">Optimize Territories</div>
+          <p class="sim-section-caption">Combined 2025 patient sim, LearningSpace, and HPS demand with fixed current bases and tighter current-tech ownership recommendations.</p>
+        </div>
+
+        <div class="sim-section" id="territory-status-section" style="display:none;">
+          <div id="territory-status" class="sim-list-box sim-empty"></div>
+        </div>
+
+        <div class="sim-section">
+          <div class="hist-kpi-grid">
+            <div class="sim-kpi">
+              <div class="label">Appointments Plotted</div>
+              <div class="value" id="territory-kpi-appts">&mdash;</div>
+            </div>
+            <div class="sim-kpi">
+              <div class="label">Modeled Raw Travel</div>
+              <div class="value" id="territory-kpi-travel">&mdash;</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="sim-section">
+          <h3 class="sim-section-heading">Recommended Owner Summaries</h3>
+          <p class="sim-section-caption">Each row is a practical ownership suggestion for the fixed current roster, not a new-hire scenario.</p>
+          <div id="territory-tech-list" class="sim-list-box"></div>
+          <button id="territory-tech-toggle" class="sim-link-btn" style="display:none;">Show all</button>
+        </div>
+
+        <div id="territory-footnote" style="margin-top:16px;padding-top:12px;border-top:1px solid #edf2f7;font-size:11px;line-height:1.45;color:#64748b;">
+          Optimize Territories keeps real current bases fixed, excludes contractors / James / Elier / Damion / Hakim, removes Florida demand rows for this specific analysis, and uses 2025 demand only.
         </div>
       </div>
 
@@ -4184,6 +4526,9 @@ def build_simulation_panel_script(
     historical_bases_js=None,
     historical_tech_colors_js=None,
     tech_markers_layer_name=None,
+    territory_tech_markers_layer_name=None,
+    territory_opt_payload_js=None,
+    territory_opt_layer_names_js=None,
     blank_slate_payload_js=None,
     blank_slate_layer_names_js=None,
     heat_map_layer_names_js=None,
@@ -4199,6 +4544,13 @@ def build_simulation_panel_script(
     hist_bases = historical_bases_js or "null"
     hist_colors = historical_tech_colors_js or "{}"
     tech_markers_js = json.dumps(tech_markers_layer_name) if tech_markers_layer_name else "null"
+    territory_tech_markers_js = (
+        json.dumps(territory_tech_markers_layer_name)
+        if territory_tech_markers_layer_name
+        else "null"
+    )
+    territory_opt_payload = territory_opt_payload_js or "null"
+    territory_opt_layers = territory_opt_layer_names_js or "null"
     blank_payload = blank_slate_payload_js or "null"
     blank_layers = blank_slate_layer_names_js or "null"
     heat_layers = heat_map_layer_names_js or "null"
@@ -4240,9 +4592,12 @@ def build_simulation_panel_script(
       const historicalDotLayerName = {hist_dots};
       const historicalBasesLayerName = {hist_bases};
       const historicalTechColors = {hist_colors};
+      const territoryOptimizeData = {territory_opt_payload};
+      const territoryOptimizeLayerNames = {territory_opt_layers};
       const blankSlateData = {blank_payload};
       const blankSlateLayerNames = {blank_layers};
       const techMarkersLayerName = {tech_markers_js};
+      const territoryTechMarkersLayerName = {territory_tech_markers_js};
       const heatLayerNames = {heat_layers};
       const operationalZonesData = {operational_zones_payload};
       const operationalZoneLayerNames = {operational_zones_layers};
@@ -4251,17 +4606,27 @@ def build_simulation_panel_script(
       let activeView = "optimized";
       let historicalDotLayer = null;
       let historicalBasesLayer = null;
+      let territoryOptimizeDotLayers = {{}};
+      let territoryOptimizeStateLayers = {{}};
       let blankSlatePlacementLayers = {{}};
       let blankSlateDotsLayers = {{}};
       let split2025DotsLayers = {{}};
       let split2025CountLayers = {{}};
       let techMarkersLayer = null;
+      let territoryTechMarkersLayer = null;
       let heatDotsLayer = null;
       let heatCountLayer = null;
       let operationalZoneAirportLayer = null;
       let operationalZoneAppointmentsLayer = null;
       let airportSuppressedByView = false;
       let lastOptimizedScenario = defaultScenario;
+      let territoryCoverageExpanded = false;
+      let activeTerritoryMode = territoryOptimizeData
+        ? String(
+            territoryOptimizeData.default_mode ||
+            ((territoryOptimizeData.available_modes || [])[0] || "")
+          )
+        : null;
       let lastBlankSlateScenario = blankSlateData
         ? String(
             blankSlateData.default_scenario ||
@@ -4769,11 +5134,12 @@ def build_simulation_panel_script(
 
         const optimizedEl = document.getElementById("optimized-content");
         const historicalEl = document.getElementById("historical-content");
+        const territoriesEl = document.getElementById("territories-content");
         const blankEl = document.getElementById("blank-content");
         const zonesEl = document.getElementById("zones-content");
         const split2025El = document.getElementById("split-2025-content");
         const heatEl = document.getElementById("heat-content");
-        if (!optimizedEl || !historicalEl || !blankEl || !zonesEl || !split2025El || !heatEl) return;
+        if (!optimizedEl || !historicalEl || !territoriesEl || !blankEl || !zonesEl || !split2025El || !heatEl) return;
 
         document.querySelectorAll(".view-btn").forEach((btn) => {{
           btn.classList.toggle("active", btn.getAttribute("data-view") === view);
@@ -4786,13 +5152,18 @@ def build_simulation_panel_script(
 
         hideOptimizedLayers();
         hideHistoricalLayers();
+        hideTerritoryOptimizeLayers();
         hideBlankSlateLayers();
         hideSplit2025Layers();
         hideHeatLayers();
         hideOperationalZoneLayers();
+        if (territoryTechMarkersLayer && mapRef && mapRef.hasLayer(territoryTechMarkersLayer)) {{
+          mapRef.removeLayer(territoryTechMarkersLayer);
+        }}
 
         optimizedEl.classList.toggle("hidden", view !== "optimized");
         historicalEl.classList.toggle("active", view === "historical");
+        territoriesEl.classList.toggle("active", view === "territories");
         blankEl.classList.toggle("active", view === "blank");
         zonesEl.classList.toggle("active", view === "zones");
         split2025El.classList.toggle("active", view === "split2025");
@@ -4814,6 +5185,17 @@ def build_simulation_panel_script(
 
           renderHistoricalKpis();
           renderHistoricalCoverage();
+          return;
+        }}
+
+        if (view === "territories") {{
+          if (techMarkersLayer && mapRef && mapRef.hasLayer(techMarkersLayer)) {{
+            mapRef.removeLayer(techMarkersLayer);
+          }}
+          if (territoryTechMarkersLayer && mapRef && !mapRef.hasLayer(territoryTechMarkersLayer)) {{
+            mapRef.addLayer(territoryTechMarkersLayer);
+          }}
+          showTerritoryMode(activeTerritoryMode);
           return;
         }}
 
@@ -5005,6 +5387,215 @@ def build_simulation_panel_script(
               </div>
             </div>`;
         }}).join("");
+      }}
+
+      function getTerritoryModeData(modeKey) {{
+        if (!territoryOptimizeData || !territoryOptimizeData.modes) return null;
+        const resolvedMode = String(
+          modeKey ||
+          activeTerritoryMode ||
+          territoryOptimizeData.default_mode ||
+          ((territoryOptimizeData.available_modes || [])[0] || "")
+        );
+        return territoryOptimizeData.modes[resolvedMode] || null;
+      }}
+
+      function setActiveTerritoryModeButton(modeKey) {{
+        document.querySelectorAll(".territory-mode-btn").forEach((button) => {{
+          button.classList.toggle(
+            "active",
+            button.getAttribute("data-territory-mode") === String(modeKey)
+          );
+        }});
+      }}
+
+      function renderTerritoryModeButtons() {{
+        const container = document.getElementById("territory-mode-buttons");
+        if (!container) return;
+        if (
+          !territoryOptimizeData ||
+          !Array.isArray(territoryOptimizeData.available_modes) ||
+          !territoryOptimizeData.available_modes.length
+        ) {{
+          container.innerHTML = "";
+          return;
+        }}
+        container.innerHTML = "";
+        territoryOptimizeData.available_modes.forEach((modeKey) => {{
+          const item = getTerritoryModeData(modeKey) || {{}};
+          const button = document.createElement("button");
+          button.className = "territory-mode-btn";
+          button.textContent = item.label || modeKey;
+          button.setAttribute("data-territory-mode", modeKey);
+          button.addEventListener("click", () => showTerritoryMode(modeKey));
+          container.appendChild(button);
+        }});
+        setActiveTerritoryModeButton(activeTerritoryMode);
+      }}
+
+      function hideTerritoryOptimizeLayers() {{
+        Object.values(territoryOptimizeDotLayers).forEach((layer) => {{
+          if (layer && mapRef && mapRef.hasLayer(layer)) {{
+            mapRef.removeLayer(layer);
+          }}
+        }});
+        Object.values(territoryOptimizeStateLayers).forEach((layer) => {{
+          if (layer && mapRef && mapRef.hasLayer(layer)) {{
+            mapRef.removeLayer(layer);
+          }}
+        }});
+      }}
+
+      function renderTerritoryStatus(modeKey) {{
+        const sectionEl = document.getElementById("territory-status-section");
+        const statusEl = document.getElementById("territory-status");
+        if (!sectionEl || !statusEl) return;
+        const item = getTerritoryModeData(modeKey);
+        if (!item) {{
+          sectionEl.style.display = "none";
+          statusEl.textContent = "";
+          return;
+        }}
+        const notes = [];
+        if (Number(item.excluded_florida_appointments || 0) > 0) {{
+          notes.push(`${{Number(item.excluded_florida_appointments || 0).toLocaleString()}} Florida appointments removed`);
+        }}
+        if (Number(item.unmet_appointments || 0) > 0) {{
+          notes.push(`${{Number(item.unmet_appointments || 0).toFixed(0)}} unmet appointments`);
+        }}
+        if (!notes.length) {{
+          sectionEl.style.display = "none";
+          statusEl.textContent = "";
+          return;
+        }}
+        sectionEl.style.display = "block";
+        statusEl.textContent = notes.join(" · ");
+      }}
+
+      function renderTerritoryKpis(modeKey) {{
+        const item = getTerritoryModeData(modeKey);
+        if (!item) return;
+        const apptsEl = document.getElementById("territory-kpi-appts");
+        const travelEl = document.getElementById("territory-kpi-travel");
+        if (apptsEl) {{
+          apptsEl.textContent = Number(item.appointments_plotted || 0).toLocaleString();
+        }}
+        if (travelEl) {{
+          travelEl.textContent = money(item.raw_travel_cost_usd || 0);
+        }}
+      }}
+
+      function renderTerritoryTechList(modeKey) {{
+        const listEl = document.getElementById("territory-tech-list");
+        const toggleEl = document.getElementById("territory-tech-toggle");
+        if (!listEl || !toggleEl) return;
+        const item = getTerritoryModeData(modeKey);
+        const rows = item && Array.isArray(item.tech_summaries) ? item.tech_summaries.slice() : [];
+        rows.sort((a, b) => Number(b.assigned_appointments || 0) - Number(a.assigned_appointments || 0));
+
+        if (!rows.length) {{
+          listEl.innerHTML = '<div class="sim-empty">No fixed-roster ownership summary is available.</div>';
+          toggleEl.style.display = "none";
+          return;
+        }}
+
+        const visibleRows = territoryCoverageExpanded ? rows : rows.slice(0, coverageDefaultCount);
+        listEl.innerHTML = visibleRows.map((row) => {{
+          const techId = String(row.tech_id || "");
+          const color = techColors[techId] || "#64748b";
+          const stroke = getDotStroke(color);
+          const primaryStates = row.primary_states
+            ? String(row.primary_states).split(";").filter(Boolean).join(" / ")
+            : "No clear state ownership yet";
+          const baseLabel = row.base_city && row.base_state
+            ? `${{row.base_city}}, ${{row.base_state}}`
+            : (row.base_state || row.base_city || "Base unavailable");
+          const appointments = Number(row.assigned_appointments || 0).toFixed(0);
+          const skills = row.covered_skill_labels
+            ? String(row.covered_skill_labels).split(";").filter(Boolean).join(" / ")
+            : "No skills listed";
+          return `
+            <div class="coverage-row">
+              <span class="coverage-dot" style="background:${{color}}; border-color:${{stroke}};"></span>
+              <div>
+                <div class="coverage-name">${{row.tech_name}}</div>
+                <div class="coverage-meta">${{appointments}} appointments &middot; ${{baseLabel}} &middot; Owns: ${{primaryStates}}</div>
+                <div class="coverage-meta">Skills: ${{skills}} &middot; Raw travel: ${{money(row.raw_travel_cost_usd || 0)}} &middot; 2+ zone share: ${{pct((Number(row.share_two_zone_plus || 0) * 100), 0)}}</div>
+              </div>
+            </div>`;
+        }}).join("");
+
+        if (rows.length > coverageDefaultCount) {{
+          toggleEl.style.display = "inline-block";
+          toggleEl.textContent = territoryCoverageExpanded
+            ? "Show fewer"
+            : `Show all ${{rows.length}} techs`;
+        }} else {{
+          toggleEl.style.display = "none";
+        }}
+      }}
+
+      function wireTerritoryCoverageToggle() {{
+        const button = document.getElementById("territory-tech-toggle");
+        if (!button) return;
+        button.addEventListener("click", () => {{
+          territoryCoverageExpanded = !territoryCoverageExpanded;
+          renderTerritoryTechList(activeTerritoryMode);
+        }});
+      }}
+
+      function renderTerritoryGapList(modeKey) {{
+        const listEl = document.getElementById("territory-gap-list");
+        if (!listEl) return;
+        const item = getTerritoryModeData(modeKey);
+        const rows = item && Array.isArray(item.gap_rows) ? item.gap_rows.slice() : [];
+        rows.sort((a, b) => Number(b.appointment_count || 0) - Number(a.appointment_count || 0));
+        if (!rows.length) {{
+          listEl.innerHTML = '<div class="sim-empty">No explicit same-zone or training gaps for this view.</div>';
+          return;
+        }}
+        listEl.innerHTML = rows.slice(0, 12).map((row) => {{
+          const owner = row.dominant_owner_tech_name || "No assigned owner";
+          const reason = row.gap_reason || "No gap note";
+          const skillClass = String(row.skill_class || "").toLowerCase();
+          const skillLabel = skillClass === "regular"
+            ? "Patient Sim"
+            : (skillClass === "ls" ? "LearningSpace" : (skillClass === "hps" ? "HPS" : String(row.skill_class || "Unknown")));
+          return `
+            <div class="coverage-row">
+              <span class="coverage-dot" style="background:#D97706; border-color:#1F2937;"></span>
+              <div>
+                <div class="coverage-name">${{row.state_name || row.state_norm}} · ${{skillLabel}}</div>
+                <div class="coverage-meta">${{Number(row.appointment_count || 0).toFixed(0)}} appointments &middot; Owner: ${{owner}}</div>
+                <div class="coverage-note">${{reason}}</div>
+              </div>
+            </div>`;
+        }}).join("");
+      }}
+
+      function showTerritoryMode(modeKey) {{
+        if (!mapRef || !territoryOptimizeData) return;
+        const resolvedMode = String(
+          modeKey ||
+          activeTerritoryMode ||
+          territoryOptimizeData.default_mode ||
+          ((territoryOptimizeData.available_modes || [])[0] || "")
+        );
+        hideTerritoryOptimizeLayers();
+        const dotLayer = territoryOptimizeDotLayers[resolvedMode];
+        const stateLayer = territoryOptimizeStateLayers[resolvedMode];
+        if (stateLayer && !mapRef.hasLayer(stateLayer)) {{
+          mapRef.addLayer(stateLayer);
+        }}
+        if (dotLayer && !mapRef.hasLayer(dotLayer)) {{
+          mapRef.addLayer(dotLayer);
+        }}
+        activeTerritoryMode = resolvedMode;
+        setActiveTerritoryModeButton(resolvedMode);
+        renderTerritoryStatus(resolvedMode);
+        renderTerritoryKpis(resolvedMode);
+        renderTerritoryTechList(resolvedMode);
+        renderTerritoryGapList(resolvedMode);
       }}
 
       function getSplit2025CategoryData(category) {{
@@ -5213,11 +5804,13 @@ def build_simulation_panel_script(
         const toggleContainer = document.getElementById("view-toggle");
         if (!toggleContainer) return;
         const historicalBtn = toggleContainer.querySelector('[data-view="historical"]');
+        const territoriesBtn = toggleContainer.querySelector('[data-view="territories"]');
         const blankBtn = toggleContainer.querySelector('[data-view="blank"]');
         const zonesBtn = toggleContainer.querySelector('[data-view="zones"]');
         const split2025Btn = toggleContainer.querySelector('[data-view="split2025"]');
         const heatBtn = toggleContainer.querySelector('[data-view="heat"]');
         if (historicalBtn) historicalBtn.style.display = historicalData ? "" : "none";
+        if (territoriesBtn) territoriesBtn.style.display = territoryOptimizeData ? "" : "none";
         if (blankBtn) blankBtn.style.display = blankSlateData ? "" : "none";
         if (zonesBtn) {{
           zonesBtn.style.display = operationalZoneLayerNames ? "" : "none";
@@ -5227,6 +5820,7 @@ def build_simulation_panel_script(
           heatBtn.style.display = heatLayerNames ? "" : "none";
         }}
         if (
+          !territoryOptimizeData &&
           !historicalData &&
           !blankSlateData &&
           !operationalZoneLayerNames &&
@@ -5285,6 +5879,16 @@ def build_simulation_panel_script(
             }}
           }});
         }}
+        if (territoryOptimizeLayerNames) {{
+          Object.entries(territoryOptimizeLayerNames).forEach(([modeKey, layerInfo]) => {{
+            if (layerInfo && layerInfo.dots_layer && window[layerInfo.dots_layer]) {{
+              territoryOptimizeDotLayers[modeKey] = window[layerInfo.dots_layer];
+            }}
+            if (layerInfo && layerInfo.states_layer && window[layerInfo.states_layer]) {{
+              territoryOptimizeStateLayers[modeKey] = window[layerInfo.states_layer];
+            }}
+          }});
+        }}
         if (split2025LayerNames && split2025LayerNames.categories) {{
           Object.entries(split2025LayerNames.categories).forEach(([categoryKey, layerInfo]) => {{
             if (layerInfo && layerInfo.dots_layer && window[layerInfo.dots_layer]) {{
@@ -5297,6 +5901,9 @@ def build_simulation_panel_script(
         }}
         if (techMarkersLayerName && window[techMarkersLayerName]) {{
           techMarkersLayer = window[techMarkersLayerName];
+        }}
+        if (territoryTechMarkersLayerName && window[territoryTechMarkersLayerName]) {{
+          territoryTechMarkersLayer = window[territoryTechMarkersLayerName];
         }}
         if (heatLayerNames && heatLayerNames.dots_layer && window[heatLayerNames.dots_layer]) {{
           heatDotsLayer = window[heatLayerNames.dots_layer];
@@ -5322,6 +5929,7 @@ def build_simulation_panel_script(
         renderHeatSummary();
         renderOperationalZonesSummary();
         renderButtons();
+        renderTerritoryModeButtons();
         renderBlankSlateButtons();
         renderSplit2025Buttons();
         renderSplit2025Summary(active2025Category);
@@ -5331,6 +5939,7 @@ def build_simulation_panel_script(
         }}
         wireMobileToggle();
         wireCoverageToggle();
+        wireTerritoryCoverageToggle();
         wireHubToggle();
         wireKpiModal();
         wireViewToggle();
@@ -5358,6 +5967,9 @@ def add_simulation_panel(
     historical_layer_name=None,
     historical_tech_colors=None,
     tech_markers_layer_name=None,
+    territory_tech_markers_layer_name=None,
+    territory_opt_data=None,
+    territory_opt_layer_names=None,
     blank_slate_data=None,
     blank_slate_layer_names=None,
     heat_map_layer_names=None,
@@ -5401,6 +6013,36 @@ def add_simulation_panel(
         hist_dots_js = json.dumps(historical_layer_name) if historical_layer_name else None
         hist_bases_js = None
     hist_colors_js = json.dumps(historical_tech_colors) if historical_tech_colors else None
+    territory_primary_mode = None
+    if territory_opt_data:
+        territory_primary_mode = "combined"
+        if territory_primary_mode not in territory_opt_data.get("modes", {}):
+            territory_primary_mode = str(
+                territory_opt_data.get("default_mode")
+                or ((territory_opt_data.get("available_modes") or [None])[0])
+                or ""
+            )
+    territory_opt_payload = None
+    if territory_opt_data and territory_primary_mode:
+        territory_opt_payload = {
+            "available_modes": [territory_primary_mode],
+            "default_mode": territory_primary_mode,
+            "modes": {
+                territory_primary_mode: territory_opt_data.get("modes", {}).get(
+                    territory_primary_mode, {}
+                )
+            },
+            "assumptions": territory_opt_data.get("assumptions", {}),
+        }
+    territory_opt_payload_js = json.dumps(territory_opt_payload) if territory_opt_payload else None
+    territory_opt_layers_payload = None
+    if territory_opt_layer_names and territory_primary_mode in territory_opt_layer_names:
+        territory_opt_layers_payload = {
+            territory_primary_mode: territory_opt_layer_names[territory_primary_mode]
+        }
+    territory_opt_layers_js = (
+        json.dumps(territory_opt_layers_payload) if territory_opt_layers_payload else None
+    )
     blank_payload_js = json.dumps(blank_slate_data) if blank_slate_data else None
     blank_layers_js = json.dumps(blank_slate_layer_names) if blank_slate_layer_names else None
     heat_layers_js = json.dumps(heat_map_layer_names) if heat_map_layer_names else None
@@ -5435,6 +6077,9 @@ def add_simulation_panel(
             historical_bases_js=hist_bases_js,
             historical_tech_colors_js=hist_colors_js,
             tech_markers_layer_name=tech_markers_layer_name,
+            territory_tech_markers_layer_name=territory_tech_markers_layer_name,
+            territory_opt_payload_js=territory_opt_payload_js,
+            territory_opt_layer_names_js=territory_opt_layers_js,
             blank_slate_payload_js=blank_payload_js,
             blank_slate_layer_names_js=blank_layers_js,
             heat_map_layer_names_js=heat_layers_js,
@@ -5586,6 +6231,21 @@ def main():
         marker_color_lookup=current_tech_marker_color_map,
     )
     tech_markers_layer_name = tech_markers_fg.get_name() if tech_markers_fg else None
+    territory_tech_markers_layer_name = None
+    if getattr(config, "ENABLE_SIMULATION_UI", False):
+        territory_marker_techs = filter_optimize_territories_marker_techs(techs)
+        territory_tech_markers_fg = add_technician_markers(
+            m,
+            territory_marker_techs,
+            layer_name="Optimize Territories Technician Bases",
+            ui_preset=ui_preset,
+            anchor_metadata_by_name=anchor_metadata["by_name"],
+            marker_color_lookup=current_tech_marker_color_map,
+            show=False,
+        )
+        territory_tech_markers_layer_name = (
+            territory_tech_markers_fg.get_name() if territory_tech_markers_fg else None
+        )
 
     if anchor_metadata["anchors"]:
         print("Adding anchored technician sites...")
@@ -5647,6 +6307,8 @@ def main():
             historical_data = None
             historical_layer_info = None
             historical_color_map = None
+            territory_opt_panel_data = None
+            territory_opt_layer_names = None
             out_dir = config.OPTIMIZATION_DIR
             if getattr(config, "HISTORICAL_VIEW_ENABLED", False) and territory_data:
                 print("  Loading historical assignment data...")
@@ -5665,6 +6327,27 @@ def main():
                     historical_layer_info = add_historical_assignment_layer(
                         m, territory_data, historical_data, historical_color_map, ui_preset
                     )
+
+            territory_opt_panel_data = load_optimize_territories_data()
+            if territory_opt_panel_data and territory_data and tech_color_map:
+                print(
+                    "  Optimize Territories: "
+                    + ", ".join(
+                        territory_opt_panel_data["modes"].get(mode_key, {}).get("label", mode_key)
+                        for mode_key in territory_opt_panel_data["available_modes"]
+                    )
+                )
+                territory_opt_layer_names = add_optimize_territory_layers(
+                    m,
+                    territory_opt_panel_data,
+                    tech_color_map,
+                    ui_preset,
+                )
+            elif territory_opt_panel_data:
+                print(
+                    "  Optimize Territories outputs found, but color/base context is missing; "
+                    "skipping territory recommendation layers."
+                )
 
             blank_slate_data = load_blank_slate_data()
             blank_slate_layer_names = None
@@ -5827,6 +6510,9 @@ def main():
                 historical_layer_name=historical_layer_info,
                 historical_tech_colors=historical_color_map,
                 tech_markers_layer_name=tech_markers_layer_name,
+                territory_tech_markers_layer_name=territory_tech_markers_layer_name,
+                territory_opt_data=territory_opt_panel_data,
+                territory_opt_layer_names=territory_opt_layer_names,
                 blank_slate_data=blank_slate_data,
                 blank_slate_layer_names=blank_slate_layer_names,
                 heat_map_layer_names=heat_map_layer_names,

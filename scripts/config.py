@@ -602,6 +602,61 @@ BLANK_SLATE_ENABLED = True
 BLANK_SLATE_SUBDIR = "blank_slate"
 SIM_SCENARIO_MIN = 0
 SIM_SCENARIO_MAX = 4
+OPTIMIZE_TERRITORIES_ENABLED = True
+OPTIMIZE_TERRITORIES_SUBDIR = "optimize_territories"
+OPTIMIZE_TERRITORIES_YEAR = 2025
+OPTIMIZE_TERRITORIES_DEFAULT_MODE = "patient_sim"
+OPTIMIZE_TERRITORIES_MODES = [
+    {
+        "key": "patient_sim",
+        "label": "Patient Sim",
+        "description": "2025 patient simulator demand only (regular patient-sim rows).",
+    },
+    {
+        "key": "learning_space",
+        "label": "LearningSpace",
+        "description": "2025 LearningSpace demand only.",
+    },
+    {
+        "key": "hps",
+        "label": "HPS",
+        "description": "2025 HPS demand only.",
+    },
+    {
+        "key": "combined",
+        "label": "Combined",
+        "description": "2025 combined non-Florida demand across patient sims, LearningSpace, and HPS.",
+    },
+]
+OPTIMIZE_TERRITORIES_EXCLUDED_TECH_NAMES = {
+    "HTX Contractor Alex",
+    "HTX Contractor Robert",
+    "James Sanchez",
+    "Elier Martin",
+    "Damion Lyn",
+    "Hakim Mouazer",
+}
+OPTIMIZE_TERRITORIES_MAP_HIDDEN_TECH_NAMES = {
+    "HTX Contractor Alex",
+    "HTX Contractor Robert",
+    "Elier Martin",
+    "Damion Lyn",
+    "Curt Corder",
+    "Hakim Mouazer",
+}
+OPTIMIZE_TERRITORIES_EXCLUDED_STATES = {
+    "FL",
+}
+OPTIMIZE_TERRITORIES_TARGET_UTILIZATION = 0.85
+OPTIMIZE_TERRITORIES_UNMET_PENALTY_USD = DEFAULT_UNMET_PENALTY_USD
+OPTIMIZE_TERRITORIES_OUT_OF_REGION_PENALTY_USD = 125.0
+OPTIMIZE_TERRITORIES_ONE_ZONE_EXTRA_PENALTY_USD = 0.0
+OPTIMIZE_TERRITORIES_TWO_ZONE_EXTRA_PENALTY_USD = 250.0
+OPTIMIZE_TERRITORIES_OVERNIGHT_TRIP_PENALTY_USD = 90.0
+OPTIMIZE_TERRITORIES_FLY_TRIP_PENALTY_USD = 325.0
+OPTIMIZE_TERRITORIES_TIME_LIMIT_SEC = 120
+OPTIMIZE_TERRITORIES_STATE_FILL_OPACITY = 0.14
+OPTIMIZE_TERRITORIES_STATE_FILL_WEIGHT = 1.0
 
 # Known typo/mis-geocode overrides (applied every run)
 GEOCODE_OVERRIDES = {
