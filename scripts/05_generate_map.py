@@ -1,7 +1,6 @@
 """Step 5: Generate the interactive Folium map and simulation UI."""
 import html
 import json
-import math
 import os
 import sys
 import pandas as pd
@@ -31,7 +30,6 @@ BLANK_SLATE_PLACEMENTS = "scenario_placements.csv"
 BLANK_SLATE_SUMMARY = "scenario_summary.csv"
 BLANK_SLATE_ASSUMPTIONS = "model_assumptions.json"
 OPTIMIZE_TERRITORIES_SUMMARY = "territory_summary.json"
-OPTIMIZE_TERRITORIES_ASSIGNMENTS = "territory_assignments.csv"
 OPTIMIZE_TERRITORIES_APPOINTMENTS = "territory_appointment_assignments.csv"
 OPTIMIZE_TERRITORIES_TECH_SUMMARY = "territory_tech_summary.csv"
 OPTIMIZE_TERRITORIES_GAP_SUMMARY = "territory_gap_summary.csv"
@@ -1793,14 +1791,6 @@ def load_blank_slate_data():
         how="left",
     )
     placements_df = placements_df.dropna(subset=["lat", "lon"]).copy()
-
-    def annualize(value, default=0.0):
-        raw = pd.to_numeric(value, errors="coerce")
-        if pd.isna(raw):
-            return float(default)
-        if data_span_years <= 0:
-            return float(raw)
-        return float(raw) / data_span_years
 
     def annualize_optional(value):
         raw = pd.to_numeric(value, errors="coerce")

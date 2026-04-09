@@ -210,11 +210,6 @@ def lookup_airport_hub_fields(airport_code: object, airports_df: pd.DataFrame) -
     return default_fields
 
 
-def lookup_airport_hub_tier(airport_code: object, airports_df: pd.DataFrame) -> str:
-    """Return hub tier for an airport code using the airport table."""
-    return str(lookup_airport_hub_fields(airport_code, airports_df)["hub_tier"])
-
-
 def assignment_scope_defaults(is_contractor: bool, contractor_scope: str) -> dict:
     """Return per-tech assignment scope defaults."""
     if not is_contractor:

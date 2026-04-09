@@ -243,7 +243,6 @@ OVERNIGHT_DRIVE_THRESHOLD_MI = 300.0
 
 # Legacy reference (fly-trip average only — use HOTEL_NIGHTLY_RATE_USD × nights instead)
 HOTEL_AVG_USD = round(HOTEL_NIGHTLY_RATE_USD * HOTEL_AVG_NIGHTS)  # $398 ≈ $399
-RENTAL_CAR_AVG_USD = round(RENTAL_CAR_DAILY_RATE_USD * HOTEL_AVG_NIGHTS)
 
 # Operational zone policy (Phase 1 realism upgrade).
 # These are intentionally broad operational buckets, not literal DST-aware

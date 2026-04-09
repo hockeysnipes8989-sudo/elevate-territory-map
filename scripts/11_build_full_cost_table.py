@@ -36,6 +36,16 @@ from optimization_utils import (
     prepare_demand,
 )
 
+__all__ = [
+    "apply_travel_cost_policy",
+    "build_airport_lat_lon",
+    "compute_entity_node_costs",
+    "compute_ground_transport",
+    "compute_trip_span_days",
+    "main",
+    "prepare_demand",
+]
+
 
 def build_airport_lat_lon() -> dict[str, tuple[float, float]]:
     """Build airport code → (lat, lon) from config.MAJOR_AIRPORTS."""
